@@ -1,0 +1,325 @@
+-- game/handlers.lua — per-STATE update handlers (registered into StateMachine) + the G.FUNCS
+-- string-keyed button handlers (the declarative-UI bridge: ui.lua calls G.FUNCS[name]()).
+
+local Round = require("game.round")
+local Scoring = require("game.scoring")
+local StateMachine = require("game.statemachine")
+local Centers = require("game.centers")
+local Audio = require("game.audio")
+local Shop = require("game.shop")
+local Interp = require("game.effect_interp")   -- 1.5b: revert passive run-modifiers on sell
+local Coverage = require("game.coverage")
+local Lifecycle = require("game.founder_lifecycle")
+local Economy = require("game.economy")
+local Pricing = require("game.pricing")
+
+local S = G.STATES
+
+StateMachine.handlers[S.SELECTING_HAND] = function() end
+StateMachine.handlers[S.SHIPPING] = function() end           -- unused: ship -> SCORING directly
+StateMachine.handlers[S.SHOP] = function() end               -- passive; input drives buy/reroll/continue
+StateMachine.handlers[S.BLIND_SELECT] = function() end       -- passive; Play button → play_blind
+StateMachine.handlers[S.MARKET_SELECT] = function() end
+StateMachine.handlers[S.TECH_DRAFT] = function() end
+
+StateMachine.handlers[S.SCORING] = function()
+  if not G.E_MANAGER:any_pending("base") then                -- juice finished
+    StateMachine.set_state(S.ROUND_EVAL)
+  end
+end
+
+StateMachine.handlers[S.ROUND_EVAL] = function()
+  Round.cash_out_ship()                                       -- sets DRAW_TO_HAND or GAME_OVER
+end
+
+StateMachine.handlers[S.DRAW_TO_HAND] = function()
+  Round.deal_to_full()
+  StateMachine.set_state(S.SELECTING_HAND)
+end
+
+StateMachine.handlers[S.GAME_OVER] = function() end
+
+-- buttons --------------------------------------------------------------------
+
+G.FUNCS.ship = function()
+  if G.STATE ~= S.SELECTING_HAND or G.GAME.ships_left <= 0 then return end
+  local sel = G.hand:highlighted()
+  if #sel < 1 or #sel > G.GAME.select_max then return end
+  Round.move_to_play(sel)
+  Audio.play("ship", 0.7, 0.5)                                -- launch whoosh
+  Scoring.evaluate_ship(G.play.cards)
+  delay(0.5)                                                  -- let the resolved ARR linger
+  StateMachine.set_state(S.SCORING)
+end
+
+G.FUNCS.pivot = function()
+  if G.STATE ~= S.SELECTING_HAND or G.GAME.pivots_left <= 0 then return end
+  local sel = G.hand:highlighted()
+  if #sel < 1 then return end
+  for _, c in ipairs(sel) do
+    G.hand:remove_card(c, true)
+    c:remove()
+  end
+  G.hand:align_cards()
+  G.GAME.pivots_left = G.GAME.pivots_left - 1
+  G.GAME.pivot_count = (G.GAME.pivot_count or 0) + 1
+  G.GAME.discard_count = (G.GAME.discard_count or 0) + #sel
+  Scoring.fire_hook("discard", { discard_count = #sel })
+  Round.deal_to_full()
+end
+
+G.FUNCS.restart = function()                                  -- game-over → back to the MENU (re-pick stake)
+  StateMachine.prep_stage(G.STAGES.MAIN_MENU, G.STATES.MENU)
+end
+
+-- pre-run MENU: stake-select buttons + Start
+StateMachine.handlers[S.MENU] = function() end
+for s = 1, 8 do G.FUNCS["stake_" .. s] = function() G.MENU = G.MENU or {}; G.MENU.stake = s end end
+G.FUNCS.start_run_at = function()
+  local st = (G.MENU and G.MENU.stake) or 1
+  StateMachine.prep_stage(G.STAGES.RUN, G.STATES.SELECTING_HAND)
+  Round.start_run({ stake = st })
+end
+for i = 1, 3 do
+  G.FUNCS["market_pick_" .. i] = function()
+    if G.STATE ~= S.MARKET_SELECT then return end
+    local market = G.GAME.market_choices and G.GAME.market_choices[i]
+    if market then Round.select_market(market) end
+  end
+end
+for i = 1, 4 do G.FUNCS["tech_pick_" .. i] = function() if G.STATE == S.TECH_DRAFT then Round.choose_tech(i) end end end
+
+-- Refactor trades one Pivot for bounded debt relief; debt can no longer be farmed for Cash.
+G.FUNCS.refactor = function()
+  if G.STATE ~= S.SELECTING_HAND then return end
+  local Meters = require("game.meters")
+  local debt = Meters.get("tech_debt")
+  if debt <= 0 or (G.GAME.pivots_left or 0) <= 0 then return end
+  Meters.add("tech_debt", -math.min(5, debt))
+  G.GAME.pivots_left = G.GAME.pivots_left - 1
+  Audio.play("hire")
+end
+
+-- Founder and financing actions.
+local function selected_founder()
+  for _, c in ipairs(G.jokers.cards) do if c.selected then return c end end
+end
+
+G.FUNCS.distill = function()   -- halve a founder's Salary (pay-once → cheap recurring earner)
+  if G.STATE ~= S.SELECTING_HAND then return end
+  local c = selected_founder(); if not c or not c.center then return end
+  if Lifecycle.distill(c) then Audio.play("hire") end
+end
+
+G.FUNCS.promote = function()   -- automate a founder into the harness → climb the ladder, free the slot
+  if G.STATE ~= S.SELECTING_HAND then return end
+  local c = selected_founder(); if not c then return end
+  require("game.meters").add("rung_progress", 8)
+  if Lifecycle.remove(c, { promote = true }) then Audio.play("fire") end
+end
+
+G.FUNCS.market_pivot = function()   -- costed Market reroll: abandon fit for fresh demand
+  if G.STATE ~= S.SELECTING_HAND then return end
+  if G.GAME.last_market_pivot_ante == G.GAME.ante then return end
+  local cost = Pricing.base_reroll(G.GAME, require("game.runstate").ANTE_BASE) * math.min(2, 1 + (G.GAME.market_pivots or 0))
+  if (G.GAME.cash or 0) < cost then return end
+  local choices = require("game.markets").offers(3, require("game.rng").fn("market"), true)
+  local next_market
+  for _, m in ipairs(choices) do if not G.GAME.market or m.id ~= G.GAME.market.id then next_market = m; break end end
+  if not next_market then return end
+  G.GAME.cash = G.GAME.cash - cost
+  require("game.markets").select(G.GAME, next_market)
+  G.GAME.last_market_pivot_ante = G.GAME.ante
+  G.GAME.market_pivots = (G.GAME.market_pivots or 0) + 1
+  Audio.play("fire")
+end
+
+G.FUNCS.raise = function()     -- a priced round — Cash now for equity dilution
+  if (G.STATE ~= S.SELECTING_HAND and G.STATE ~= S.SHOP and G.STATE ~= S.TECH_DRAFT)
+    or not G.GAME.raise_available then return end
+  local equity_cost, cash_fraction = Economy.raise_terms(G.GAME)
+  if (G.GAME.equity_pct or 0) <= equity_cost then return end
+  G.GAME.valuation = G.GAME.run_best_arr or 0
+  G.GAME.cash = (G.GAME.cash or 0) + math.floor(G.GAME.valuation * cash_fraction)
+  G.GAME.equity_pct = (G.GAME.equity_pct or 100) - equity_cost
+  G.GAME.raises_taken = (G.GAME.raises_taken or 0) + 1
+  G.GAME.raise_available = false
+  Audio.play("hire")
+end
+
+-- hire the next not-in-row founder from the pool (cycling); up to 5 slots
+G.FUNCS.hire = function()
+  if G.STATE ~= S.SELECTING_HAND or #G.jokers.cards >= 5 then return end
+  local pool = Centers.pool("Founder")
+  if #pool == 0 then return end
+  for _ = 1, #pool do
+    G.GAME.hire_idx = ((G.GAME.hire_idx or 0) % #pool) + 1
+    local center = pool[G.GAME.hire_idx]
+    local present = false
+    for _, c in ipairs(G.jokers.cards) do if c.center_key == center.key then present = true break end end
+    local in_era = true                                       -- forms are era-soft-gated in the shop
+    if center.is_form and center.era_gate then
+      local ante = G.GAME.ante or 1
+      in_era = ante >= (center.era_gate.min or 1) and ante <= (center.era_gate.max or 8)
+    end
+    if not present and in_era then
+      local jk = Card({ center = center, T = { x = G.jokers.T.x, y = G.jokers.T.y } })
+      G.jokers:emplace(jk)
+      Lifecycle.acquire(jk, { source = "debug_hire", sell_basis = 0 })
+      Audio.play("hire")
+      return
+    end
+  end
+end
+
+-- fire (sell/remove) the SELECTED founder — Balatro-style two-step (select -> Fire button -> confirm)
+G.FUNCS.fire = function()
+  if G.STATE ~= S.SELECTING_HAND and G.STATE ~= S.SHOP then return end   -- sell mid-run OR in the shop (Balatro)
+  if G.GAME.founders_locked then return end                  -- stake 4: Vesting Cliff (founders can't be fired)
+  for i = #G.jokers.cards, 1, -1 do
+    local c = G.jokers.cards[i]
+    if c.selected then
+      if c.ability and c.ability.config and c.ability.config._unsellable then return end
+      if c.center then G.GAME.cash = (G.GAME.cash or 0) + Pricing.sell_value(c) end
+      Scoring.fire_hook("selling_self", { other_card = c })
+      Scoring.fire_hook("selling_card", { other_card = c })
+      Lifecycle.remove(c); Audio.play("fire"); return
+    end
+  end
+end
+
+-- shop: buy a founder offer / reroll / leave for the next blind
+G.FUNCS.shop_buy_1 = function() if G.STATE == S.SHOP then Shop.buy(1) end end
+G.FUNCS.shop_buy_2 = function() if G.STATE == S.SHOP then Shop.buy(2) end end
+G.FUNCS.shop_buy_3 = function() if G.STATE == S.SHOP then Shop.buy(3) end end
+G.FUNCS.shop_reroll = function() if G.STATE == S.SHOP then Shop.reroll() end end
+G.FUNCS.shop_redeem = function() if G.STATE == S.SHOP then Shop.redeem() end end
+G.FUNCS.shop_open_pack_1 = function() if G.STATE == S.SHOP then Shop.open_pack(1) end end
+G.FUNCS.shop_open_pack_2 = function() if G.STATE == S.SHOP then Shop.open_pack(2) end end
+G.FUNCS.pack_pick_1 = function() if G.STATE == S.SHOP then Shop.pack_pick(1) end end
+G.FUNCS.pack_pick_2 = function() if G.STATE == S.SHOP then Shop.pack_pick(2) end end
+G.FUNCS.pack_pick_3 = function() if G.STATE == S.SHOP then Shop.pack_pick(3) end end
+G.FUNCS.pack_skip = function() if G.STATE == S.SHOP then Shop.pack_skip() end end
+G.FUNCS.shop_continue = function()
+  if G.STATE ~= S.SHOP then return end
+  G.GAME.shop = nil
+  StateMachine.set_state(S.BLIND_SELECT)                       -- preview the upcoming blind; Play → play_blind
+end
+
+-- BLIND_SELECT: commit to the previewed blind → deal + start playing
+G.FUNCS.play_blind = function()
+  if G.STATE ~= S.BLIND_SELECT then return end
+  Round.next_blind()                                           -- rebuild deck + deal + → SELECTING_HAND
+end
+
+G.FUNCS.skip_blind = function()
+  if G.STATE ~= S.BLIND_SELECT or (G.GAME.blind_idx or 3) >= 3 then return end
+  local skipped = G.GAME.blind_idx
+  if skipped == 1 then
+    G.GAME.cash = (G.GAME.cash or 0) + 2 * Economy.unit(G.GAME, require("game.runstate").ANTE_BASE)
+    G.GAME.last_lead = "Angel check"
+  else
+    G.GAME.draft_choice_bonus = (G.GAME.draft_choice_bonus or 0) + 1
+    G.GAME.last_lead = "Expanded Tech draft"
+  end
+  G.GAME.skips_run = (G.GAME.skips_run or 0) + 1
+  require("game.runstate").advance()
+  StateMachine.set_state(S.BLIND_SELECT)
+end
+
+-- ── : consumable (Tech Law) use / target-select / sell ────────────────────────────
+local Consumables = require("game.consumables")
+local Juice = require("game.juice")
+StateMachine.handlers[S.USE_CARD] = function() end             -- transient (reserved)
+StateMachine.handlers[S.TARGET_SELECT] = function() end        -- passive; input drives the pick
+
+local function selected_consumable()
+  if not G.consumables then return nil end
+  for _, c in ipairs(G.consumables.cards) do if c.selected then return c end end
+end
+
+G.FUNCS.use_consumable = function()
+  if G.STATE ~= S.SELECTING_HAND then return end
+  local c = selected_consumable(); if not c then return end
+  if c.center.target then                                      -- two-stage: pick target card(s) first
+    for _, h in ipairs(G.hand.cards) do h.selected = false end
+    G.PENDING_CONSUMABLE = { card = c, center = c.center, picks = {} }
+    StateMachine.set_state(S.TARGET_SELECT)
+  else                                                          -- instant cash or automatic-target operation
+    Consumables.use(c, nil, nil)
+    Audio.play("ship"); Juice.pulse("cash")
+  end
+end
+
+G.FUNCS.sell_consumable = function()
+  if G.STATE ~= S.SELECTING_HAND and G.STATE ~= S.SHOP then return end
+  local c = selected_consumable(); if not c then return end
+  Scoring.fire_hook("sell_consumable", { consumable = c.center })
+  G.GAME.cash = (G.GAME.cash or 0) + Shop.consumable_sell_value(c)
+  Consumables.remove(c)
+  Audio.play("fire")
+end
+
+G.FUNCS.shop_buy_consumable = function() if G.STATE == S.SHOP then Shop.buy_consumable() end end
+
+function G.CONSUMABLE_TARGET_PICK(card)                        -- a hand card clicked during TARGET_SELECT
+  local pc = G.PENDING_CONSUMABLE
+  if not pc then return end
+  pc.picks[#pc.picks + 1] = card
+  card.selected = true
+  if #pc.picks >= ((pc.center.target and pc.center.target.n) or 1) then
+    if pc.center.target and pc.center.target.layer then pc.need_layer = true   -- Conway: now pick the Layer
+    else G.CONSUMABLE_RESOLVE(nil) end
+  end
+end
+
+function G.CONSUMABLE_RESOLVE(layer)                           -- apply + consume + return to play
+  local pc = G.PENDING_CONSUMABLE
+  if not pc then return end
+  for _, t in ipairs(pc.picks) do t.selected = false end
+  Consumables.use(pc.card, pc.picks, { layer = layer })
+  G.PENDING_CONSUMABLE = nil
+  Audio.play("ship"); Juice.pulse("cash")
+  StateMachine.set_state(S.SELECTING_HAND)
+end
+
+function G.CONSUMABLE_CANCEL()                                 -- right-click/Esc — consumable NOT spent
+  local pc = G.PENDING_CONSUMABLE
+  if not pc then return end
+  for _, t in ipairs(pc.picks) do t.selected = false end
+  G.PENDING_CONSUMABLE = nil
+  StateMachine.set_state(S.SELECTING_HAND)
+end
+
+for _, L in ipairs({ "Frontend", "Backend", "Data", "Infra", "AI" }) do
+  G.FUNCS["pick_layer_" .. L] = function()
+    if G.STATE == S.TARGET_SELECT and G.PENDING_CONSUMABLE and G.PENDING_CONSUMABLE.need_layer then
+      G.CONSUMABLE_RESOLVE(L)
+    end
+  end
+end
+
+-- ── : sort hand (bottom-mid row) + Run Info / Options / deck-view overlays ────────────────
+G.FUNCS.sort_users = function()
+  if not (G.STATE == S.SELECTING_HAND and G.hand) then return end
+  table.sort(G.hand.cards, function(a, b) return (a.base_users or 0) > (b.base_users or 0) end)
+  G.hand:align_cards(); Audio.play("select", nil, 0.4)
+end
+G.FUNCS.sort_layer = function()
+  if not (G.STATE == S.SELECTING_HAND and G.hand) then return end
+  table.sort(G.hand.cards, function(a, b)
+    local ia, ib = Coverage.sort_index(a), Coverage.sort_index(b)
+    if ia ~= ib then return ia < ib end
+    return (a.base_users or 0) > (b.base_users or 0)
+  end)
+  G.hand:align_cards(); Audio.play("select", nil, 0.4)
+end
+
+G.FUNCS.run_info = function() G.SHOW_RUN_INFO = not G.SHOW_RUN_INFO; G.SHOW_OPTIONS, G.SHOW_DECK_VIEW = nil, nil end
+G.FUNCS.options  = function() G.SHOW_OPTIONS = not G.SHOW_OPTIONS; G.SHOW_RUN_INFO, G.SHOW_DECK_VIEW = nil, nil end
+G.FUNCS.opt_motion = function() if G.SHOW_OPTIONS then G.SETTINGS.reduced_motion = not G.SETTINGS.reduced_motion end end
+G.FUNCS.opt_sound  = function() if G.SHOW_OPTIONS then G.SETTINGS.sound = (G.SETTINGS.sound == false) end end
+G.FUNCS.opt_crt    = function() if G.SHOW_OPTIONS then G.SETTINGS.crt = not G.SETTINGS.crt end end
+G.FUNCS.opt_quit   = function() if G.SHOW_OPTIONS then G.SHOW_OPTIONS = nil; G.FUNCS.restart() end end
+
+return true

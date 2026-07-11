@@ -1,0 +1,36 @@
+-- game/compat.lua — runtime tech compatibility over the played hand. Clashes feed a
+-- scoring haircut + tech-debt; substitutes create redundancy; complement weight feeds chemistry.
+local C = require("data.centers.compat_gen")
+local Compat = {}
+
+local function bare(card)
+  local k = (card.center and card.center.key) or ""
+  return (k:gsub("^t_", ""))
+end
+local function pk(a, b) if a <= b then return a .. "|" .. b else return b .. "|" .. a end end
+
+local function pairs_in(played, set)
+  local out = {}
+  for i = 1, #played do
+    for j = i + 1, #played do
+      if set[pk(bare(played[i]), bare(played[j]))] then out[#out + 1] = { played[i], played[j] } end
+    end
+  end
+  return out
+end
+
+function Compat.clashes(played)     return pairs_in(played, C.clashes) end
+function Compat.substitutes(played) return pairs_in(played, C.substitutes) end
+
+-- Sum complement-edge weights among played pairs for live chemistry coherence.
+function Compat.complement_score(played)
+  local s = 0
+  for i = 1, #played do
+    for j = i + 1, #played do
+      s = s + (C.complements[pk(bare(played[i]), bare(played[j]))] or 0)
+    end
+  end
+  return s
+end
+
+return Compat

@@ -1,0 +1,7 @@
+# Local build output and editor files
+.DS_Store
+*.bak
+*.log
+*.love
+build/
+dist/

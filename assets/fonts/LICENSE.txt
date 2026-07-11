@@ -1,0 +1,14 @@
+Fonts in this directory
+=======================
+
+m5x7.ttf
+  Designer: Daniel Linssen (managore)
+  Source:   https://managore.itch.io/m5x7
+  License:  Free to use, including in commercial projects. Attribution
+            appreciated by the author (not legally required). A donation
+            to the author is encouraged if the project is commercial.
+
+  Palo Latro credits Daniel Linssen for the m5x7 typeface. This is the
+  same designer as Balatro's m6x11 font; we use m5x7 as an independent,
+  freely-licensed pixel typeface (clean-room: we do NOT use Balatro's
+  own font asset).

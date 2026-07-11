@@ -1,0 +1,331 @@
+-- game/scoring.lua — the scoring engine. evaluate_ship() computes ARR instantly and enqueues
+-- the count-up juice via the EventManager. The FULL context vocabulary + return-effect protocol
+-- are defined now (only some populated in the slice) so founders/editions/seals slot in later
+-- with ZERO engine change (the runtime design, reference design).
+
+local AppTypes = require("game.apptypes")
+local Juice = require("game.juice")
+local Audio = require("game.audio")
+local Particles = require("game.particles")
+local Compat = require("game.compat")
+local Meters = require("game.meters")
+local Markets = require("game.markets")
+local Coverage = require("game.coverage")
+local Playbooks = require("game.playbooks")
+local Archetypes = require("game.archetypes")
+local Reliability = require("game.reliability")
+local ScoreTrace = require("game.score_trace")
+local Centers = require("game.centers")
+local Bosses = require("game.bosses")
+
+local Scoring = {}
+local MAX_USERS, MAX_REVENUE = 10000000, 100000
+
+-- The complete scoring context vocabulary (keys defined; founders/blinds populate the rest later):
+--   cardarea, full_hand, scoring_hand, scoring_name, poker_hands,
+--   before, repetition, repetition_only, individual, other_card,
+--   joker_main, other_joker, edition, after, debuffed_hand,
+--   destroying_card, removed, blueprint, blueprint_card
+local function ctx(base, over)
+  local c = {}
+  for k, v in pairs(base) do c[k] = v end
+  if over then for k, v in pairs(over) do c[k] = v end end
+  return c
+end
+
+-- The single context-driven seam. Every card/founder is asked the same way; the engine never
+-- knows what any specific one does. Tech cards return nil; founders return an effect table.
+local function eval_card(card, context)
+  if not card or not card.calculate then return {} end
+  return card:calculate(context) or {}
+end
+Scoring.eval_card = eval_card
+
+local function eval_automated(record, context)
+  local center = record and Centers.get(record.center_key)
+  if not (center and G.FOUNDER_CALC) then return {} end
+  record.config = record.config or { _effect_scale = record.effect_scale or 0.5 }
+  return G.FOUNDER_CALC({ center = center, center_key = center.key, ability = { config = record.config } }, context) or {}
+end
+
+local function each_automated(context, fn)
+  for _, record in ipairs((G.GAME and G.GAME.automated_founders) or {}) do fn(eval_automated(record, context)) end
+end
+
+-- Apply a return-effect table to the running score S. Full protocol (populate-what's-used):
+-- chips, mult, x_mult, h_mult, h_x_mult, dollars, p_dollars,
+-- edition{chip_mod,mult_mod,x_mult_mod}, seals{repetitions,...},
+-- jokers{chip_mod,mult_mod,Xmult_mod,repetitions,...}, extra{...}
+local function apply_effect(S, eff)
+  if not eff then return end
+  if eff.chips  then S.chips = math.min(MAX_USERS, S.chips + eff.chips) end
+  if eff.mult   then S.mult  = math.min(MAX_REVENUE, S.mult + eff.mult) end
+  if eff.x_mult then S.mult  = math.min(MAX_REVENUE, S.mult * math.max(0, math.min(5, eff.x_mult))) end
+  if eff.dollars   then G.GAME.pending_dollars = G.GAME.pending_dollars + eff.dollars end
+  if eff.p_dollars then G.GAME.pending_dollars = G.GAME.pending_dollars + eff.p_dollars end
+  local e = eff.edition
+  if e then
+    if e.chip_mod   then S.chips = S.chips + e.chip_mod end
+    if e.mult_mod   then S.mult  = S.mult  + e.mult_mod end
+    if e.x_mult_mod then S.mult  = S.mult  * e.x_mult_mod end
+  end
+  local j = eff.jokers
+  if j then
+    if j.chip_mod  then S.chips = S.chips + j.chip_mod end
+    if j.mult_mod  then S.mult  = S.mult  + j.mult_mod end
+    if j.Xmult_mod then S.mult  = S.mult  * j.Xmult_mod end
+  end
+  local x = eff.extra
+  if x then
+    if x.chip_mod then S.chips = S.chips + x.chip_mod end
+    if x.mult_mod then S.mult  = S.mult  + x.mult_mod end
+  end
+end
+
+-- repetitions for a card = 1 + seal retriggers + joker `repetition` retriggers (0 in the slice)
+local function collect_reps(card, base)
+  local reps = 1
+  local seal = card.seal and Card.SEALS and Card.SEALS[card.seal]
+  if seal and seal.retrigger then reps = reps + math.min(1, seal.retrigger) end
+  if seal and seal.cash then G.GAME.pending_dollars = G.GAME.pending_dollars + seal.cash end
+  local seal_eff = eval_card(card, ctx(base, { repetition = true, repetition_only = true, other_card = card }))
+  if seal_eff.seals and seal_eff.seals.repetitions then reps = reps + seal_eff.seals.repetitions end
+  for _, jk in ipairs(G.jokers.cards) do
+    local e = eval_card(jk, ctx(base, { repetition = true, other_card = card }))
+    if e.jokers and e.jokers.repetitions then reps = reps + e.jokers.repetitions end
+  end
+  return reps
+end
+
+-- enqueue a blocking count-up of a display field toward `to`, with a short beat after
+local function juice(field, to, dur, beat)
+  ease_value(G.GAME.score, field, to, dur or 0.16, { blocking = true })
+  if beat then delay(beat) end
+end
+
+-- Fixed traversal (mirrors the runtime design). Logical chips/mult are computed in S; the display
+-- (G.GAME.score.*) is tweened to follow, serialized by the blocking event queue.
+function Scoring.evaluate_ship(played)
+  local coverage = Coverage.analyze(played)
+  local app = AppTypes.classify(played)
+  local base = {
+    cardarea = G.play, full_hand = played, scoring_hand = played,
+    scoring_name = app.name, poker_hands = { [app.key] = true }, coverage = coverage,
+  }
+  G.GAME.scoring_name = app.name
+  G.GAME.this_app = app
+  G.GAME.this_ship_arr = 0
+  -- delta tracking (B): count distinct App Types / Layers FIRST-seen this Ship (the "per NEW X" per-sources)
+  G.GAME._new_app_types = 0
+  if G.GAME.app_types_shipped_run and not G.GAME.app_types_shipped_run[app.key] then
+    G.GAME._new_app_types = 1; G.GAME.app_types_shipped_run[app.key] = true
+  end
+  G.GAME._new_layers = 0
+  for _, c in ipairs(played) do
+    for _, L in ipairs(Coverage.layers_for(c, coverage)) do
+      if G.GAME.layers_seen_run and not G.GAME.layers_seen_run[L] then
+        G.GAME._new_layers = G.GAME._new_layers + 1; G.GAME.layers_seen_run[L] = true
+      end
+    end
+  end
+
+  G.GAME.score_trace = ScoreTrace.new()
+  local base_chips, base_mult, app_level = Playbooks.values(app)
+  local S = { chips = base_chips, mult = base_mult }
+  ScoreTrace.capture(G.GAME.score_trace, "app_base", { chips = S.chips, mult = S.mult, app = app.key, level = app_level })
+
+  -- reset + reveal base chips/mult
+  G.GAME.score.chips, G.GAME.score.mult, G.GAME.score.arr = 0, 0, 0
+  juice("chips", S.chips, 0.20)
+  juice("mult", S.mult, 0.20, 0.10)
+
+  -- Count compatibility clashes after utility founders clear them, then accrue tech debt.
+  G.GAME._clashes_active = #Compat.clashes(played)
+  for _, c in ipairs(played) do                                  -- John's JIT schema clears ALL clashes
+    if c.center and c.center.clears_clash then G.GAME._clashes_active = 0; break end
+  end
+  local subs = #Compat.substitutes(played)
+  if subs > 0 then Meters.add("tech_debt", (G.GAME.tech_debt_accel and subs * 2 or subs)) end  -- stake 7
+
+  -- "before" jokers (clear_clash ops decrement G.GAME._clashes_active)
+  for _, jk in ipairs(G.jokers.cards) do apply_effect(S, eval_card(jk, ctx(base, { before = true }))) end
+  each_automated(ctx(base, { before = true }), function(e) apply_effect(S, e) end)
+
+  -- each scoring card, left -> right
+  local step = 0
+  for _, c in ipairs(played) do
+    local reps = collect_reps(c, base)
+    for _ = 1, reps do
+      step = step + 1
+      local users = c:get_users(ctx(base, { individual = true, other_card = c }))
+      S.chips = S.chips + users
+      local card, idx, total = c, step, #played
+      -- pop / floating text / shake / rising-pitch tick, fired in sync with this card's count-up
+      G.E_MANAGER:add_event(Event({ trigger = "immediate", blocking = true, func = function()
+        if not card.REMOVED then
+          card:juice_up(0.6, 0.1)
+          Particles.burst(card.VT.x + card.VT.w / 2, card.VT.y + card.VT.h / 2, G.C.users, 5)
+        end
+        Juice.text(card.VT.x + card.VT.w / 2, card.VT.y - 4, "+" .. users .. " Users", G.C.users)
+        Juice.shake(0.6); Juice.pulse("score")
+        Audio.chip(idx, total)
+        return true
+      end }))
+      juice("chips", S.chips, 0.14, 0.05)
+      -- per-card joker synergy (individual)
+      for _, jk in ipairs(G.jokers.cards) do
+        local bm, bc = S.mult, S.chips
+        apply_effect(S, eval_card(jk, ctx(base, { individual = true, other_card = c })))
+        if S.mult ~= bm then juice("mult", S.mult, 0.12, 0.03); Audio.play("mult", nil, 0.4) end
+        if S.chips ~= bc then juice("chips", S.chips, 0.10, 0.02) end
+      end
+      each_automated(ctx(base, { individual = true, other_card = c }), function(e) apply_effect(S, e) end)
+      -- card edition (after individual, before joker_main) — seam
+      apply_effect(S, eval_card(c, ctx(base, { edition = true, other_card = c })))
+      -- per-card Rev sticker (card_stat_sticker field=rev) folds into the hand mult (override→add→mul)
+      local rs = c.rev_sticker and c:rev_sticker()
+      if rs then
+        if rs.override then S.mult = rs.override end
+        S.mult = (S.mult + (rs.add or 0)) * (rs.mul or 1)
+        juice("mult", S.mult, 0.12, 0.03)
+      end
+    end
+  end
+  ScoreTrace.capture(G.GAME.score_trace, "tech", { chips = S.chips, mult = S.mult })
+
+  -- held-card pass (h_mult/h_x_mult) — seam (G.hand), no-op now
+  -- joker main + after
+  for _, jk in ipairs(G.jokers.cards) do apply_effect(S, eval_card(jk, ctx(base, { joker_main = true }))) end
+  each_automated(ctx(base, { joker_main = true }), function(e) apply_effect(S, e) end)
+  G.GAME._pre_after_arr = math.floor(S.chips * S.mult + 0.5)
+  G.GAME._running_arr = G.GAME._pre_after_arr
+  for _, jk in ipairs(G.jokers.cards) do apply_effect(S, eval_card(jk, ctx(base, { after = true }))) end
+  each_automated(ctx(base, { after = true }), function(e) apply_effect(S, e) end)
+  -- D: apply armed buffs (event hooks → scoring), consumed once at the next scoring pass
+  if G.GAME._armed_buffs and #G.GAME._armed_buffs > 0 then
+    for _, ab in ipairs(G.GAME._armed_buffs) do apply_effect(S, { [ab.field] = ab.value }) end
+    G.GAME._armed_buffs = {}
+  end
+  -- founder Editions + Seals: passive card modifiers folded into the score
+  for _, jk in ipairs(G.jokers.cards) do
+    local e = jk.edition and Card.EDITIONS and Card.EDITIONS[jk.edition]
+    if e then
+      if e.chips then S.chips = S.chips + e.chips end
+      if e.mult then S.mult = S.mult + e.mult end
+      if e.x_mult then S.mult = S.mult * e.x_mult end
+    end
+  end
+  ScoreTrace.capture(G.GAME.score_trace, "founders", { chips = S.chips, mult = S.mult })
+  if S.mult ~= G.GAME.score.mult then juice("mult", S.mult, 0.14); Audio.play("mult", nil, 0.4) end
+
+  -- Jo-harness-burg (John) — when in the built hand he grows WITH kitchen-engineer42, but
+  -- ADDITIVELY (never a 2nd ×engine), plus Hamster flat +rev/user. Polynomial, not exponential.
+  local john
+  for _, c in ipairs(played) do if c.center_key == "t_joharness-burg" then john = c; break end end
+  if john then
+    local add = john.center.hamster_mult or 0                  -- Hamster flat +mult
+    for _, jk in ipairs(G.jokers.cards) do
+      if jk.center_key == "f_kitchen-engineer42" then
+        local k = math.max(0, (G.GAME.ante or 1) - ((jk.ability.config or {})._hire_ante or G.GAME.ante or 1))
+        add = add + math.floor(0.8 + 0.1 * 2 ^ k)             -- additive coupling: tracks her current level
+        break
+      end
+    end
+    if add > 0 then S.mult = S.mult + add; juice("mult", S.mult, 0.12) end
+  end
+
+  -- Apply the remaining compatibility penalty and tech-debt drag.
+  local clashes_left = G.GAME._clashes_active or 0
+  local td = Meters.tier("tech_debt")
+  if clashes_left > 0 or td > 0 then
+    S.mult = S.mult * (0.9 ^ clashes_left) * (1 - 0.03 * td)
+    juice("mult", S.mult, 0.14)
+  end
+
+  -- Apply signature multipliers from maturity, Knowledge, and chemistry.
+  local ndl = coverage.distinct
+  local ke = 0
+  for _, jk in ipairs(G.jokers.cards) do
+    if jk.center and jk.center.effect and jk.center.effect.ke_complement then ke = ke + 1 end
+  end
+  ke = ke + coverage.knowledge_count
+  Meters.add("rung_progress", ndl)
+  G.GAME.maturity_rung = 1 + Meters.tier("rung_progress")
+  if ke > 0 then Meters.add("knowledge_charge", ke) end
+  local rung_lev = 1 + 0.08 * (G.GAME.maturity_rung - 1)
+  local msg = (Meters.tier("knowledge_charge") >= 1) and (1 + 0.1 * Meters.tier("knowledge_charge")) or 1
+  local chem = 1 + math.min(0.02 * math.floor(Compat.complement_score(played)), 0.5)
+  G.GAME._ndl = ndl
+  if rung_lev ~= 1 or msg ~= 1 or chem ~= 1 then
+    S.mult = S.mult * rung_lev * msg * chem
+    juice("mult", S.mult, 0.14)
+  end
+
+  local stacks, best_stack = Archetypes.evaluate(played)
+  G.GAME.last_stack_progress, G.GAME.last_named_stack = stacks, nil
+  if best_stack and best_stack.complete then
+    S.chips = math.min(MAX_USERS, S.chips + best_stack.users)
+    S.mult = math.min(MAX_REVENUE, S.mult + best_stack.rev)
+    G.GAME.last_named_stack = best_stack.key
+  end
+  ScoreTrace.capture(G.GAME.score_trace, "systems", { chips = S.chips, mult = S.mult, chemistry = chem,
+    maturity = rung_lev, msg = msg, stack = G.GAME.last_named_stack })
+
+  -- Apply earned Market fit and the telegraphed boss-event penalty.
+  local fit = Markets.fit_mult(played, G.GAME.market)
+  local boss_key = G.GAME.blind and G.GAME.blind.event
+  local evm = Bosses.score_multiplier(boss_key, played, { fit = fit })
+  G.GAME.current_boss_margin_delta = Bosses.margin_delta(boss_key)
+  G.GAME.last_fit = fit
+  if fit ~= 1 or evm ~= 1 then
+    S.mult = S.mult * fit * evm
+    juice("mult", S.mult, 0.14)
+  end
+
+  -- blind modify_hand vs debuff_hand branch — identity stubs now (the branch exists)
+  -- if G.GAME.blind and G.GAME.blind:debuff_hand(...) then ... else ... end
+
+  -- resolve ARR = chips x mult
+  delay(0.18)
+  local reliability = Reliability.evaluate(played, { boss = G.GAME.blind and G.GAME.blind.event,
+    mitigation = G.GAME.reliability_bonus or 0 })
+  reliability.score = math.max(0, reliability.score + (G.GAME.reliability_stake_delta or 0))
+  reliability.multiplier = 0.50 + 0.05 * reliability.score
+  S.chips, S.mult = math.min(MAX_USERS, S.chips), math.min(MAX_REVENUE, S.mult)
+  local final_arr = math.floor(S.chips * S.mult * reliability.multiplier + 0.5)
+  G.GAME.last_reliability, G.GAME.last_misfire = reliability, false
+  G.GAME._final_arr = final_arr
+  ScoreTrace.finalize(G.GAME.score_trace, { chips = S.chips, mult = S.mult, fit = fit,
+    reliability = reliability.score, reliability_mult = reliability.multiplier, arr = final_arr })
+  G.E_MANAGER:add_event(Event({ trigger = "immediate", blocking = true, func = function()
+    Juice.shake(2.5); Juice.pulse("score"); Juice.flash(0.18, G.C.arr); Audio.play("ship", 1.3, 0.6)
+    Particles.burst(G.WINDOW.w / 2, 533, G.C.arr, 22)
+    return true
+  end }))
+  ease_value(G.GAME.score, "arr", final_arr, 0.55, {
+    blocking = true,
+    func = function()
+      G.GAME.this_ship_arr = final_arr
+      G.GAME._last_hand_ndl = G.GAME._ndl or 0                                  -- 1.5a: snapshot just-shipped hand's distinct Layers
+      G.GAME.run_best_arr = math.max(G.GAME.run_best_arr or 0, final_arr)       -- 1.5a: run high-water ARR
+      Juice.pulse("score")
+    end,
+  })
+end
+
+-- Fire a run-loop hook (engine v2): every founder is asked with ctx[name]=true. Non-scoring — chips/mult
+-- on the scratch score are discarded; economy (dollars) routes to pending_dollars; state-write op kinds
+-- (meter/gen/grant/clear_clash, added in later phases) mutate G.GAME directly. Founder DSLs listen to
+-- run-loop events (ante_start, setting_blind, blind_won/lost, end_of_round, discard, selling_*, …) with
+-- ZERO new interpreter code, because effect_interp keys purely on ctx[hook].
+function Scoring.fire_hook(name, over)
+  if not (G.jokers and G.jokers.cards) then return end
+  local base = { cardarea = G.jokers, scoring_name = G.GAME and G.GAME.scoring_name }
+  local scratch = { chips = 0, mult = 0 }
+  for _, jk in ipairs(G.jokers.cards) do
+    local c = ctx(base, over); c[name] = true
+    apply_effect(scratch, eval_card(jk, c))
+  end
+end
+
+return Scoring
