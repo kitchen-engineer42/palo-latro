@@ -44,12 +44,12 @@ end
 -- replaces the card's native layer set; it does not add another identity.
 function Coverage.card_options(card)
   if not card then return {} end
-  local modifier_options = TechModifiers.coverage_options(card)
-  if modifier_options ~= nil then return modifier_options end
   if card.layer_override ~= nil then
     local layer = canonical_layer(card.layer_override)
     return core_set[layer] and { layer } or {}
   end
+  local modifier_options = TechModifiers.coverage_options(card)
+  if modifier_options ~= nil then return modifier_options end
 
   local out, seen = {}, {}
   local center = card.center
@@ -68,8 +68,8 @@ end
 
 function Coverage.card_has_knowledge(card)
   if not card then return false end
-  if TechModifiers.coverage_options(card) ~= nil then return false end
   if card.layer_override ~= nil then return card.layer_override == Coverage.KNOWLEDGE end
+  if TechModifiers.coverage_options(card) ~= nil then return false end
   local center = card.center
   if card.layer == Coverage.KNOWLEDGE or (center and center.layer == Coverage.KNOWLEDGE) then return true end
   for _, entry in ipairs((center and center.layers) or {}) do

@@ -143,6 +143,7 @@ local FILTERS = {
     { id = "all", label = "All" },
     { id = "common", label = "Common", matches = value_filter("rarity", "common") },
     { id = "uncommon", label = "Uncommon", matches = value_filter("rarity", "uncommon") },
+    { id = "rare", label = "Rare", matches = value_filter("rarity", "rare") },
   },
   tech_modifiers = {
     { id = "all", label = "All" },

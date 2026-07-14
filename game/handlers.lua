@@ -320,16 +320,35 @@ local function selected_consumable()
   for _, c in ipairs(G.consumables.cards) do if c.selected then return c end end
 end
 
+local function restore_hand_selection(pc)
+  if not G.hand then return end
+  local present = {}
+  for _, card in ipairs(G.hand.cards or {}) do present[card] = true; card.selected = false end
+  for _, card in ipairs((pc and pc.prior_selection) or {}) do
+    if present[card] then card.selected = true end
+  end
+  G.hand:align_cards()
+end
+
 G.FUNCS.use_consumable = function()
-  if G.STATE ~= S.SELECTING_HAND then return end
+  if G.STATE ~= S.SELECTING_HAND and G.STATE ~= S.SHOP then return end
+  local return_state = G.STATE
   local c = selected_consumable(); if not c then return end
+  local usable, reason = Consumables.can_use(c, G.GAME)
+  if not usable then return { ok = false, key = c.center_key,
+    reason = reason, consumed = false, changes = {}, generated = {} } end
   if c.center.target then                                      -- B4: two-stage — pick target card(s) first
+    local prior = {}
+    for _, h in ipairs(G.hand.cards) do if h.selected then prior[#prior + 1] = h end end
     for _, h in ipairs(G.hand.cards) do h.selected = false end
-    G.PENDING_CONSUMABLE = { card = c, center = c.center, picks = {} }
+    G.PENDING_CONSUMABLE = { card = c, center = c.center, picks = {}, prior_selection = prior,
+      return_state = return_state }
     StateMachine.set_state(S.TARGET_SELECT)
+    return { ok = true, pending = true, key = c.center_key, consumed = false }
   else                                                          -- B2: instant (cash / auto-target ops)
-    Consumables.use(c, nil, nil)
-    Audio.play("ship"); Juice.pulse("cash")
+    local result = Consumables.use(c, nil, nil)
+    if result.ok then Audio.play("ship"); Juice.pulse("cash") end
+    return result
   end
 end
 
@@ -346,31 +365,59 @@ G.FUNCS.shop_buy_consumable = function() if G.STATE == S.SHOP then Shop.buy_cons
 
 function G.CONSUMABLE_TARGET_PICK(card)                        -- a hand card clicked during TARGET_SELECT
   local pc = G.PENDING_CONSUMABLE
-  if not pc then return end
+  if not (pc and card) then return false end
+  for _, picked in ipairs(pc.picks) do
+    if picked == card or (picked.uid and picked.uid == card.uid) then
+      pc.error = "Choose distinct Tech targets"
+      return false
+    end
+  end
+  local eligible, reason = Consumables.can_target(pc.card, card, G.GAME)
+  if not eligible then
+    pc.error = reason
+    return false
+  end
+  if #pc.picks >= ((pc.center.target and pc.center.target.n) or 1) then
+    pc.error = "All required targets are already selected"
+    return false
+  end
+  pc.error = nil
   pc.picks[#pc.picks + 1] = card
   card.selected = true
   if #pc.picks >= ((pc.center.target and pc.center.target.n) or 1) then
     if pc.center.target and pc.center.target.layer then pc.need_layer = true   -- Conway: now pick the Layer
-    else G.CONSUMABLE_RESOLVE(nil) end
+    else return G.CONSUMABLE_RESOLVE(nil) end
   end
+  return true
 end
 
 function G.CONSUMABLE_RESOLVE(layer)                           -- apply + consume + return to play
   local pc = G.PENDING_CONSUMABLE
-  if not pc then return end
-  for _, t in ipairs(pc.picks) do t.selected = false end
-  Consumables.use(pc.card, pc.picks, { layer = layer })
+  if not pc then return false end
+  local return_state = pc.return_state or S.SELECTING_HAND
+  local result = Consumables.use(pc.card, pc.picks, { layer = layer })
+  if not result.ok then
+    pc.error = result.reason
+    if not pc.need_layer then
+      for _, target in ipairs(pc.picks) do target.selected = false end
+      pc.picks = {}
+    end
+    return result
+  end
+  restore_hand_selection(pc)
   G.PENDING_CONSUMABLE = nil
   Audio.play("ship"); Juice.pulse("cash")
-  StateMachine.set_state(S.SELECTING_HAND)
+  StateMachine.set_state(return_state)
+  return result
 end
 
 function G.CONSUMABLE_CANCEL()                                 -- right-click/Esc — consumable NOT spent
   local pc = G.PENDING_CONSUMABLE
   if not pc then return end
-  for _, t in ipairs(pc.picks) do t.selected = false end
+  local return_state = pc.return_state or S.SELECTING_HAND
+  restore_hand_selection(pc)
   G.PENDING_CONSUMABLE = nil
-  StateMachine.set_state(S.SELECTING_HAND)
+  StateMachine.set_state(return_state)
 end
 
 for _, L in ipairs({ "Frontend", "Backend", "Data", "Infra", "AI" }) do

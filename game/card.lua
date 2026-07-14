@@ -7,6 +7,7 @@ local layers = require("data.layers")
 local Coverage = require("game.coverage")
 local TechLifecycle = require("game.tech_lifecycle")
 local TechModifiers = require("game.tech_modifiers")
+local TechLaws = require("game.tech_laws")
 
 Card = Moveable:extend()
 
@@ -96,6 +97,51 @@ function Card.tech_modifier_rows(subject)
       }
     end
   end
+
+  local marks = type(subject and subject.law_marks) == "table" and subject.law_marks or {}
+  local law_col = (G.C and G.C.arr) or { 0.76, 0.52, 0.94, 1 }
+  local function add_law(key, label, short, desc, state_label, col)
+    out[#out + 1] = {
+      kind = "law", key = key, label = label, short = short or label,
+      desc = desc or "", state_label = state_label, col = col or law_col, prefix = "LW",
+    }
+  end
+  if marks.amdahl_bottleneck then
+    add_law("amdahl_bottleneck", "Amdahl Bottleneck", "AMD",
+      "Every other owned Tech has +10 Users while this remains the bottleneck.", "ACTIVE")
+  end
+  if marks.well_formed then
+    add_law("well_formed", "Well-Formed", "WELL",
+      "Negative Clashes and Substitute pairs touching this Tech are ignored.", "ACTIVE",
+      (G.C and G.C.win) or { 0.42, 0.86, 0.58, 1 })
+  end
+  local wirth = marks.wirth_bloat
+  if type(wirth) == "table" then
+    local pct = math.floor((tonumber(wirth.current_factor) or 0.85) * 100 + 0.5)
+    add_law("wirth_bloat", "Wirth Bloat", "WIR",
+      "Users are 85% when applied, 70% next Ante, then 50% thereafter.", tostring(pct) .. "% USERS",
+      (G.C and G.C.lose) or { 0.92, 0.38, 0.34, 1 })
+  end
+  if subject and (subject.layer_locked or marks.hyrum_layer) then
+    add_law("hyrum_layer", "Hyrum Layer-Lock", "LOCK",
+      "This copied Layer cannot be changed.", "LOCKED",
+      (G.C and G.C.mult) or { 0.94, 0.62, 0.36, 1 })
+  end
+
+  local sticker_rows = {
+    tl_metcalfes_law = { "Metcalfe Users", "MET" },
+    tl_gustafsons_law = { "Gustafson Users", "GUS" },
+    tl_sturgeons_law = { "Sturgeon Users", "STU" },
+  }
+  for _, sticker in ipairs((subject and subject.stickers) or {}) do
+    local spec = sticker_rows[sticker.source]
+    if spec and sticker.field == "users" and sticker.mode == "add" then
+      local amount = math.max(0, tonumber(sticker.amount) or 0)
+      add_law(sticker.source, spec[1], spec[2],
+        "+" .. tostring(amount) .. " persistent Users from " .. spec[1] .. ".",
+        "+" .. tostring(amount) .. " USERS", (G.C and G.C.users) or { 0.42, 0.72, 0.96, 1 })
+    end
+  end
   return out
 end
 
@@ -108,6 +154,9 @@ function Card.tech_layer_label(subject, center)
     for key, value in pairs(subject) do display[key] = value end
     display.center, display.layer = center, subject.layer or center.layer
     subject = display
+  end
+  if subject.layer_override ~= nil then
+    return Coverage.display_layer(subject) or "No Layer"
   end
   local options = TechModifiers.coverage_options(subject)
   if options ~= nil then
@@ -387,6 +436,10 @@ function Card:init(args)
   self.enhancement = args.enhancement or args.enh
   self.seal = args.seal
   self.modifier_state = args.modifier_state and deep_copy(args.modifier_state) or nil
+  self.stickers = args.stickers and deep_copy(args.stickers) or nil
+  self.layer_override = args.layer_override
+  self.layer_locked = args.layer_locked == true
+  self.law_marks = args.law_marks and deep_copy(args.law_marks) or nil
   self.layer = args.center and args.center.layer
   self.base_users = (args.center and args.center.base_users) or 0
   self.ability = {
@@ -402,9 +455,11 @@ function Card:init(args)
 end
 
 -- the "build" contribution of this card (contextual seam for the compatibility graph)
-function Card.tech_users(subject, center, era)
+function Card.tech_users(subject, center, era, game)
   local users, status, before_decay = TechLifecycle.effective_users(subject, center, era)
-  return TechModifiers.users(subject, users), status, before_decay
+  users = TechModifiers.users(subject, users)
+  users = TechLaws.users(subject, users, game or (G and G.GAME))
+  return users, status, before_decay
 end
 
 function Card:get_users(context)
@@ -664,6 +719,16 @@ function Card:draw_body(t)
     bcol, bw = G.C.lose, 3
   end
   Card.draw_tech_face(t, self.center, { card = self, border = bcol, line_w = bw })
+  if G.STATE == G.STATES.TARGET_SELECT and G.PENDING_CONSUMABLE then
+    local eligible = require("game.consumables").can_target(
+      G.PENDING_CONSUMABLE.card, self, G.GAME)
+    if not eligible then
+      lg.setColor(0.04, 0.05, 0.08, 0.62)
+      lg.rectangle("fill", t.x, t.y, t.w, t.h, 6, 6)
+      lg.setColor((G.C.lose or { 0.9, 0.25, 0.25, 1 }))
+      lg.setLineWidth(2); lg.rectangle("line", t.x, t.y, t.w, t.h, 6, 6); lg.setLineWidth(1)
+    end
+  end
 end
 
 return Card

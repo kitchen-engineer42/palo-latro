@@ -9,11 +9,18 @@ local function bare(card)
 end
 local function pk(a, b) if a <= b then return a .. "|" .. b else return b .. "|" .. a end end
 
+local function well_formed(card)
+  return card and type(card.law_marks) == "table" and card.law_marks.well_formed == true
+end
+
 local function pairs_in(played, set)
   local out = {}
   for i = 1, #played do
     for j = i + 1, #played do
-      if set[pk(bare(played[i]), bare(played[j]))] then out[#out + 1] = { played[i], played[j] } end
+      if not well_formed(played[i]) and not well_formed(played[j])
+          and set[pk(bare(played[i]), bare(played[j]))] then
+        out[#out + 1] = { played[i], played[j] }
+      end
     end
   end
   return out

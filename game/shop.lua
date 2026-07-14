@@ -19,9 +19,13 @@ local MarketRules = require("data.gameplay.market_rules")
 local RNG = require("game.rng")
 local Profile = require("game.profile")
 local Guidance = require("game.guidance")
+local Economy = require("game.economy")
+local TechLaws = require("game.tech_laws")
 local random = RNG.fn("shop")
 local pack_random = RNG.fn("packs")
 local pack_shop_random = RNG.fn("pack_shop")
+local law_shop_random = RNG.fn("tech_law_shop")
+local law_pack_random = RNG.fn("tech_law_pack")
 
 local Shop = {}
 
@@ -77,22 +81,23 @@ function Shop.sell_value(center)
   return Pricing.sell_value(center, Shop.price(center))
 end
 
--- Track C B3: Tech Law consumables — 1 offered per shop, ante-scaled price, common-weighted roll.
-function Shop.consumable_price(c) return math.max(2, math.floor(ante_scale() * (c.cost_frac or 0.2) + 0.5)) end
-function Shop.consumable_sell_value(c)
-  local basis = c and c.ability and c.ability.config and c.ability.config._sell_basis
+-- Tech Laws price in the same canonical funding units as blind rewards. This
+-- keeps fixed and bounded Laws meaningful without turning late-Ante offers
+-- into four-digit traps.
+function Shop.consumable_price(c)
   local center = c and (c.center or c)
-  return math.max(1, math.floor((basis or Shop.consumable_price(center)) / 2))
+  if center and center.price_units then
+    return math.max(1, math.floor(center.price_units * Economy.unit(G.GAME, RunState.ANTE_BASE) + 0.5))
+  end
+  return math.max(2, math.floor(ante_scale() * ((center and center.cost_frac) or 0.2) + 0.5))
+end
+function Shop.consumable_sell_value(c)
+  local center = c and (c.center or c)
+  return Pricing.sell_value(c, Shop.consumable_price(center))
 end
 
 local function roll_consumable()
-  local cand = {}
-  for _, c in ipairs(Centers.pool("Consumable")) do
-    local w = (c.rarity == "common") and 3 or 1                  -- Tarot-like: commons are the bread and butter
-    for _ = 1, w do cand[#cand + 1] = c end
-  end
-  if #cand == 0 then return false end
-  return cand[random(#cand)]
+  return TechLaws.roll(law_shop_random) or false
 end
 
 function Shop.buy_consumable()
@@ -101,12 +106,10 @@ function Shop.buy_consumable()
   if not c then return false end
   local cost = Shop.consumable_price(c)
   if (G.GAME.cash or 0) < cost then return false end
-  local entry = require("game.consumables").grant(c.key)         -- respects the slot cap
+  local entry = require("game.consumables").grant(c.key, {
+    source = "shop", sell_basis = cost,
+  })                                                              -- respects the slot cap
   if not entry then return false end                              -- inventory full → don't charge
-  entry.sell_basis = cost
-  for _, card in ipairs((G.consumables and G.consumables.cards) or {}) do
-    if card.ID == entry.card_id then card.ability.config._sell_basis = cost; break end
-  end
   G.GAME.cash = G.GAME.cash - cost
   sh.consumable = false
   Profile.discover(c.key)
@@ -346,11 +349,13 @@ function Shop.open_pack(idx)
     return true
   end
   if definition.family == "tech_law" then
-    local pool = Centers.pool("Consumable")
+    local pool = TechLaws.pool()
     local opts, seen = {}, {}
     while #opts < definition.options and #opts < #pool do
-      local c = pool[pack_random(#pool)]
-      if not seen[c.key] then seen[c.key] = true; opts[#opts + 1] = c end
+      local c = TechLaws.roll(law_pack_random, { exclude = seen })
+      if not c then break end
+      seen[c.key] = true
+      opts[#opts + 1] = c
     end
     sh.packs[idx] = false
     sh.pack_open = { kind = "tech_law", name = definition.name, pack_key = definition.key,
@@ -474,7 +479,9 @@ function Shop.pack_pick(i)
     return true
   end
   if po.kind == "tech_law" then
-    local entry = require("game.consumables").grant(c.key)
+    local entry = require("game.consumables").grant(c.key, {
+      source = "pack", sell_basis = 0,
+    })
     if not entry then return false end
     po.options[i] = false; po.picks_left = po.picks_left - 1
     if po.picks_left <= 0 then sh.pack_open = nil end

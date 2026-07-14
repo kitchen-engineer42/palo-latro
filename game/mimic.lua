@@ -19,6 +19,7 @@ local TechEvaluation = require("game.tech_evaluation")
 local Markets = require("game.markets")
 local CardModel = require("game.card")
 local Leads = require("game.leads")
+local Consumables = require("game.consumables")
 
 local function finite(v)
   return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
@@ -148,6 +149,17 @@ local function card_view(card, area, index)
     out.seal = card.seal
     out.modifier_state = copy_plain(card.modifier_state)
     out.modifiers = modifier_view(card)
+    out.law_marks = copy_plain(card.law_marks)
+    out.layer_locked = card.layer_locked == true
+  elseif center.set == "Consumable" then
+    local usable, reason = Consumables.can_use(card)
+    out.kind = center.kind
+    out.rarity = center.rarity
+    out.description = center.desc
+    out.target = copy_plain(center.target)
+    out.price_units = center.price_units
+    out.usable = usable == true
+    out.unavailable_reason = usable and nil or reason
   end
   return out
 end
@@ -192,6 +204,8 @@ local function master_deck_view()
       modifier_state = copy_plain(entry.modifier_state),
       modifiers = modifier_view(entry),
       layer_override = entry.layer_override,
+      layer_locked = entry.layer_locked == true,
+      law_marks = copy_plain(entry.law_marks),
       stickers = copy_plain(entry.stickers),
     }
   end
@@ -253,7 +267,8 @@ local function shop_view()
           options[#options + 1] = tech_option_view(option, i)
         else
           options[#options + 1] = { index = i, key = option.key, name = option.name,
-            edition = option.edition }
+            edition = option.edition, rarity = option.rarity, description = option.desc,
+            target = copy_plain(option.target), price_units = option.price_units }
         end
       end
     end
@@ -278,6 +293,8 @@ local function shop_view()
     voucher = sh.voucher and { key = sh.voucher.key, name = sh.voucher.name,
       price = Shop.voucher_price(sh.voucher), free = sh.voucher_free == true } or nil,
     consumable = sh.consumable and { key = sh.consumable.key, name = sh.consumable.name,
+      rarity = sh.consumable.rarity, description = sh.consumable.desc,
+      target = copy_plain(sh.consumable.target), price_units = sh.consumable.price_units,
       price = Shop.consumable_price(sh.consumable) } or nil,
     packs = packs,
     pack_open = open,
@@ -308,6 +325,27 @@ local function add_raise_action(out, g)
     add_action(out, "raise", {}, nil,
       ("cash=+$%d; equity=-%d%%; valuation=%d; cash_fraction=%.2f; market_mult=%.2f")
         :format(cash, equity_cost, g.run_best_arr or 0, cash_fraction, raise_cash_mult))
+  end
+end
+
+local function add_consumable_actions(out, g)
+  for i, c in ipairs((G.consumables and G.consumables.cards) or {}) do
+    local action = { consumable_id = card_id(c, "consumable", i) }
+    local usable = Consumables.can_use(c, g)
+    if c.center and c.center.target then
+      local count = c.center.target.n or 1
+      local choices = {}
+      for j, target in ipairs((G.hand and G.hand.cards) or {}) do
+        if Consumables.can_target(c, target, g) then
+          choices[#choices + 1] = card_id(target, "hand", j)
+        end
+      end
+      usable = usable and #choices >= count
+      action.target_ids = { type = "array", count = count, choices = choices }
+      if c.center.target.layer then action.layer = { "Frontend", "Backend", "Data", "Infra", "AI" } end
+    end
+    if usable then add_action(out, "use_consumable", action) end
+    add_action(out, "sell_consumable", { consumable_id = action.consumable_id })
   end
 end
 
@@ -377,25 +415,7 @@ function Mimic.legal_actions()
         Markets.can_free_distill(g) and "Market upgrade: $0 Salary" or "Generic Distill: half Salary and effect") end
       add_action(out, "promote_founder", { founder_id = "string" }, founder_ids)
     end
-    for i, c in ipairs((G.consumables and G.consumables.cards) or {}) do
-      local action = { consumable_id = card_id(c, "consumable", i) }
-      local usable = true
-      if c.center and c.center.target then
-        local count = c.center.target.n or 1
-        usable = #hand_ids >= count
-        action.target_ids = { type = "array", count = count, choices = hand_ids }
-        if c.center.target.layer then action.layer = { "Frontend", "Backend", "Data", "Infra", "AI" } end
-      else
-        for _, op in ipairs((c.center and c.center.ops) or {}) do
-          if (op.k == "destroy" and (op.select == "max_users" or op.select == "min_users"))
-              or (op.k == "mint" and (op.source == "max_users" or op.source == "min_users")) then
-            usable = #hand_ids + #((G.deck and G.deck.cards) or {}) > 0
-          end
-        end
-      end
-      if usable then add_action(out, "use_consumable", action) end
-      add_action(out, "sell_consumable", { consumable_id = action.consumable_id })
-    end
+    add_consumable_actions(out, g)
   elseif state == G.STATES.TARGET_SELECT then
     local pending = G.PENDING_CONSUMABLE
     if pending and pending.need_layer then
@@ -405,7 +425,9 @@ function Mimic.legal_actions()
       local picked, choices = {}, {}
       for _, card in ipairs(pending.picks or {}) do picked[card] = true end
       for i, card in ipairs((G.hand and G.hand.cards) or {}) do
-        if not picked[card] then choices[#choices + 1] = card_id(card, "hand", i) end
+        if not picked[card] and Consumables.can_target(pending.card, card, g) then
+          choices[#choices + 1] = card_id(card, "hand", i)
+        end
       end
       if #choices > 0 then add_action(out, "pick_target", { card_id = "string" }, choices) end
     end
@@ -420,6 +442,7 @@ function Mimic.legal_actions()
     add_raise_action(out, g)
   elseif state == G.STATES.SHOP then
     local sh = g.shop
+    add_consumable_actions(out, g)
     if sh and sh.pack_open then
       if sh.pack_open.kind == "tech_evaluation" then
         local adopt_choices, migrate_choices = {}, {}
@@ -480,9 +503,6 @@ function Mimic.legal_actions()
           if not cfg._unsellable then choices[#choices + 1] = card_id(card, "founder", i) end
         end
         if #choices > 0 then add_action(out, "fire_founder", { founder_id = "string" }, choices) end
-      end
-      for i, card in ipairs((G.consumables and G.consumables.cards) or {}) do
-        add_action(out, "sell_consumable", { consumable_id = card_id(card, "consumable", i) })
       end
       add_action(out, "leave_shop")
     end
@@ -549,6 +569,9 @@ local function public_state()
       maturity_rung = g.maturity_rung, app_levels = copy_plain(g.app_levels), last_fit = g.last_fit,
       last_ai_maturity = copy_plain(g.last_ai_maturity), product_identity = g.product_identity,
       consumable_slots = g.consumable_slots, founder_slots = g.founder_slots,
+      tech_law_state = copy_plain(g.tech_law_state),
+      last_ship_app_key = g.last_ship_app_key,
+      last_ship_coverage = g.last_ship_coverage,
       market_best_fit = g.market_best_fit, last_market_reward = g.last_market_reward,
       skips_run = g.skips_run or 0,
       leads = copy_plain(Leads.view(g)),
@@ -673,6 +696,8 @@ local function dispatch(action)
       select_one(G.consumables.cards, "consumable", action.consumable_id)
       G.FUNCS.sell_consumable(); return true
     end
+    local usable, use_reason = Consumables.can_use(card, g)
+    if not usable then return nil, use_reason or "consumable cannot be used" end
     if card.center and card.center.target then
       local target_count = card.center.target.n or 1
       if card.center.target.layer then
@@ -681,13 +706,21 @@ local function dispatch(action)
       end
       local targets, target_err = select_cards(G.hand.cards, "hand", action.target_ids, target_count, target_count)
       if not targets then return nil, target_err end
+      for _, target in ipairs(targets) do
+        local target_ok, target_reason = Consumables.can_target(card, target, g)
+        if not target_ok then return nil, target_reason or "invalid Tech Law target" end
+      end
       select_one(G.consumables.cards, "consumable", action.consumable_id)
       G.FUNCS.use_consumable()
+      if not G.PENDING_CONSUMABLE then return nil, "consumable targeting failed" end
       for _, target in ipairs(targets) do G.CONSUMABLE_TARGET_PICK(target) end
       if card.center.target.layer then G.CONSUMABLE_RESOLVE(action.layer) end
     else
       select_one(G.consumables.cards, "consumable", action.consumable_id)
       G.FUNCS.use_consumable()
+    end
+    for _, remaining in ipairs(G.consumables.cards) do
+      if remaining == card then return nil, "consumable use failed" end
     end
     return true
   elseif id == "pick_target" then
@@ -698,14 +731,17 @@ local function dispatch(action)
     for _, picked in ipairs(pending.picks or {}) do
       if picked == card then return nil, "target card was already picked" end
     end
+    local target_ok, target_reason = Consumables.can_target(pending.card, card, g)
+    if not target_ok then return nil, target_reason or "invalid Tech Law target" end
     G.CONSUMABLE_TARGET_PICK(card)
     return true
   elseif id == "choose_target_layer" then
     local pending = G.PENDING_CONSUMABLE
     local valid = { Frontend = true, Backend = true, Data = true, Infra = true, AI = true }
     if not (pending and pending.need_layer and valid[action.layer]) then return nil, "target layer is not expected" end
-    G.CONSUMABLE_RESOLVE(action.layer)
-    return true
+    local result = G.CONSUMABLE_RESOLVE(action.layer)
+    return result and result.ok and true or nil,
+      (result and result.reason) or "target layer did not resolve"
   elseif id == "cancel_targeting" then
     if not G.PENDING_CONSUMABLE then return nil, "no consumable is being targeted" end
     G.CONSUMABLE_CANCEL(); return true

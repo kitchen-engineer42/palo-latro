@@ -12,6 +12,8 @@ local Economy = require("game.economy")
 local Bosses = require("game.bosses")
 local RNG = require("game.rng")
 local Leads = require("game.leads")
+local TechLaws = require("game.tech_laws")
+local Consumables = require("game.consumables")
 
 local RunState = {}
 
@@ -66,6 +68,7 @@ function RunState.set_blind(ante, blind_idx)
   g.era = RunState.era_for_ante(g, ante)
   g._bid = (g._bid or 0) + 1                             -- per-blind once-gate id
   if blind_idx == 1 then g._aid = (g._aid or 0) + 1 end  -- per-ante once-gate id (bumps each new ante)
+  if blind_idx == 1 then TechLaws.on_ante_start(g, ante) end
   g.blind = {
     kind = RunState.BLIND_KIND[blind_idx], idx = blind_idx, ante = ante,
     stage = RunState.STAGE_NAME[ante] or ("Ante " .. ante),
@@ -149,7 +152,9 @@ function RunState.new(opts)
     layers_seen_run = {}, app_types_shipped_run = {},     -- run sets (E3)
     run_best_arr = 0,
     master_deck = {}, _deck_uid = 0, _deck_seeded = false, deck_thinned = {},   -- persistent run-owned tech deck (Track C A)
-    consumables = {}, consumable_slots = 2,                                     -- consumable inventory (Track C B)
+    consumables = {}, consumable_slots = 2, consumable_next_id = 0,              -- consumable inventory (Track C B)
+    tech_law_state = {}, last_ship_app_key = nil, last_ship_coverage = 0,
+    last_shipped_app_key = nil, last_shipped_distinct_layers = 0,
     -- maturity / equity seams (E4) -------------------------------------------
     maturity_rung = 1, leverage_mult = 1,
     equity_pct = 100, valuation = 0, ipo_value = 0, automated_founders = {}, raises_taken = 0, last_raise_ante = 0,
@@ -200,6 +205,8 @@ end
 -- serialization boundary (G.GAME is plain data minus transient display; cards rehydrate elsewhere).
 function RunState.serialize()
   local g, out = G.GAME, {}
+  TechLaws.normalize(g)
+  Consumables.normalize(g)
   for k, v in pairs(g) do
     if k ~= "score" and k ~= "this_app" then out[k] = v end
   end
@@ -208,6 +215,7 @@ end
 
 function RunState.deserialize(t)
   G.GAME = t
+  G.GAME.master_deck = G.GAME.master_deck or {}
   G.GAME.lead_offers = G.GAME.lead_offers or {}
   G.GAME.lead_queue = G.GAME.lead_queue or {}
   G.GAME.lead_history = G.GAME.lead_history or {}
@@ -220,6 +228,9 @@ function RunState.deserialize(t)
     G.GAME.blind.lead_offer = lead
   end
   G.GAME.score = { chips = 0, mult = 0, arr = 0 }
+  TechLaws.normalize(G.GAME)
+  Consumables.normalize(G.GAME)
+  if G.consumables then Consumables.rehydrate(G.GAME) end
 end
 
 return RunState

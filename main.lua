@@ -101,13 +101,25 @@ function love.load()
         PreviewShop.open_pack(1)
       end
     end  -- jump to shop; optionally start its pack ceremony for screenshot review
-    if os.getenv("PL_LAWS") and G.consumables then                -- dev: grant Tech Laws (consumable-GUI testing)
+    local law_preview = os.getenv("PL_LAWS")
+    if law_preview and G.consumables then                          -- dev: grant comma-separated Laws for GUI review
       local C = require("game.consumables")
-      C.grant("tl_seed_round"); C.grant("tl_moores_law")
+      if law_preview == "1" then law_preview = "tl_seed_round,tl_moores_law" end
+      for key in law_preview:gmatch("[^,]+") do
+        key = key:match("^%s*(.-)%s*$")
+        C.grant(key, { source = "preview", sell_basis = 0, discover = false })
+      end
+      if os.getenv("PL_LAW_TARGET") and G.consumables.cards[1] then
+        G.consumables.cards[1].selected = true
+        G.FUNCS.use_consumable()
+      end
     end
   end
-  if os.getenv("PL_COLLECTION") then                          -- dev: open the read-only catalog for visual checks
-    require("game.collection").reset()
+  local collection_preview = os.getenv("PL_COLLECTION")
+  if collection_preview then                                  -- dev: open a named read-only catalog for visual checks
+    local Collection = require("game.collection")
+    Collection.reset()
+    if collection_preview ~= "1" then Collection.select_category(collection_preview) end
     StateMachine.set_state(G.STATES.COLLECTION)
   end
   local ov = os.getenv("PL_OVERLAY")                           -- dev: force an overlay open (screenshot checks)

@@ -1,140 +1,417 @@
--- game/consumables.lua — the Tech Law (Tarot) consumable engine (Track C B). Applies a Consumable center's
--- declarative `ops` against the persistent master_deck + economy. The 5 MVP ops:
---   sticker  — append a persistent card-stat modifier (field=users|rev, mode=add|mul|override) to a target
---   cash     — grant Cash (clamped to floor/cap)
---   destroy  — remove a deck card (player-picked or live-deck extremum) + optional Cash refund
---   mint     — append a fresh copy of a seed card (extremum/player) to the deck
---   set_layer— override a target card's Layer for the run
--- Targeted ops resolve against the LIVE card (by uid) AND write the master_deck entry, so the change both
--- takes effect this blind and persists across blinds. NOTE: the interactive USE_CARD/TARGET_SELECT input flow,
--- shop acquisition, and sell are NOT here yet (they need a GUI playtest) — see the runtime contract
+-- Transactional consumable inventory and Tech Law resolution.  Preflight is
+-- pure: an invalid/no-op Law never mutates state, advances RNG, or gets spent.
+
 local Centers = require("game.centers")
 local Coverage = require("game.coverage")
+local TechLaws = require("game.tech_laws")
 
 local Consumables = {}
 
+local function copy(value, seen)
+  if type(value) ~= "table" then return value end
+  seen = seen or {}
+  if seen[value] then return seen[value] end
+  local out = {}; seen[value] = out
+  for key, item in pairs(value) do out[copy(key, seen)] = copy(item, seen) end
+  return out
+end
+
+local function finite(value)
+  return type(value) == "number" and value == value
+    and value ~= math.huge and value ~= -math.huge
+end
+
+local function game_of(game) return game or (G and G.GAME) end
+
+local function center_of(value)
+  if type(value) == "string" then return Centers.get(value) end
+  if type(value) ~= "table" then return nil end
+  return value.center or (value.key and Centers.get(value.key))
+    or (value.center_key and Centers.get(value.center_key)) or value
+end
+
+local function entry_by_uid(game, uid)
+  for _, entry in ipairs((game and game.master_deck) or {}) do if entry.uid == uid then return entry end end
+end
+
 local function live_by_uid(uid)
-  if not uid then return nil end
+  if not (G and uid) then return nil end
   for _, area in ipairs({ G.deck, G.hand, G.play }) do
-    if area and area.cards then
-      for _, c in ipairs(area.cards) do if c.uid == uid then return c end end
-    end
+    for _, card in ipairs((area and area.cards) or {}) do if card.uid == uid then return card end end
   end
 end
 
-local function master_entry(uid)
-  for _, e in ipairs((G.GAME and G.GAME.master_deck) or {}) do if e.uid == uid then return e end end
+local function target_entry(target, game)
+  local entry = target and target.uid and entry_by_uid(game, target.uid)
+  local center = entry and Centers.get(entry.center_key)
+  if not (entry and center and center.set == "TechCard") then return nil end
+  return entry, center
 end
 
-local function ctx_users(c) return (c.get_users and c:get_users()) or c.base_users or 0 end
+local function ctx_users(card, game)
+  if card.get_users then return card:get_users(game and game.era) end
+  local entry, center = target_entry(card, game)
+  if entry then return require("game.card").tech_users(entry, center, game and game.era, game) end
+  return card.base_users or 0
+end
 
--- live deck+hand pool, by contextual Users extremum
-local function pick_extremum(which)
-  local t
-  for _, area in ipairs({ G.hand, G.deck }) do
-    if area and area.cards then
-      for _, c in ipairs(area.cards) do
-        if not t then t = c
-        elseif which == "max_users" and ctx_users(c) > ctx_users(t) then t = c
-        elseif which == "min_users" and ctx_users(c) < ctx_users(t) then t = c end
+local function ordered_live(which, game)
+  local seen, out = {}, {}
+  for _, area in ipairs({ G and G.deck, G and G.hand }) do
+    for _, card in ipairs((area and area.cards) or {}) do
+      if card.uid and not seen[card.uid] and target_entry(card, game) then
+        seen[card.uid], out[#out + 1] = true, card
       end
     end
   end
-  return t
+  table.sort(out, function(a, b)
+    local av, bv = ctx_users(a, game), ctx_users(b, game)
+    if av ~= bv then
+      if which == "max_users" then return av > bv end
+      return av < bv
+    end
+    local abase = tonumber(a.base_users) or (a.center and a.center.base_users) or 0
+    local bbase = tonumber(b.base_users) or (b.center and b.center.base_users) or 0
+    if abase ~= bbase then
+      if which == "max_users" then return abase > bbase end
+      return abase < bbase
+    end
+    if (a.uid or math.huge) ~= (b.uid or math.huge) then return (a.uid or math.huge) < (b.uid or math.huge) end
+    return tostring(a.center_key or "") < tostring(b.center_key or "")
+  end)
+  return out
 end
 
-local function add_sticker(c, st)
-  local e = c.uid and master_entry(c.uid)
-  if e then e.stickers = e.stickers or {}; e.stickers[#e.stickers + 1] = st end   -- persist
-  c.stickers = c.stickers or {}; c.stickers[#c.stickers + 1] = st                 -- live (this blind)
+local function funding_unit(game)
+  local RunState = require("game.runstate")
+  return require("game.economy").unit(game, RunState.ANTE_BASE)
 end
 
--- apply a consumable. `targets` = list of resolved target Cards (for player-pick ops); `opts.layer` for set_layer.
-function Consumables.apply(center, targets, opts)
-  local Round = require("game.round")   -- deferred (avoid load cycle): master_add/master_remove_uid
-  targets = targets or {}
+local function failed(center, reason)
+  return { ok = false, key = center and center.key, reason = reason,
+    consumed = false, changes = {}, generated = {} }
+end
+
+local function sync_stickers(entry)
+  for _, area in ipairs({ G and G.deck, G and G.hand, G and G.play }) do
+    for _, card in ipairs((area and area.cards) or {}) do
+      if card.uid == entry.uid then
+        card.stickers = entry.stickers and copy(entry.stickers) or nil
+        card.layer_override = entry.layer_override
+      end
+    end
+  end
+end
+
+function Consumables.can_target(card_or_center, target, game)
+  local center = center_of(card_or_center)
+  game = game_of(game)
+  if not (center and center.target) then return false, "This consumable does not take a target" end
+  local entry = target_entry(target, game)
+  if not entry then return false, "Choose an owned Tech card" end
+  if TechLaws.handles(center) then return TechLaws.can_target(center, target, game) end
+  if center.key == "tl_conways_law" and entry.layer_locked then
+    return false, "This Tech's Layer is locked"
+  end
+  return true
+end
+
+local function legacy_preflight(center, targets, opts)
   opts = opts or {}
-  local g = G.GAME
-  for _, op in ipairs(center.ops or {}) do
-    if op.k == "cash" then
-      local v = op.amount or 0
-      if op.floor then v = math.max(op.floor, v) end
-      if op.cap then v = math.min(op.cap, v) end
-      g.cash = (g.cash or 0) + v
-
-    elseif op.k == "sticker" then
-      local c = targets[1]
-      if c then add_sticker(c, { field = op.field, mode = op.mode, amount = op.amount, label = op.label }) end
-
-    elseif op.k == "set_layer" then
-      local c, L = targets[1], opts.layer or op.layer
-      if c and Coverage.is_core(L) then
-        L = Coverage.normalize_layer(L)
-        local e = c.uid and master_entry(c.uid); if e then e.layer_override = L end
-        c.layer_override = L
-      end
-
-    elseif op.k == "destroy" then
-      local c = (op.select == "max_users" or op.select == "min_users") and pick_extremum(op.select) or targets[1]
-      if c then
-        local refund = 0
-        if op.refund then
-          refund = op.refund.amount or math.floor(ctx_users(c) * (op.refund.frac or 0))
-          if op.refund.floor then refund = math.max(op.refund.floor, refund) end
-          if op.refund.cap then refund = math.min(op.refund.cap, refund) end
-        end
-        Round.master_remove_uid(c.uid)
-        if c.area then c.area:remove_card(c, true) end
-        if c.remove then c:remove() end
-        if refund > 0 then g.cash = (g.cash or 0) + refund end
-      end
-
-    elseif op.k == "mint" then
-      local seed = (op.source == "max_users" or op.source == "min_users") and pick_extremum(op.source) or targets[1]
-      local key = seed and (seed.center_key or (seed.center and seed.center.key))
-      if key then Round.master_add(key, { source = "tech_law" }) end -- fresh copy, no editions/seals/stickers
+  local game = game_of(opts.game)
+  if not (center and game and center.kind == "TechLaw") then return nil, "Invalid Tech Law" end
+  if type(center.ops) ~= "table" or #center.ops == 0 then return nil, "Tech Law has no operations" end
+  targets = targets or {}
+  if center.target then
+    local needed = center.target.n or 1
+    if #targets ~= needed then return nil, "Select exactly " .. tostring(needed) .. " eligible Tech target(s)" end
+    local seen = {}
+    for i = 1, needed do
+      local ok, reason = Consumables.can_target(center, targets[i], game)
+      if not ok then return nil, reason end
+      if seen[targets[i].uid] then return nil, "Choose distinct Tech targets" end
+      seen[targets[i].uid] = true
     end
   end
+
+  local plan = { center = center, key = center.key, game = game, targets = targets, opts = opts, ops = {} }
+  for _, op in ipairs(center.ops) do
+    if op.k == "cash" then
+      local amount = op.units and op.units * funding_unit(game) or op.amount or 0
+      if op.floor then amount = math.max(op.floor, amount) end
+      if op.cap then amount = math.min(op.cap, amount) end
+      if op.cap_units then amount = math.min(amount, op.cap_units * funding_unit(game)) end
+      if not finite(amount) or amount == 0 then return nil, "Cash operation has no effect" end
+      plan.ops[#plan.ops + 1] = { k = "cash", amount = amount }
+    elseif op.k == "sticker" then
+      local entry = target_entry(targets[1], game)
+      if not entry or not ({ users = true, rev = true })[op.field]
+          or not ({ add = true, mul = true, override = true })[op.mode]
+          or not finite(op.amount) then return nil, "Invalid Tech sticker operation" end
+      plan.ops[#plan.ops + 1] = { k = "sticker", uid = entry.uid, sticker = {
+        field = op.field, mode = op.mode, amount = op.amount, label = op.label, source = center.key,
+      } }
+    elseif op.k == "set_layer" then
+      local entry, target_center = target_entry(targets[1], game)
+      local layer = opts.layer or op.layer
+      if not (entry and Coverage.is_core(layer)) then return nil, "Choose a core Layer" end
+      layer = Coverage.normalize_layer(layer)
+      if entry.layer_locked then return nil, "This Tech's Layer is locked" end
+      local current = copy(entry)
+      current.center, current.layer = target_center, target_center.layer
+      local current_options = Coverage.card_options(current)
+      if #current_options == 1 and current_options[1] == layer then
+        return nil, "That Tech already uses this Layer"
+      end
+      plan.ops[#plan.ops + 1] = { k = "set_layer", uid = entry.uid, layer = layer }
+    elseif op.k == "destroy" then
+      local card = (op.select == "max_users" or op.select == "min_users")
+        and ordered_live(op.select, game)[1] or targets[1]
+      local entry = card and target_entry(card, game)
+      if not entry then return nil, "No eligible Tech can be destroyed" end
+      local refund = 0
+      if op.refund then
+        refund = op.refund.amount or math.floor(ctx_users(card, game) * (op.refund.frac or 0))
+        if op.refund.floor then refund = math.max(op.refund.floor, refund) end
+        if op.refund.cap then refund = math.min(op.refund.cap, refund) end
+      end
+      plan.ops[#plan.ops + 1] = { k = "destroy", uid = entry.uid, refund = math.max(0, refund) }
+    elseif op.k == "mint" then
+      local card, entry, seed, reason
+      if op.source == "max_users" or op.source == "min_users" then
+        for _, candidate in ipairs(ordered_live(op.source, game)) do
+          local candidate_entry, candidate_center = target_entry(candidate, game)
+          if candidate_entry and candidate_center and not candidate_center.signature then
+            local allowed, why = require("game.deck").candidate_allowed(candidate_center, game.market)
+            if allowed then
+              card, entry, seed = candidate, candidate_entry, candidate_center
+              break
+            end
+            reason = reason or why
+          end
+        end
+      else
+        card = targets[1]
+        entry, seed = card and target_entry(card, game)
+        if seed and seed.signature then return nil, "Signature Tech cannot be cloned" end
+        if seed then
+          local allowed, why = require("game.deck").candidate_allowed(seed, game.market)
+          if not allowed then return nil, why or "That Tech cannot be cloned in this Market" end
+        end
+      end
+      if not (entry and seed) then return nil, reason or "No eligible Tech can be cloned" end
+      plan.ops[#plan.ops + 1] = { k = "mint", center_key = entry.center_key }
+    else
+      return nil, "Unknown Tech Law operation " .. tostring(op.k)
+    end
+  end
+  return plan
 end
 
--- inventory: plain-data mirror in G.GAME.consumables + a live Card in the G.consumables area (Track C B1)
-function Consumables.grant(key)
-  local center = Centers.get(key)
-  if not (center and G.GAME) then return nil end
-  G.GAME.consumables = G.GAME.consumables or {}
-  if #G.GAME.consumables >= (G.GAME.consumable_slots or 2) then return nil end   -- slot cap
-  local entry = { key = key }
-  G.GAME.consumables[#G.GAME.consumables + 1] = entry
-  if G.consumables and Card then                                                 -- live card (GUI contexts)
-    local c = Card({ center = center, T = { x = G.consumables.T.x, y = G.consumables.T.y } })
-    G.consumables:emplace(c)
-    entry.card_id = c.ID
+local function legacy_apply(plan)
+  local game = plan.game
+  local result = { ok = true, key = plan.key, consumed = false, changes = {}, generated = {} }
+  local Round = require("game.round")
+  for _, op in ipairs(plan.ops) do
+    if op.k == "cash" then
+      game.cash = (game.cash or 0) + op.amount
+      result.cash = (result.cash or 0) + op.amount
+      result.changes[#result.changes + 1] = { kind = "cash", amount = op.amount }
+    elseif op.k == "sticker" then
+      local entry = entry_by_uid(game, op.uid)
+      entry.stickers = entry.stickers or {}
+      entry.stickers[#entry.stickers + 1] = copy(op.sticker)
+      sync_stickers(entry)
+      result.changes[#result.changes + 1] = { kind = "sticker", uid = op.uid,
+        field = op.sticker.field, mode = op.sticker.mode, amount = op.sticker.amount }
+    elseif op.k == "set_layer" then
+      local entry = entry_by_uid(game, op.uid)
+      entry.layer_override = op.layer
+      sync_stickers(entry)
+      result.changes[#result.changes + 1] = { kind = "set_layer", uid = op.uid, layer = op.layer }
+    elseif op.k == "destroy" then
+      Round.master_remove_uid(op.uid)
+      local card = live_by_uid(op.uid)
+      if card and card.area then card.area:remove_card(card, true); if card.remove then card:remove() end end
+      if op.refund > 0 then game.cash = (game.cash or 0) + op.refund end
+      result.changes[#result.changes + 1] = { kind = "destroy", uid = op.uid, refund = op.refund }
+    elseif op.k == "mint" then
+      local entry, reason = Round.master_add(op.center_key, { source = "tech_law" }, game)
+      if not entry then return failed(plan.center, reason or "Tech clone failed") end
+      result.changes[#result.changes + 1] = { kind = "mint", uid = entry.uid, key = entry.center_key }
+    end
   end
+  if #result.changes == 0 then return failed(plan.center, "Tech Law produced no change") end
+  return result
+end
+
+function Consumables.apply(center_or_card, targets, opts)
+  opts = opts or {}
+  local center = center_of(center_or_card)
+  if not center then return failed(nil, "Unknown consumable") end
+  opts.game = game_of(opts.game)
+  opts.card = opts.card or (type(center_or_card) == "table" and center_or_card.center and center_or_card)
+  if TechLaws.handles(center) then
+    local plan, reason = TechLaws.preflight(center, targets, opts)
+    if not plan then return failed(center, reason) end
+    return TechLaws.apply(center, targets, opts, plan)
+  end
+  local plan, reason = legacy_preflight(center, targets, opts)
+  if not plan then return failed(center, reason) end
+  return legacy_apply(plan)
+end
+
+function Consumables.can_use(card_or_center, game)
+  local center = center_of(card_or_center)
+  game = game_of(game)
+  if not (center and game) then return false, "Unknown consumable" end
+  if TechLaws.handles(center) then
+    return TechLaws.can_use(card_or_center, game, nil, { game = game,
+      card = type(card_or_center) == "table" and card_or_center.center and card_or_center or nil })
+  end
+  local targets
+  if center.target then
+    targets = {}
+    for _, candidate in ipairs((G and G.hand and G.hand.cards) or {}) do
+      if Consumables.can_target(center, candidate, game) then
+        targets[#targets + 1] = candidate
+        if #targets >= (center.target.n or 1) then break end
+      end
+    end
+  end
+  local plan, reason = legacy_preflight(center, targets, { game = game })
+  if not plan and center.target and center.target.layer and targets and targets[1] then
+    for _, layer in ipairs({ "Frontend", "Backend", "Data", "Infra", "AI" }) do
+      plan, reason = legacy_preflight(center, targets, { game = game, layer = layer })
+      if plan then break end
+    end
+  end
+  return plan ~= nil, reason
+end
+
+local function next_instance_id(game)
+  game.consumable_next_id = (game.consumable_next_id or 0) + 1
+  return game.consumable_next_id
+end
+
+local function make_live(entry)
+  if not (G and G.consumables and Card) then return nil end
+  local center = Centers.get(entry.key)
+  if not center then return nil end
+  local card = Card({ center = center, T = { x = G.consumables.T.x, y = G.consumables.T.y } })
+  card.consumable_instance_id = entry.instance_id
+  card.ability.config._consumable_id = entry.instance_id
+  card.ability.config._sell_basis = entry.sell_basis or 0
+  card.consumable_source = entry.source
+  G.consumables:emplace(card)
+  return card
+end
+
+function Consumables.normalize(game)
+  game = game_of(game)
+  if not game then return nil end
+  game.consumables = type(game.consumables) == "table" and game.consumables or {}
+  game.consumable_slots = math.max(0, math.floor(tonumber(game.consumable_slots) or 2))
+  local next_id, seen, normalized = math.max(0, math.floor(tonumber(game.consumable_next_id) or 0)), {}, {}
+  for _, entry in ipairs(game.consumables) do
+    if #normalized >= game.consumable_slots then break end
+    local center = type(entry) == "table" and Centers.get(entry.key)
+    if center and center.set == "Consumable" then
+      local id = math.floor(tonumber(entry.instance_id) or 0)
+      if id < 1 or seen[id] then
+        repeat next_id = next_id + 1 until not seen[next_id]
+        id = next_id
+      end
+      next_id, seen[id] = math.max(next_id, id), true
+      normalized[#normalized + 1] = {
+        instance_id = id, key = center.key,
+        source = type(entry.source) == "string" and entry.source or "legacy",
+        sell_basis = math.max(0, finite(entry.sell_basis) and entry.sell_basis or 0),
+      }
+    end
+  end
+  game.consumables, game.consumable_next_id = normalized, next_id
+  return normalized
+end
+
+function Consumables.rehydrate(game)
+  game = game_of(game)
+  if not (game and G and G.consumables) then return false end
+  Consumables.normalize(game)
+  if G.consumables.config then G.consumables.config.card_limit = game.consumable_slots end
+  local live, wanted, used = {}, {}, {}
+  for _, entry in ipairs(game.consumables) do wanted[entry.instance_id] = entry end
+  for i = #(G.consumables.cards or {}), 1, -1 do
+    local card = G.consumables.cards[i]
+    local id = card.consumable_instance_id
+      or (card.ability and card.ability.config and card.ability.config._consumable_id)
+    local entry = id and wanted[id]
+    if not (entry and not used[id] and card.center_key == entry.key) then
+      G.consumables:remove_card(card, true)
+      if card.remove then card:remove() end
+    else
+      used[id], live[id] = true, card
+    end
+  end
+  for _, entry in ipairs(game.consumables) do
+    local card = live[entry.instance_id]
+    if card then
+      card.consumable_instance_id = entry.instance_id
+      card.ability.config._consumable_id = entry.instance_id
+      card.ability.config._sell_basis = entry.sell_basis
+    else make_live(entry) end
+  end
+  return true
+end
+
+function Consumables.grant(key, opts)
+  opts = opts or {}
+  local center, game = Centers.get(key), game_of(opts.game)
+  if not (center and center.set == "Consumable" and game) then return nil end
+  Consumables.normalize(game)
+  if #game.consumables >= (game.consumable_slots or 2) then return nil end
+  local entry = {
+    instance_id = next_instance_id(game), key = key,
+    source = opts.source or "generated",
+    sell_basis = math.max(0, finite(opts.sell_basis) and opts.sell_basis or 0),
+  }
+  game.consumables[#game.consumables + 1] = entry
+  local card = make_live(entry)
+  entry.card_id = card and card.ID or nil -- compatibility-only; normalize strips it before persistence
+  if opts.discover ~= false then require("game.profile").discover(key) end
   return entry
 end
 
-function Consumables.remove(card)                       -- drop from the inventory mirror + the live area
-  local g = G.GAME
-  if g and g.consumables then
-    for i = #g.consumables, 1, -1 do
-      local e = g.consumables[i]
-      if (card.ID and e.card_id == card.ID) or (not e.card_id and e.key == card.center_key) then
-        table.remove(g.consumables, i); break
-      end
+function Consumables.remove(card)
+  local game = game_of()
+  if not (card and game) then return false end
+  local id = card.consumable_instance_id
+    or (card.ability and card.ability.config and card.ability.config._consumable_id)
+  local removed = false
+  for i = #(game.consumables or {}), 1, -1 do
+    local entry = game.consumables[i]
+    if (id and entry.instance_id == id) or (not id and entry.key == card.center_key) then
+      table.remove(game.consumables, i); removed = true; break
     end
   end
   if card.area then card.area:remove_card(card, true) end
   if card.remove then card:remove() end
+  return removed
 end
 
--- the full USE path (B2/B4): fire the founder hook, apply, consume. `targets`/`opts` as in apply().
 function Consumables.use(card, targets, opts)
-  if not (card and card.center) then return false end
+  opts = opts or {}
+  if not (card and card.center) then return failed(nil, "No consumable selected") end
+  opts.game, opts.card = game_of(opts.game), card
+  local result = Consumables.apply(card, targets, opts)
+  if not result.ok then return result end
   local Scoring = require("game.scoring")
-  if Scoring.fire_hook then Scoring.fire_hook("use_consumable", { consumable = card.center, targets = targets }) end
-  Consumables.apply(card.center, targets, opts)
+  if Scoring.fire_hook then
+    Scoring.fire_hook("use_consumable", { consumable = card.center, targets = targets, outcome = result })
+  end
   Consumables.remove(card)
-  return true
+  result.consumed = true
+  return TechLaws.after_consumed(card.center, result, opts)
 end
 
 return Consumables

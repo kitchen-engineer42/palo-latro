@@ -39,6 +39,15 @@ local PER_SOURCES = {
   salary_due=true,
 }
 
+local TECH_LAW_RARITIES = { common=true, uncommon=true, rare=true }
+local TECH_LAW_PRICE_UNITS = { common=1, uncommon=2, rare=3 }
+local TECH_LAW_OPS = {
+  sticker=true, cash=true, destroy=true, mint=true, set_layer=true,
+  set_enhancement=true, cash_match=true, mass_sticker=true,
+  bottleneck=true, wirth_bloat=true, playbook_level=true, harden=true,
+  create_consumable=true, well_formed=true, copy_layer=true, cull=true,
+}
+
 local function report()
   return { errors = {}, aliases = {}, counts = {} }
 end
@@ -55,6 +64,247 @@ local function dense_array(value)
   local n = #value
   for key in pairs(value) do if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > n then return false end end
   return true
+end
+
+local function only_fields(value, allowed, path, r)
+  if type(value) ~= "table" then return end
+  for key in pairs(value) do
+    if not allowed[key] then add(r, path .. "." .. tostring(key), "unknown field") end
+  end
+end
+
+local function required_number(value, path, r, minimum, maximum)
+  if not number(value) then add(r, path, "must be a finite number"); return false end
+  -- Cross-field bounds may themselves be malformed. Their own validator will
+  -- report that error; this helper must still fail closed without crashing.
+  if minimum ~= nil and not number(minimum) then minimum = nil end
+  if maximum ~= nil and not number(maximum) then maximum = nil end
+  if minimum ~= nil and value < minimum then add(r, path, "must be at least " .. tostring(minimum)); return false end
+  if maximum ~= nil and value > maximum then add(r, path, "must be at most " .. tostring(maximum)); return false end
+  return true
+end
+
+local function required_integer(value, path, r, minimum, maximum)
+  if not required_number(value, path, r, minimum, maximum) then return false end
+  if value % 1 ~= 0 then add(r, path, "must be an integer"); return false end
+  return true
+end
+
+local function required_boolean(value, path, r)
+  if type(value) ~= "boolean" then add(r, path, "must be boolean"); return false end
+  return true
+end
+
+local function validate_tech_law_refund(refund, path, r)
+  if type(refund) ~= "table" then add(r, path, "must be a table"); return end
+  only_fields(refund, { amount=true, frac=true, floor=true, cap=true }, path, r)
+  if refund.amount == nil and refund.frac == nil then add(r, path, "requires amount or frac") end
+  if refund.amount ~= nil then required_number(refund.amount, path .. ".amount", r, 0) end
+  if refund.frac ~= nil then required_number(refund.frac, path .. ".frac", r, 0, 1) end
+  if refund.floor ~= nil then required_number(refund.floor, path .. ".floor", r, 0) end
+  if refund.cap ~= nil then
+    if not required_number(refund.cap, path .. ".cap", r, 0) then return end
+    if number(refund.amount) and refund.amount > refund.cap then add(r, path .. ".amount", "must not exceed cap") end
+    if number(refund.floor) and refund.floor > refund.cap then add(r, path .. ".floor", "must not exceed cap") end
+  elseif refund.amount ~= nil then
+    add(r, path .. ".cap", "is required for a fixed refund")
+  end
+end
+
+local function validate_tech_law_op(op, path, r)
+  if type(op) ~= "table" then add(r, path, "operation must be a table"); return false end
+  if not text(op.k) or not TECH_LAW_OPS[op.k] then
+    add(r, path .. ".k", "unknown Tech Law operation " .. tostring(op.k)); return false
+  end
+  local target_required = false
+  if op.k == "sticker" then
+    target_required = true
+    only_fields(op, { k=true, field=true, mode=true, amount=true, label=true }, path, r)
+    if not ({ users=true, rev=true })[op.field] then add(r, path .. ".field", "must be users or rev") end
+    if not ({ add=true, mul=true, override=true })[op.mode] then add(r, path .. ".mode", "must be add, mul, or override") end
+    required_number(op.amount, path .. ".amount", r, 0)
+    if op.label ~= nil and not text(op.label) then add(r, path .. ".label", "must be non-empty text") end
+  elseif op.k == "cash" then
+    only_fields(op, { k=true, amount=true, floor=true, cap=true, units=true, cap_units=true }, path, r)
+    local fixed = op.amount ~= nil or op.floor ~= nil or op.cap ~= nil
+    local scaled = op.units ~= nil or op.cap_units ~= nil
+    if fixed and scaled then add(r, path, "fixed Cash and funding-unit Cash are mutually exclusive") end
+    if not fixed and not scaled then add(r, path, "requires a bounded Cash encoding")
+    elseif fixed then
+      if required_number(op.amount, path .. ".amount", r, 0)
+          and required_number(op.cap, path .. ".cap", r, 0)
+          and op.amount > op.cap then add(r, path .. ".amount", "must not exceed cap") end
+      if op.floor ~= nil then required_number(op.floor, path .. ".floor", r, 0, op.cap) end
+    elseif scaled then
+      if required_integer(op.units, path .. ".units", r, 1, 8)
+          and required_integer(op.cap_units, path .. ".cap_units", r, 1, 8)
+          and op.units > op.cap_units then add(r, path .. ".units", "must not exceed cap_units") end
+    end
+  elseif op.k == "destroy" then
+    only_fields(op, { k=true, select=true, refund=true }, path, r)
+    if not ({ player=true, max_users=true, min_users=true })[op.select] then
+      add(r, path .. ".select", "unknown destroy selector")
+    end
+    target_required = op.select == "player"
+    validate_tech_law_refund(op.refund, path .. ".refund", r)
+  elseif op.k == "mint" then
+    only_fields(op, { k=true, source=true }, path, r)
+    if not ({ player=true, max_users=true, min_users=true })[op.source] then add(r, path .. ".source", "unknown mint source") end
+    target_required = op.source == "player"
+  elseif op.k == "set_layer" then
+    only_fields(op, { k=true }, path, r)
+    target_required = true
+  elseif op.k == "set_enhancement" then
+    only_fields(op, { k=true, key=true, require_empty=true }, path, r)
+    if op.key ~= "polyglot" then add(r, path .. ".key", "must name the Polyglot enhancement") end
+    if op.require_empty ~= true then add(r, path .. ".require_empty", "must be true") end
+    target_required = true
+  elseif op.k == "cash_match" then
+    only_fields(op, { k=true, fraction=true, cap_units=true, require_positive=true }, path, r)
+    required_number(op.fraction, path .. ".fraction", r, 0, 1)
+    required_integer(op.cap_units, path .. ".cap_units", r, 1, 8)
+    if op.require_positive ~= true then add(r, path .. ".require_positive", "must be true") end
+  elseif op.k == "mass_sticker" then
+    only_fields(op, { k=true, field=true, mode=true, selector=true, layers=true, amount=true,
+      amount_per_layer_pair=true, source=true, per_card_label=true, per_card_cap=true }, path, r)
+    if op.field ~= "users" then add(r, path .. ".field", "mass stickers must modify Users") end
+    if op.mode ~= "add" then add(r, path .. ".mode", "mass stickers must be additive") end
+    if not ({ all=true, layer_any=true })[op.selector] then add(r, path .. ".selector", "unknown mass selector") end
+    if op.selector == "layer_any" then
+      if not dense_array(op.layers) or #op.layers == 0 then add(r, path .. ".layers", "must be a non-empty array")
+      else
+        local seen = {}
+        for i, layer in ipairs(op.layers) do
+          if not LAYERS[layer] or layer == "Knowledge" then add(r, path .. ".layers[" .. i .. "]", "must be a core Layer") end
+          if seen[layer] then add(r, path .. ".layers[" .. i .. "]", "duplicates " .. tostring(layer)) end
+          seen[layer] = true
+        end
+      end
+    elseif op.layers ~= nil then add(r, path .. ".layers", "is only valid for layer_any") end
+    if op.amount ~= nil then
+      required_number(op.amount, path .. ".amount", r, 0)
+      if op.amount_per_layer_pair ~= nil or op.source ~= nil then add(r, path, "fixed amount conflicts with derived amount") end
+    else
+      required_number(op.amount_per_layer_pair, path .. ".amount_per_layer_pair", r, 0)
+      if op.source ~= "last_ship_coverage" then add(r, path .. ".source", "must be last_ship_coverage") end
+    end
+    if not text(op.per_card_label) then add(r, path .. ".per_card_label", "is required") end
+    required_number(op.per_card_cap, path .. ".per_card_cap", r, 0)
+  elseif op.k == "bottleneck" then
+    only_fields(op, { k=true, select=true, other_users_add=true, unique=true }, path, r)
+    if op.select ~= "min_users" then add(r, path .. ".select", "must be min_users") end
+    required_number(op.other_users_add, path .. ".other_users_add", r, 0)
+    if op.unique ~= true then add(r, path .. ".unique", "must be true") end
+  elseif op.k == "wirth_bloat" then
+    only_fields(op, { k=true, cash_units=true, factors=true, unique=true }, path, r)
+    required_integer(op.cash_units, path .. ".cash_units", r, 1, 4)
+    if not dense_array(op.factors) or #op.factors ~= 3 then add(r, path .. ".factors", "must contain exactly three factors")
+    else
+      local previous = 1
+      for i, factor in ipairs(op.factors) do
+        if required_number(factor, path .. ".factors[" .. i .. "]", r, 0.25, 1) and factor >= previous then
+          add(r, path .. ".factors[" .. i .. "]", "must strictly decrease")
+        end
+        previous = number(factor) and factor or previous
+      end
+    end
+    if op.unique ~= true then add(r, path .. ".unique", "must be true") end
+    target_required = true
+  elseif op.k == "playbook_level" then
+    only_fields(op, { k=true, app_source=true, amount_source=true, max_amount=true, level_cap=true }, path, r)
+    if op.app_source ~= "last_ship" then add(r, path .. ".app_source", "must be last_ship") end
+    if op.amount_source ~= "half_last_ship_coverage_ceil" then add(r, path .. ".amount_source", "unknown level source") end
+    required_integer(op.max_amount, path .. ".max_amount", r, 1, 5)
+    required_integer(op.level_cap, path .. ".level_cap", r, 2, 99)
+  elseif op.k == "harden" then
+    only_fields(op, { k=true, enhancement=true, select=true, count_source=true, max_count=true, require_count=true }, path, r)
+    if op.enhancement ~= "scalable" then add(r, path .. ".enhancement", "must be scalable") end
+    if op.select ~= "min_users_unenhanced" then add(r, path .. ".select", "unknown harden selector") end
+    if op.count_source ~= "half_last_ship_coverage_floor" then add(r, path .. ".count_source", "unknown harden count source") end
+    required_integer(op.max_count, path .. ".max_count", r, 1, 5)
+    required_integer(op.require_count, path .. ".require_count", r, 1, op.max_count)
+  elseif op.k == "create_consumable" then
+    only_fields(op, { k=true, kind=true, count=true, exclude_self=true, within_slots=true, sell_basis=true, stream=true }, path, r)
+    if op.kind ~= "TechLaw" then add(r, path .. ".kind", "must be TechLaw") end
+    required_integer(op.count, path .. ".count", r, 1, 2)
+    if op.exclude_self ~= true then add(r, path .. ".exclude_self", "must be true") end
+    if op.within_slots ~= true then add(r, path .. ".within_slots", "must be true") end
+    if op.sell_basis ~= 0 then add(r, path .. ".sell_basis", "must be zero") end
+    if op.stream ~= "tech_law_create" then add(r, path .. ".stream", "must be tech_law_create") end
+  elseif op.k == "well_formed" then
+    only_fields(op, { k=true, ignore_clashes=true, ignore_substitutes=true, keep_complements=true }, path, r)
+    for _, field in ipairs({ "ignore_clashes", "ignore_substitutes", "keep_complements" }) do
+      if op[field] ~= true then add(r, path .. "." .. field, "must be true") end
+    end
+    target_required = true
+  elseif op.k == "copy_layer" then
+    only_fields(op, { k=true, select_others=true, count=true, lock=true, rev_add=true }, path, r)
+    if op.select_others ~= "max_users" then add(r, path .. ".select_others", "must be max_users") end
+    required_integer(op.count, path .. ".count", r, 1, 4)
+    if op.lock ~= true then add(r, path .. ".lock", "must be true") end
+    required_number(op.rev_add, path .. ".rev_add", r, 0)
+    target_required = true
+  elseif op.k == "cull" then
+    only_fields(op, { k=true, select=true, count=true, min_deck_size=true, survivor_users_add=true,
+      per_card_label=true, per_card_cap=true }, path, r)
+    if op.select ~= "min_users" then add(r, path .. ".select", "must be min_users") end
+    if required_integer(op.count, path .. ".count", r, 1, 5)
+        and required_integer(op.min_deck_size, path .. ".min_deck_size", r, 5)
+        and op.min_deck_size <= op.count then add(r, path .. ".min_deck_size", "must exceed count") end
+    required_number(op.survivor_users_add, path .. ".survivor_users_add", r, 0)
+    if not text(op.per_card_label) then add(r, path .. ".per_card_label", "is required") end
+    required_number(op.per_card_cap, path .. ".per_card_cap", r, op.survivor_users_add)
+  end
+  return target_required
+end
+
+local function validate_tech_laws(list, r)
+  local count = 0
+  for i, center in ipairs(list or {}) do
+    if type(center) == "table" and center.kind == "TechLaw" then
+      count = count + 1
+      local path = "consumables[" .. i .. "]"
+      only_fields(center, { key=true, set=true, kind=true, name=true, rarity=true, price_units=true,
+        cost_frac=true, desc=true, target=true, ops=true }, path, r)
+      if not text(center.key) or not center.key:match("^tl_[a-z0-9_]+$") then add(r, path .. ".key", "must be a stable tl_ key") end
+      if center.set ~= "Consumable" then add(r, path .. ".set", "must be Consumable") end
+      if not text(center.name) then add(r, path .. ".name", "is required") end
+      if not TECH_LAW_RARITIES[center.rarity] then add(r, path .. ".rarity", "must be common, uncommon, or rare") end
+      local expected_price = TECH_LAW_PRICE_UNITS[center.rarity]
+      if not required_integer(center.price_units, path .. ".price_units", r, 1, 3) then expected_price = nil end
+      if expected_price and center.price_units ~= expected_price then
+        add(r, path .. ".price_units", "must be " .. expected_price .. " for " .. center.rarity)
+      end
+      if center.cost_frac ~= nil then required_number(center.cost_frac, path .. ".cost_frac", r, 0, 1) end
+      if not text(center.desc) then add(r, path .. ".desc", "is required") end
+
+      if center.target ~= nil then
+        if type(center.target) ~= "table" then add(r, path .. ".target", "must be a table")
+        else
+          only_fields(center.target, { area=true, n=true, layer=true }, path .. ".target", r)
+          if center.target.area ~= "hand" then add(r, path .. ".target.area", "must be hand") end
+          required_integer(center.target.n, path .. ".target.n", r, 1, 5)
+          if center.target.layer ~= nil then required_boolean(center.target.layer, path .. ".target.layer", r) end
+        end
+      end
+
+      local needs_target = false
+      if not dense_array(center.ops) or #center.ops == 0 then add(r, path .. ".ops", "must be a non-empty array")
+      else
+        for j, op in ipairs(center.ops) do
+          if validate_tech_law_op(op, path .. ".ops[" .. j .. "]", r) then needs_target = true end
+        end
+      end
+      if needs_target and center.target == nil then add(r, path .. ".target", "is required by its operations") end
+      if not needs_target and center.target ~= nil then add(r, path .. ".target", "is not used by its operations") end
+      if center.target and center.target.layer == true then
+        local has_set_layer = false
+        for _, op in ipairs(center.ops or {}) do if type(op) == "table" and op.k == "set_layer" then has_set_layer = true end end
+        if not has_set_layer then add(r, path .. ".target.layer", "requires a set_layer operation") end
+      end
+    end
+  end
+  r.counts.tech_laws = count
 end
 
 local function gate_kind(g, path, r)
@@ -407,6 +657,7 @@ function Validate.catalog(catalog, options)
   validate_centers(catalog.signature_cards or {}, "signature_cards", r, keys)
   validate_centers(catalog.vouchers or {}, "vouchers", r, keys)
   validate_centers(catalog.consumables or {}, "consumables", r, keys)
+  validate_tech_laws(catalog.consumables or {}, r)
   validate_compat(catalog.compat, tech_keys, r)
   validate_markets(catalog.markets, tech_keys, r)
   if catalog.gameplay then validate_gameplay(catalog.gameplay, catalog, r) end

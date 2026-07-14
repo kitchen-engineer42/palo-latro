@@ -22,6 +22,7 @@ local Economy = require("game.economy")
 local Pricing = require("game.pricing")
 local Markets = require("game.markets")
 local Leads = require("game.leads")
+local Consumables = require("game.consumables")
 
 local function lead_state(game)
   local view = Leads.view(game)
@@ -327,6 +328,16 @@ function UI.prepare()
         y = founder.VT.y + founder.VT.h + 4, w = 100, h = 28 }, true,
         sh.pack_open and "pack" or nil)
     end
+    local consumable = selected(G.consumables)
+    if consumable and consumable.center then
+      local bw, bh = 92, 28
+      local x = consumable.VT.x + (consumable.VT.w - bw * 2 - 8) / 2
+      local y = consumable.VT.y + consumable.VT.h + 4
+      local usable = Consumables.can_use(consumable)
+      local scope = sh.pack_open and "pack" or nil
+      add("use_consumable", { x = x, y = y, w = bw, h = bh }, usable == true, scope)
+      add("sell_consumable", { x = x + bw + 8, y = y, w = bw, h = bh }, true, scope)
+    end
     if sh.pack_open then
       local po, frame = sh.pack_open, PackPresentation.snapshot(sh.pack_open)
       if frame.ready then
@@ -405,13 +416,15 @@ function UI.prepare()
       local bw, bh = 92, 28
       local x = consumable.VT.x + (consumable.VT.w - bw * 2 - 8) / 2
       local y = consumable.VT.y + consumable.VT.h + 4
-      add("use_consumable", { x = x, y = y, w = bw, h = bh }, true)
+      local usable = Consumables.can_use(consumable)
+      add("use_consumable", { x = x, y = y, w = bw, h = bh }, usable == true)
       add("sell_consumable", { x = x + bw + 8, y = y, w = bw, h = bh }, true)
     end
     if G.STATE == G.STATES.TARGET_SELECT and G.PENDING_CONSUMABLE
         and G.PENDING_CONSUMABLE.need_layer then
       local layers, lw, lh, gap = { "Frontend", "Backend", "Data", "Infra", "AI" }, 150, 40, 12
-      local x0 = (W - (#layers * lw + (#layers - 1) * gap)) / 2
+      local play_x, total = 332, #layers * lw + (#layers - 1) * gap
+      local x0 = play_x + ((W - play_x) - total) / 2
       for i, layer in ipairs(layers) do
         add("pick_layer_" .. layer, { x = x0 + (i - 1) * (lw + gap), y = 320, w = lw, h = lh },
           true, "target")
@@ -675,16 +688,17 @@ function UI.render()
   -- ===== RIGHT PLAY ZONE: labels, counts, controls =====
   UI.text(G.FONTS.tiny, "FOUNDERS  " .. #G.jokers.cards .. "/" .. tostring(GAME.founder_slots or 5),
     G.jokers.T.x, G.jokers.T.y - 24, G.C.text_dim)
-  -- consumables slot (reserved: Tech Laws / Playbooks / Moonshots — P4)
-  -- Track C B1: the consumable (Tech Law) inventory — real cards live in G.consumables (drawn by draw_all);
+  -- Shared Roadmap inventory for Tech Laws and later Moonshots.
+  -- Real cards live in G.consumables (drawn by draw_all);
   -- the framed placeholder shows only while empty, the count always.
   local csw, csx = 220, W - 220 - 24
   local ncons = (G.consumables and #G.consumables.cards) or 0
   if ncons == 0 then
     pixel_rect(csx, 24, csw, Card.H, { 0.12, 0.13, 0.16, 1 }, { chamfer = 6, border = G.C.border })
-    UI.text(G.FONTS.tiny, "Tech Laws", csx, 24 + Card.H / 2 - 10, G.C.text_dim, csw, "center")
+    UI.text(G.FONTS.tiny, "Roadmap", csx, 24 + Card.H / 2 - 10, G.C.text_dim, csw, "center")
   end
-  UI.text(G.FONTS.tiny, "Tech Laws  " .. ncons .. "/" .. (GAME.consumable_slots or 2), csx, 24 + Card.H + 6, G.C.text_dim, csw, "center")
+  UI.text(G.FONTS.tiny, "Roadmap  " .. ncons .. "/" .. (GAME.consumable_slots or 2),
+    csx, 24 + Card.H + 6, G.C.text_dim, csw, "center")
   -- selected consumable → Use / Sell buttons beneath it (B2/B5)
   local selC
   if G.consumables then for _, c in ipairs(G.consumables.cards) do if c.selected then selC = c; break end end end
@@ -693,21 +707,32 @@ function UI.render()
     local bx = selC.VT.x + (selC.VT.w - bw2 * 2 - 8) / 2
     local by2 = selC.VT.y + selC.VT.h + 4
     UI.rects.use_consumable = { x = bx, y = by2, w = bw2, h = bh2 }
-    draw_button(UI.rects.use_consumable, "Use", true, point_in_rect(mx, my, bx, by2, bw2, bh2))
+    local usable, reason = Consumables.can_use(selC)
+    draw_button(UI.rects.use_consumable, "Use", usable == true,
+      point_in_rect(mx, my, bx, by2, bw2, bh2))
     UI.rects.sell_consumable = { x = bx + bw2 + 8, y = by2, w = bw2, h = bh2 }
-    draw_button(UI.rects.sell_consumable, "Sell $" .. Shop.consumable_sell_value(selC.center),
+    draw_button(UI.rects.sell_consumable, "Sell $" .. Shop.consumable_sell_value(selC),
       true, point_in_rect(mx, my, bx + bw2 + 8, by2, bw2, bh2))
+    if not usable and reason then
+      UI.text(G.FONTS.tiny, tostring(reason), math.max(340, bx - 100), by2 + bh2 + 5,
+        G.C.lose, math.min(420, W - math.max(340, bx - 100) - 12), "center")
+    end
   end
   -- B4: targeting banner + Conway's layer picker overlay
   if G.STATE == G.STATES.TARGET_SELECT and G.PENDING_CONSUMABLE then
     local pc = G.PENDING_CONSUMABLE
     lg.setColor(0, 0, 0, 0.35); lg.rectangle("fill", 0, 260, W, 44)
     UI.text(G.FONTS.small, pc.need_layer and "Pick the new Layer:" or
-      ("Select a target card for " .. (pc.center.name or "?") .. "  (right-click to cancel)"), 0, 270, G.C.arr, W, "center")
+      ("Select a target card for " .. (pc.center.name or "?") .. "  (right-click to cancel)"),
+      332, 270, G.C.arr, W - 332, "center")
+    if pc.error then
+      UI.text(G.FONTS.tiny, tostring(pc.error), 332, 294, G.C.lose, W - 332, "center")
+    end
     if pc.need_layer then
       local Ls = { "Frontend", "Backend", "Data", "Infra", "AI" }
       local lw, lh, lgap = 150, 40, 12
-      local lx0 = (W - (#Ls * lw + (#Ls - 1) * lgap)) / 2
+      local play_x, total = 332, #Ls * lw + (#Ls - 1) * lgap
+      local lx0 = play_x + ((W - play_x) - total) / 2
       for i, L in ipairs(Ls) do
         local lx = lx0 + (i - 1) * (lw + lgap)
         UI.rects["pick_layer_" .. L] = { x = lx, y = 320, w = lw, h = lh }
@@ -921,7 +946,7 @@ function UI.draw_tooltip()
   if not (G.CONTROLLER and G.CONTROLLER.hid and G.CONTROLLER.hid.buttons[2]) then return end
   local mx, my = cursor()
   local hovered
-  for _, area in ipairs({ G.jokers, G.hand, G.play }) do
+  for _, area in ipairs({ G.consumables, G.jokers, G.hand, G.play }) do
     if area and area.cards then
       for i = #area.cards, 1, -1 do
         local c = area.cards[i]
@@ -933,8 +958,16 @@ function UI.draw_tooltip()
   if not hovered then return end
   local c = hovered.center
   local founder = c.set == "Founder"
+  local consumable = c.set == "Consumable"
   local sub, body
-  if founder then
+  if consumable then
+    local usable, reason = Consumables.can_use(hovered)
+    sub = (c.kind or "Consumable") .. "  ·  " .. tostring(c.rarity or "")
+    body = c.desc or ""
+    if usable then body = body .. "\n\nReady to use."
+    elseif reason then body = body .. "\n\nUnavailable: " .. tostring(reason) end
+    body = body .. "\nSell value $" .. tostring(Shop.consumable_sell_value(hovered))
+  elseif founder then
     sub = Card.effect_brief(c, hovered) .. "   \194\183   " .. (c.rarity or "")   -- headline (live value for accumulators)
     local terms = Card.founder_terms(hovered, c)
     local economics = ("Salary $%s (base $%s) \194\183 Effect %d%%"):format(
@@ -1198,6 +1231,26 @@ function UI.render_shop(W, H, GAME)
 
   local sh = GAME.shop or { founders = {} }
 
+  local selC
+  for _, c in ipairs((G.consumables and G.consumables.cards) or {}) do if c.selected then selC = c; break end end
+  local function draw_consumable_controls()
+    if not (selC and selC.center) then return end
+    local bw, bh = 92, 28
+    local bx = selC.VT.x + (selC.VT.w - bw * 2 - 8) / 2
+    local by = selC.VT.y + selC.VT.h + 4
+    local usable, reason = Consumables.can_use(selC)
+    UI.rects.use_consumable = { x = bx, y = by, w = bw, h = bh }
+    draw_button(UI.rects.use_consumable, "Use", usable == true,
+      point_in_rect(mx, my, bx, by, bw, bh))
+    UI.rects.sell_consumable = { x = bx + bw + 8, y = by, w = bw, h = bh }
+    draw_button(UI.rects.sell_consumable, "Sell $" .. Shop.consumable_sell_value(selC), true,
+      point_in_rect(mx, my, bx + bw + 8, by, bw, bh))
+    if not usable and reason then
+      UI.text(G.FONTS.tiny, tostring(reason), math.max(340, bx - 100), by + bh + 5,
+        G.C.lose, math.min(420, W - math.max(340, bx - 100) - 12), "center")
+    end
+  end
+
   -- sell the selected founder (frees a slot, refunds value) — works in the shop AND during a pack open
   local selF
   for _, c in ipairs((G.jokers and G.jokers.cards) or {}) do if c.selected then selF = c; break end end
@@ -1222,6 +1275,7 @@ function UI.render_shop(W, H, GAME)
 
     lg.setColor(0, 0, 0, frame.ready and 0.58 or 0.72)
     lg.rectangle("fill", 332, 0, W - 332, H)
+    draw_consumable_controls()
 
     if frame.cover then
       draw_pack_cover(W, H, frame, title, po)
@@ -1406,6 +1460,8 @@ function UI.render_shop(W, H, GAME)
     end
     return
   end
+
+  draw_consumable_controls()
 
   local slots = Shop.slots()
   local cw, ch, gap, y0 = 160, 206, 30, 312            -- offers as founder faces (square art + banner; buy below)

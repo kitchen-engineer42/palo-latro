@@ -297,12 +297,7 @@ function TechModifiers.on_played(cards)
 end
 
 local function tech_law_pool()
-  local out = {}
-  for _, center in ipairs(require("game.centers").pool("Consumable")) do
-    if center.kind == "TechLaw" then out[#out + 1] = center end
-  end
-  table.sort(out, function(a, b) return a.key < b.key end)
-  return out
+  return require("game.tech_laws").pool()
 end
 
 function TechModifiers.on_discard(cards, opts)
@@ -320,11 +315,14 @@ function TechModifiers.on_discard(cards, opts)
   local cap = TechModifiers.SEALS.r_and_d.law_cap_per_discard
   local pool = opts.pool or tech_law_pool()
   local rng = opts.rng or RNG.fn("tech_modifier_rd")
-  local grant = opts.grant or function(key) return require("game.consumables").grant(key) end
+  local grant = opts.grant or function(key)
+    return require("game.consumables").grant(key, { source = "r_and_d", sell_basis = 0 })
+  end
   for _, card in ipairs(cards or {}) do
     if #result.created >= cap then break end
     if is_tech(card) and card.seal == "r_and_d" and #pool > 0 then
-      local center = pool[math.floor(rng() * #pool) + 1]
+      local center = opts.pool and pool[math.floor(rng() * #pool) + 1]
+        or require("game.tech_laws").roll(rng)
       if grant(center.key) then
         result.created[#result.created + 1] = center.key
         result.events[#result.events + 1] = { kind = "tech_law_created", key = center.key, uid = card.uid }

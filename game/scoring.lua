@@ -455,6 +455,10 @@ function Scoring.evaluate_ship(played)
     func = function()
       G.GAME.this_ship_arr = final_arr
       G.GAME._last_hand_ndl = G.GAME._ndl or 0                                  -- 1.5a: snapshot just-shipped hand's distinct Layers
+      G.GAME.last_ship_coverage = G.GAME._last_hand_ndl
+      G.GAME.last_ship_app_key = app and app.key or nil
+      G.GAME.last_shipped_distinct_layers = G.GAME.last_ship_coverage
+      G.GAME.last_shipped_app_key = G.GAME.last_ship_app_key
       G.GAME.run_best_arr = math.max(G.GAME.run_best_arr or 0, final_arr)       -- 1.5a: run high-water ARR
       Juice.pulse("score")
     end,

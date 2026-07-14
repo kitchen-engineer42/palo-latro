@@ -309,10 +309,10 @@ function Round.build_deck()
       local c = Card({ center = center, face_down = true, uid = entry.uid,
         source = entry.source, acquired_ante = entry.acquired_ante, migrated_from = entry.migrated_from,
         edition = entry.edition, enhancement = entry.enhancement, seal = entry.seal,
-        modifier_state = entry.modifier_state,
+        modifier_state = entry.modifier_state, stickers = entry.stickers,
+        layer_override = entry.layer_override, layer_locked = entry.layer_locked,
+        law_marks = entry.law_marks,
         T = { x = G.deck.T.x, y = G.deck.T.y } })
-      c.stickers = entry.stickers and deep_copy(entry.stickers) or nil   -- Track C: consumable card-stat stickers
-      c.layer_override = entry.layer_override                            -- Track C: set_layer override
       if entry.config and next(entry.config) then c.ability.config = deep_copy(entry.config) end
       cards[#cards + 1] = c
     end

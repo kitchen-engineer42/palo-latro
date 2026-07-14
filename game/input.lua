@@ -20,6 +20,7 @@ local Controller = require("engine.controller")
 local PackPresentation = require("game.pack_presentation")
 local Audio = require("game.audio")
 local Guidance = require("game.guidance")
+local Consumables = require("game.consumables")
 
 local Input = {}
 Input.__index = Input
@@ -215,6 +216,7 @@ function Input:rebuild(button_specs)
           if not target_mode then return true end
           local pending = g.PENDING_CONSUMABLE
           return pending ~= nil and not pending.need_layer and not node.selected
+            and Consumables.can_target(pending.card, node, g.GAME) == true
         end,
         meta = { kind = target_mode and "target_card" or "hand_card", card = card },
       })
@@ -343,7 +345,8 @@ end
 function Input:_pick_target(card)
   local g = game()
   local pending = g and g.PENDING_CONSUMABLE
-  if not (state_is("TARGET_SELECT") and pending and not pending.need_layer and card and not card.selected) then return false end
+  if not (state_is("TARGET_SELECT") and pending and not pending.need_layer and card and not card.selected
+      and Consumables.can_target(pending.card, card, g.GAME) == true) then return false end
   pulse(card, 0.35)
   if g.CONSUMABLE_TARGET_PICK then g.CONSUMABLE_TARGET_PICK(card); return true end
   return false
