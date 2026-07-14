@@ -54,6 +54,7 @@ function Round.next_blind()
 end
 
 function Round.restart()
+  G.MIMIC_HEADLESS = false
   StateMachine.prep_stage(G.STAGES.RUN, G.STATES.SELECTING_HAND)
   Round.start_run()
 end

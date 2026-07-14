@@ -157,6 +157,7 @@ end
 
 -- end-of-run: update career, persist discovery of founders seen this run, beat-stake on a win, reveal forms by depth.
 function Profile.record_run(Centers)
+  if G.MIMIC_HEADLESS then return end
   local p, g = G.PROFILE, G.GAME
   if not p or not g then return end                      -- no profile loaded (e.g. headless smoke) → no-op
   p.career.runs = (p.career.runs or 0) + 1

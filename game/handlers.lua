@@ -77,6 +77,7 @@ StateMachine.handlers[S.MENU] = function() end
 for s = 1, 8 do G.FUNCS["stake_" .. s] = function() G.MENU = G.MENU or {}; G.MENU.stake = s end end
 G.FUNCS.start_run_at = function()
   local st = (G.MENU and G.MENU.stake) or 1
+  G.MIMIC_HEADLESS = false
   StateMachine.prep_stage(G.STAGES.RUN, G.STATES.SELECTING_HAND)
   Round.start_run({ stake = st })
 end

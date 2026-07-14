@@ -82,6 +82,52 @@ function EventManager:clear()
   self.queues = { base = {}, other = {} }
 end
 
+-- Resolve presentation queues without waiting on wall-clock frames. This is used
+-- only by deterministic headless clients; the graphical update loop keeps the
+-- normal timed behavior above.
+function EventManager:drain(max_steps)
+  max_steps = max_steps or 10000
+  local saved_total, saved_real = G.TIMERS.TOTAL, G.TIMERS.REAL
+  local function restore()
+    G.TIMERS.TOTAL, G.TIMERS.REAL = saved_total, saved_real
+  end
+  for _ = 1, max_steps do
+    -- Run exactly the events that a graphical frame would run. In particular,
+    -- a blocking event later in a queue must not receive a start time until the
+    -- earlier blocker has completed.
+    self:update()
+    local pending, deadlines = false, {}
+    for _, q in pairs(self.queues) do
+      for _, event in ipairs(q) do
+        pending = true
+        if event.start_time and (event.trigger == "after" or event.trigger == "ease") then
+          local timer = event.timer or "TOTAL"
+          local deadline = event.start_time + (event.delay or 0)
+          if not deadlines[timer] or deadline < deadlines[timer] then deadlines[timer] = deadline end
+        end
+      end
+    end
+    if not pending then
+      restore()
+      return true
+    end
+    for timer, deadline in pairs(deadlines) do
+      -- Step just beyond the deadline so decimal delays cannot stall on a
+      -- floating-point value infinitesimally below `elapsed >= delay`.
+      G.TIMERS[timer] = math.max(G.TIMERS[timer] or 0, deadline + 1e-9)
+    end
+  end
+  restore()
+  local stuck = {}
+  for name, q in pairs(self.queues) do
+    for _, event in ipairs(q) do
+      stuck[#stuck + 1] = table.concat({ name, event.trigger or "?", event.timer or "TOTAL",
+        tostring(event.delay or 0), tostring(event.start_time) }, ":")
+    end
+  end
+  return false, "event drain exceeded its step limit (" .. table.concat(stuck, ",") .. ")"
+end
+
 -- helpers ------------------------------------------------------------
 
 -- a blocking pause of `t` seconds in a queue (the universal "beat between steps")

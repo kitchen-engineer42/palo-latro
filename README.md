@@ -26,6 +26,13 @@ and 17 evolved forms, 16 markets, bosses, shops, normal/jumbo/mega packs, consum
 stakes, economy and payroll systems, profile progression, deterministic seeded runs, and original
 card artwork throughout the playable game.
 
+## Deterministic gameplay protocol
+
+[`game/mimic.lua`](game/mimic.lua) exposes a versioned headless interface for simulations and
+accessibility clients: `start`, `observe`, `legal_actions`, and `apply`. Observations contain only
+player-visible state, actions may carry an expected step and digest to reject stale decisions, and
+all rules, RNG, state transitions, and scoring remain owned by the normal game runtime.
+
 ## License
 
 The Lua source code is available under the [MIT License](LICENSE).
