@@ -12,6 +12,9 @@ local PackPresentation = require("game.pack_presentation")
 local RunState = require("game.runstate")
 local Coverage = require("game.coverage")
 local UIBox = require("engine.uibox")
+local Collection = require("game.collection")
+local Guidance = require("game.guidance")
+local Bosses = require("game.bosses")
 
 local function cursor()
   if G.CONTROLLER and G.CONTROLLER.cursor then return G.CONTROLLER.cursor.x, G.CONTROLLER.cursor.y end
@@ -69,6 +72,37 @@ local function draw_button(r, label, enabled, hovered)
     enabled and G.C.text or G.C.text_dim, r.w, "center")
 end
 
+local function collection_geometry(W, view)
+  local geometry = { categories = {}, filters = {} }
+  geometry.back = { x = 24, y = 22, w = 128, h = 42 }
+  local cat_gap, cat_x = 10, 34
+  local cat_w = (W - cat_x * 2 - cat_gap * (#Collection.CATEGORIES - 1)) / #Collection.CATEGORIES
+  for index = 1, #Collection.CATEGORIES do
+    geometry.categories[index] = { x = cat_x + (index - 1) * (cat_w + cat_gap),
+      y = 82, w = cat_w, h = 46 }
+  end
+  local filters = view.filters or {}
+  local filter_gap = 10
+  local filter_w = math.min(150, (W - 80 - filter_gap * math.max(0, #filters - 1)) / math.max(1, #filters))
+  local filter_x = (W - (#filters * filter_w + math.max(0, #filters - 1) * filter_gap)) / 2
+  for index = 1, #filters do
+    geometry.filters[index] = { x = filter_x + (index - 1) * (filter_w + filter_gap),
+      y = 146, w = filter_w, h = 38 }
+  end
+  geometry.prev = { x = W / 2 - 160, y = 752, w = 120, h = 38 }
+  geometry.next = { x = W / 2 + 40, y = 752, w = 120, h = 38 }
+  return geometry
+end
+
+local function guidance_geometry(W, H)
+  local in_rail = G.STATE ~= G.STATES.MENU and G.STATE ~= G.STATES.COLLECTION
+    and G.STATE ~= G.STATES.MARKET_SELECT and G.STATE ~= G.STATES.BLIND_SELECT
+    and G.STATE ~= G.STATES.TECH_DRAFT
+  local panel = in_rail and { x = 20, y = H - 182, w = 304, h = 162 }
+    or { x = W / 2 - 330, y = H - 168, w = 660, h = 148 }
+  return panel, { x = panel.x + panel.w - 112, y = panel.y + panel.h - 40, w = 96, h = 28 }
+end
+
 -- Build every button from current state without drawing. UIBox owns deterministic z/order/focus
 -- metadata; the runtime input adapter consumes the flattened specs bottom-to-top.
 function UI.prepare()
@@ -107,12 +141,29 @@ function UI.prepare()
       end
     end
     add("start_run_at", { x = W / 2 - 120, y = y + 116, w = 240, h = 56 }, true)
+    add("collection_open", { x = W / 2 - 120, y = y + 184, w = 240, h = 48 }, true)
+  elseif G.STATE == G.STATES.COLLECTION then
+    local view = Collection.snapshot()
+    local geometry = collection_geometry(W, view)
+    add("collection_back", geometry.back, true)
+    for index, rect in ipairs(geometry.categories) do
+      add("collection_category_" .. index, rect, true)
+    end
+    for index, rect in ipairs(geometry.filters) do
+      add("collection_filter_" .. index, rect, true)
+    end
+    add("collection_prev", geometry.prev, view.page > 1)
+    add("collection_next", geometry.next, view.page < view.page_count)
+    UI.collection_view = view
   elseif G.STATE == G.STATES.MARKET_SELECT and GAME then
     local choices, cw, ch, gap, y = GAME.market_choices or {}, 340, 390, 34, 176
     local x0 = (W - (#choices * cw + math.max(0, #choices - 1) * gap)) / 2
+    local lesson = Guidance.current()
     for i = 1, #choices do
+      local enabled = not (lesson and lesson.id == "welcome")
+        and (not GAME.tutorial_market_id or choices[i].id == GAME.tutorial_market_id)
       add("market_pick_" .. i, { x = x0 + (i - 1) * (cw + gap) + 55,
-        y = y + ch - 72, w = cw - 110, h = 48 }, true)
+        y = y + ch - 72, w = cw - 110, h = 48 }, enabled)
     end
   elseif G.STATE == G.STATES.TECH_DRAFT and GAME then
     local choices = (GAME.tech_draft and GAME.tech_draft.choices) or {}
@@ -224,11 +275,17 @@ function UI.prepare()
       y = G.jokers.T.y + G.jokers.T.h + 4, w = 90, h = 30 }, true) end
   end
 
+  local lesson = Guidance.current()
+  if lesson and lesson.id == "welcome" then
+    local _, ack = guidance_geometry(W, H)
+    add("guidance_ack", ack, true, nil, 80)
+  end
+
   if G.SHOW_OPTIONS then
-    local pw, ph = 420, 540
+    local pw, ph = 420, 660
     local x, y = (W - pw) / 2 + 60, (H - ph) / 2 + 64
     for _, action in ipairs({ "opt_motion", "opt_sound", "opt_shake", "opt_flash",
-      "opt_particles", "opt_crt", "opt_quit" }) do
+      "opt_particles", "opt_crt", "opt_guidance", "opt_chatter", "opt_quit" }) do
       add(action, { x = x, y = y, w = pw - 120, h = 46 }, true, "overlay", 100)
       y = y + 58
     end
@@ -362,7 +419,10 @@ function UI.left_panel(GAME, shop_mode)
     UI.text(G.FONTS.tiny, (bl.stage or "?") .. "  \194\183  Ante " .. (GAME.ante or 1) .. "/8", ix, py + 66, G.C.text_dim, iw, "center")
     -- market + boss telegraph live in the TOP-LEFT header (Balatro-style), not buried at the rail bottom
     UI.text(G.FONTS.tiny, (GAME.market and GAME.market.name or ""), ix, py + 82, G.C.arr, iw, "center")
-    if bl.is_boss and bl.event then UI.text(G.FONTS.tiny, "! " .. bl.event, ix, py + 96, G.C.lose, iw, "center") end
+    if bl.is_boss and bl.event then
+      local boss = Bosses.rule(bl.event)
+      UI.text(G.FONTS.tiny, "! " .. ((boss and boss.name) or bl.event), ix, py + 96, G.C.lose, iw, "center")
+    end
   end
 
   -- ARR target + progress + raised
@@ -413,6 +473,7 @@ function UI.render()
   local W, H = G.WINDOW.w, G.WINDOW.h
   UI.prepare()                                          -- pure retained tree; draw only consumes it
   if G.STATE == G.STATES.MENU then UI.render_menu(W, H); return end
+  if G.STATE == G.STATES.COLLECTION then UI.render_collection(W, H); return end
   local GAME = G.GAME
   if not GAME then return end
   if G.STATE == G.STATES.MARKET_SELECT then UI.render_market_select(W, H, GAME); return end
@@ -481,6 +542,11 @@ function UI.render()
       app.name, cov.distinct, stack_text, fit, rel.score) .. " · Base ARR " .. format_number(preview.arr),
       G.play.T.x, G.play.T.y + G.play.T.h + 10,
       rel.score < 7 and G.C.lose or G.C.text_dim, G.play.T.w, "center")
+    UI.text(G.FONTS.tiny, ("Compatibility: Chemistry ×%.2f · %d clash%s · %d substitute%s"):format(
+      preview.chemistry, preview.clashes, preview.clashes == 1 and "" or "es",
+      preview.substitutes, preview.substitutes == 1 and "" or "s"),
+      G.play.T.x, G.play.T.y + G.play.T.h + 31,
+      preview.clashes > 0 and G.C.lose or G.C.text_dim, G.play.T.w, "center")
   end
   -- hand
   UI.text(G.FONTS.tiny, "YOUR TECH  \194\183  " .. n_sel .. "/" .. (GAME.select_max or 5) .. " selected",
@@ -537,6 +603,7 @@ end
 
 function UI.render_market_select(W, H, GAME)
   local mx, my = cursor()
+  local lesson = Guidance.current()
   UI.text(G.FONTS.big, "CHOOSE YOUR MARKET", 0, 54, G.C.arr, W, "center")
   UI.text(G.FONTS.small, "Your Market defines the starting stack, operating perk, Fit, and future drafts.",
     0, 108, G.C.text_dim, W, "center")
@@ -559,7 +626,10 @@ function UI.render_market_select(W, H, GAME)
       x + 28, y + 232, cw - 56, "center")
     local b = { x = x + 55, y = y + ch - 72, w = cw - 110, h = 48 }
     UI.rects["market_pick_" .. i] = b
-    draw_button(b, "Build here ›", true, point_in_rect(mx, my, b.x, b.y, b.w, b.h))
+    local enabled = not (lesson and lesson.id == "welcome")
+      and (not GAME.tutorial_market_id or market.id == GAME.tutorial_market_id)
+    draw_button(b, enabled and "Build here ›" or (GAME.tutorial_market_id == market.id and "Meet Patch first" or "Tutorial: Indie SaaS"),
+      enabled, point_in_rect(mx, my, b.x, b.y, b.w, b.h))
   end
 end
 
@@ -613,7 +683,7 @@ function UI.tip_box(ax, ay, title, sub, body)
 end
 
 function UI.draw_tooltip()
-  if G.STATE == G.STATES.MENU then return end             -- no cards in the menu
+  if G.STATE == G.STATES.MENU or G.STATE == G.STATES.COLLECTION then return end
   if not (G.CONTROLLER and G.CONTROLLER.hid and G.CONTROLLER.hid.buttons[2]) then return end
   local mx, my = cursor()
   local hovered
@@ -691,16 +761,85 @@ function UI.render_menu(W, H)
   local sr = { x = W / 2 - 120, y = y + 116, w = 240, h = 56 }
   UI.rects.start_run_at = sr
   draw_button(sr, "Start Run \194\187", true, point_in_rect(mx, my, sr.x, sr.y, sr.w, sr.h))
+  local cr = { x = W / 2 - 120, y = y + 184, w = 240, h = 48 }
+  UI.rects.collection_open = cr
+  draw_button(cr, "Collection", true, point_in_rect(mx, my, cr.x, cr.y, cr.w, cr.h))
   lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text_dim)
-  lg.printf("higher stakes unlock by reaching IPO \194\183 winning unlocks Legendary 2nd-forms", 0, y + 186, W, "center")
+  lg.printf("higher stakes unlock by reaching IPO \194\183 discovery never changes gameplay eligibility",
+    0, y + 248, W, "center")
 end
 
--- boss "market event" telegraph descriptions (mirrors Markets.event_mult)
-local EVENT_DESC = {
-  ai_winter      = "AI Winter \194\183 AI-layer plays \195\1510.7",
-  platform_shift = "Platform Shift \194\183 Infra plays \195\1510.7",
-  dotcom_bust    = "Dot-com Bust \194\183 all plays \195\1510.85",
-}
+local function draw_collection_tab(rect, label, selected)
+  local highlighted = selected or button_hovered(rect, false)
+  pixel_rect(rect.x, rect.y, rect.w, rect.h, highlighted and G.C.arr or G.C.btn,
+    { chamfer = 4, border = G.C.border, line_w = selected and 3 or 2 })
+  UI.text(G.FONTS.tiny, label, rect.x + 4, rect.y + rect.h / 2 - 10,
+    selected and G.C.black or G.C.text, rect.w - 8, "center")
+end
+
+-- Read-only discovery catalogs. The Collection model has already replaced hidden content with
+-- silhouette-safe projections, so this renderer never reaches into centers or the profile.
+function UI.render_collection(W, H)
+  local view = UI.collection_view or Collection.snapshot()
+  local geometry = collection_geometry(W, view)
+  local mx, my = cursor()
+  UI.text(G.FONTS.normal, "COLLECTION", 0, 22, G.C.arr, W, "center")
+  draw_button(geometry.back, "\194\171 Back", true,
+    point_in_rect(mx, my, geometry.back.x, geometry.back.y, geometry.back.w, geometry.back.h))
+
+  for index, category in ipairs(Collection.CATEGORIES) do
+    local progress = view.progress[category.id] or { discovered = 0, total = 0 }
+    draw_collection_tab(geometry.categories[index],
+      category.label .. "  " .. progress.discovered .. "/" .. progress.total,
+      index == view.category_index)
+  end
+  for index, filter in ipairs(view.filters) do
+    draw_collection_tab(geometry.filters[index], filter.label, index == view.filter_index)
+  end
+
+  local progress_text = ("%s discovered %d/%d"):format(
+    view.category.label, view.discovered, view.total)
+  if view.filter.id ~= "all" then
+    progress_text = progress_text .. ("  \194\183  %s %d/%d"):format(
+      view.filter.label, view.filtered_discovered, view.filtered_total)
+  end
+  UI.text(G.FONTS.tiny, progress_text, 40, 190, G.C.text_dim, W - 80, "center")
+  local bar_x, bar_y, bar_w = 220, 212, W - 440
+  pixel_rect(bar_x, bar_y, bar_w, 8, G.C.panel_dim, { chamfer = 3, shadow = false, emboss = false })
+  if view.total > 0 and view.discovered > 0 then
+    pixel_rect(bar_x, bar_y, bar_w * view.discovered / view.total, 8, G.C.arr,
+      { chamfer = 3, shadow = false, emboss = false })
+  end
+
+  local cols, card_gap, card_x, card_y = 4, 14, 34, 236
+  local card_w = (W - card_x * 2 - card_gap * (cols - 1)) / cols
+  local card_h, row_gap = 150, 14
+  for index, item in ipairs(view.items) do
+    local col, row = (index - 1) % cols, math.floor((index - 1) / cols)
+    local x, y = card_x + col * (card_w + card_gap), card_y + row * (card_h + row_gap)
+    local fill = item.discovered and { 0.12, 0.14, 0.18, 1 } or { 0.065, 0.075, 0.095, 1 }
+    pixel_rect(x, y, card_w, card_h, fill,
+      { chamfer = 6, border = item.discovered and G.C.border or G.C.panel_dim, line_w = 2 })
+    if item.discovered then
+      UI.text(G.FONTS.small, item.name, x + 12, y + 12, G.C.arr, card_w - 24, "center")
+      UI.text(G.FONTS.tiny, item.subtitle, x + 12, y + 48, G.C.mult, card_w - 24, "center")
+      lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text)
+      lg.printf(item.detail or "", x + 16, y + 78, card_w - 32, "center")
+    else
+      UI.text(G.FONTS.big, "?", x, y + 25, G.C.text_dim, card_w, "center")
+      UI.text(G.FONTS.tiny, item.subtitle, x, y + 88, G.C.text_dim, card_w, "center")
+      UI.text(G.FONTS.tiny, "Keep building to reveal", x, y + 114, G.C.panel_dim, card_w, "center")
+    end
+  end
+
+  local page_label = ("Page %d/%d  \194\183  showing %d-%d of %d"):format(
+    view.page, view.page_count, view.first, view.last, view.filtered_total)
+  UI.text(G.FONTS.tiny, page_label, 0, 722, G.C.text_dim, W, "center")
+  draw_button(geometry.prev, "\194\171 Prev", view.page > 1,
+    point_in_rect(mx, my, geometry.prev.x, geometry.prev.y, geometry.prev.w, geometry.prev.h))
+  draw_button(geometry.next, "Next \194\187", view.page < view.page_count,
+    point_in_rect(mx, my, geometry.next.x, geometry.next.y, geometry.next.w, geometry.next.h))
+end
 
 -- the BLIND-SELECT page (P2): preview the upcoming blind before committing. Shows the ante's three blinds
 -- (Small/Big/Boss) with ARR targets, the current one highlighted, the boss event telegraphed, the economy
@@ -735,8 +874,8 @@ function UI.render_blind_select(W, H, GAME)
       x, y0 + 200, G.C.win, cw, "center")
     if i == 3 then
       lg.setFont(G.FONTS.tiny); lg.setColor(G.C.lose)
-      local boss = require("game.bosses").rule(boss_event)
-      local desc = EVENT_DESC[boss_event] or (boss and (boss.name .. " · respond: " .. table.concat(boss.responses or {}, ", "))) or "market event"
+      local boss = Bosses.rule(boss_event)
+      local desc = boss and (boss.name .. " · " .. Bosses.describe(boss_event)) or "market event"
       lg.printf("! " .. desc, x + 12, y0 + 160, cw - 24, "center")
     else
       lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text_dim)
@@ -992,6 +1131,55 @@ function UI.button_at(x, y)
   return nil
 end
 
+-- Static authored onboarding/chatter. It is deliberately presentation-only: gameplay handlers publish
+-- events through Guidance, while this function only reads the active lesson or transient toast.
+function UI.draw_guidance()
+  if G.STATE == G.STATES.MENU or G.STATE == G.STATES.COLLECTION then return end
+  local lesson = Guidance.current()
+  local toast = G.GUIDANCE_TOAST
+  local toast_item = toast and toast.expires > (G.TIMERS.REAL or 0) and toast.message or nil
+  if toast_item then
+    local prefs = Guidance.preferences()
+    if (toast_item.kind == "chatter" and not prefs.cofounder_chatter)
+        or (toast_item.kind ~= "chatter" and not prefs.guidance) then toast_item = nil end
+  end
+  local item = (G.STATE == G.STATES.GAME_OVER and toast_item) or lesson or toast_item
+  if not item then return end
+
+  local panel_rect, ack = guidance_geometry(G.WINDOW.w, G.WINDOW.h)
+  local compact = panel_rect.w < 400
+  pixel_rect(panel_rect.x, panel_rect.y, panel_rect.w, panel_rect.h, { 0.08, 0.10, 0.14, 0.97 },
+    { chamfer = 7, border = G.C.arr, line_w = 2 })
+  local avatar = { x = panel_rect.x + 12, y = panel_rect.y + 12, w = 42, h = 42 }
+  pixel_rect(avatar.x, avatar.y, avatar.w, avatar.h, G.C.arr,
+    { chamfer = 5, border = G.C.border, line_w = 2, shadow = false })
+  UI.text(G.FONTS.normal, "P", avatar.x, avatar.y + 6, G.C.black, avatar.w, "center")
+  local speaker = (item.cofounder and item.cofounder.name) or "Patch"
+  local heading = compact and speaker or (speaker .. (item.title and (" · " .. item.title) or ""))
+  UI.text(G.FONTS.small, heading,
+    avatar.x + avatar.w + 10, panel_rect.y + 10, G.C.arr,
+    panel_rect.w - avatar.w - 76, "left")
+  if compact and G.GAME then
+    local game = G.GAME
+    UI.text(G.FONTS.tiny, ("RW %s · R%d · E%d · D%d"):format(
+      (game.runway or 99) >= 99 and "long" or tostring(game.runway), game.maturity_rung or 1,
+      game.equity_pct or 100, math.floor(require("game.meters").get("tech_debt") or 0)),
+      avatar.x + avatar.w + 10, panel_rect.y + 35, G.C.text_dim,
+      panel_rect.w - avatar.w - 76, "left")
+  end
+  lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text)
+  lg.printf(item.body or "", panel_rect.x + 14, panel_rect.y + 58, panel_rect.w - 28, "left")
+  if item.prompt then
+    UI.text(G.FONTS.tiny, item.prompt, panel_rect.x + 14,
+      panel_rect.y + panel_rect.h - (compact and 42 or 36), G.C.mult,
+      panel_rect.w - (item.id == "welcome" and 138 or 28), "left")
+  end
+  if item.id == "welcome" then
+    local mx, my = cursor()
+    draw_button(ack, "Got it", true, point_in_rect(mx, my, ack.x, ack.y, ack.w, ack.h))
+  end
+end
+
 -- ── Phase 4B overlays: deck view · run info · options (topmost, any page; click-outside closes) ────
 function UI.draw_overlays()
   if not (G.SHOW_DECK_VIEW or G.SHOW_RUN_INFO or G.SHOW_OPTIONS) then return end
@@ -1074,7 +1262,9 @@ function UI.draw_overlays()
     end
     fact("MARKET", (g.market and g.market.name) or "?", G.C.arr)
     fact("STAKE", tostring(g.stake or 1) .. " \194\183 " .. (RS.STAGE_NAME[g.ante or 1] or ""))
-    fact("BOSS TELEGRAPH", (g.blind and g.blind.event) or "(see blind select)")
+    local boss_key = g.blind and g.blind.event
+    local boss = boss_key and Bosses.rule(boss_key)
+    fact("BOSS TELEGRAPH", boss and (boss.name .. ": " .. Bosses.describe(boss_key)) or "(see blind select)")
     fact("PAYROLL DUE", "-$" .. format_number(RS.payroll_due() or 0), G.C.mult)
     fact("CLOSE REWARD", "+$" .. format_number((RS.BLIND_REWARD_UNITS[g.blind_idx or 1] or 0) *
       require("game.economy").unit(g, RS.ANTE_BASE)), G.C.win)
@@ -1085,7 +1275,7 @@ function UI.draw_overlays()
   end
 
   if G.SHOW_OPTIONS then
-    local pw, ph = 420, 540
+    local pw, ph = 420, 660
     local px0, py0 = (W - pw) / 2, (H - ph) / 2
     pixel_rect(px0, py0, pw, ph, { 0.10, 0.12, 0.16, 1 }, { chamfer = 8, border = G.C.arr, line_w = 2 })
     UI.text(G.FONTS.normal, "OPTIONS", px0, py0 + 12, G.C.arr, pw, "center")
@@ -1096,6 +1286,8 @@ function UI.draw_overlays()
       { "opt_flash",  "Screen flash:  " .. (G.SETTINGS.flash == false and "OFF" or "ON") },
       { "opt_particles", "Particles:  " .. (G.SETTINGS.particles == false and "OFF" or "ON") },
       { "opt_crt",    "CRT filter:  " .. (G.SETTINGS.crt and "ON" or "OFF") },
+      { "opt_guidance", "Guidance:  " .. (Guidance.preferences().guidance and "ON" or "OFF") },
+      { "opt_chatter", "Patch chatter:  " .. (Guidance.preferences().cofounder_chatter and "ON" or "OFF") },
       { "opt_quit",   "Quit to menu" },
     }
     local by3 = py0 + 64

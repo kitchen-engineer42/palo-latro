@@ -13,6 +13,8 @@ local Deck = require("game.deck")
 local Economy = require("game.economy")
 local Eras = require("game.eras")
 local RNG = require("game.rng")
+local Profile = require("game.profile")
+local Guidance = require("game.guidance")
 
 local Round = {}
 
@@ -20,6 +22,9 @@ function Round.start_run(opts)
   opts = opts or {}
   local W, H = G.WINDOW.w, G.WINDOW.h
   RunState.new(opts)                                     -- the 4-scope run state + ante/blind loop
+  G.GAME.tutorial_script = opts.tutorial_script
+  G.GAME.tutorial_market_id = opts.tutorial_market_id
+  Guidance.emit("run_started", { script = opts.tutorial_script })
 
   -- Balatro layout (P3): LEFT = counter column (drawn by ui.lua, x 0..328); RIGHT = play area.
   -- jokers top-left of the play zone, played cards centre, hand bottom, deck bottom-right corner.
@@ -34,10 +39,15 @@ function Round.start_run(opts)
                              T = { x = W - 244, y = 24, w = 220, h = Card.H } })   -- Track C B1 (the reserved top-right region)
 
   if G.GAME.market then
+    Profile.discover(G.GAME.market.id, false)
     Round.seed_master_deck()
     StateMachine.set_state(G.STATES.BLIND_SELECT)
   else
+    local market_ids = {}
+    for _, market in ipairs(G.GAME.market_choices or {}) do market_ids[#market_ids + 1] = market.id end
+    Profile.discover_many(market_ids)
     StateMachine.set_state(G.STATES.MARKET_SELECT)
+    Guidance.emit("market_choices_shown", { choices = market_ids })
   end
 end
 
@@ -51,6 +61,9 @@ function Round.next_blind()
   Round.deal_to_full()
   Scoring.fire_hook("first_hand_drawn")
   StateMachine.set_state(G.STATES.SELECTING_HAND)
+  Guidance.emit("blind_started", {
+    ante = G.GAME.ante, blind_idx = G.GAME.blind_idx, boss = G.GAME.blind and G.GAME.blind.event,
+  })
 end
 
 function Round.restart()
@@ -147,11 +160,19 @@ function Round.seed_master_deck()
   end
   g._deck_seeded = true
   assert(Deck.validate(g.master_deck, 40))
+  local discovered = {}
+  for _, entry in ipairs(g.master_deck) do discovered[#discovered + 1] = entry.center_key end
+  Profile.discover_many(discovered)
 end
 
 function Round.select_market(market)
   if G.GAME._deck_seeded then return false end
+  if G.GAME.tutorial_market_id and market.id ~= G.GAME.tutorial_market_id then return false end
+  local lesson = Guidance.current()
+  if lesson and lesson.id == "welcome" then return false end
   require("game.markets").select(G.GAME, market, { initial = true })
+  Profile.discover(market.id)
+  Guidance.emit("market_selected", { market_id = market.id })
   G.GAME.era = Eras.for_ante(require("data.gameplay.market_rules").for_market(market), G.GAME.ante)
   Round.seed_master_deck()
   StateMachine.set_state(G.STATES.BLIND_SELECT)
@@ -165,6 +186,7 @@ function Round.prepare_tech_draft()
     G.GAME.master_deck, count, RNG.fn("draft"))
   G.GAME.tech_draft = { choices = {} }
   for _, center in ipairs(choices) do G.GAME.tech_draft.choices[#G.GAME.tech_draft.choices + 1] = center.key end
+  Profile.discover_many(G.GAME.tech_draft.choices)
   return #choices > 0
 end
 
@@ -175,6 +197,7 @@ function Round.choose_tech(index)
   local seal
   if RNG.value("modifier") < 0.03 then seal = (RNG.value("modifier") < 0.5) and "reusable" or "monetized" end
   Round.master_add(key, { seal = seal })
+  Profile.discover(key)
   G.GAME.tech_drafts_taken = (G.GAME.tech_drafts_taken or 0) + 1
   G.GAME.tech_draft = nil
   Shop.enter()
@@ -261,6 +284,7 @@ end
 -- loop: blind won (next blind / IPO win) / blind failed (run over) / continue this blind.
 function Round.cash_out_ship()
   local g = G.GAME
+  Guidance.emit("ship_scored", { arr = g.this_ship_arr or 0 })
   Scoring.fire_hook("pre_cash_out")
   g.cumulative_arr = g.cumulative_arr + (g.this_ship_arr or 0)
   g.this_blind_arr = g.cumulative_arr
@@ -295,18 +319,26 @@ function Round.cash_out_ship()
     g.last_blind_reward = (RunState.BLIND_REWARD_UNITS[g.blind_idx] or 0) * Economy.unit(g, RunState.ANTE_BASE)
     g.cash = g.cash + g.last_income + g.last_efficiency + g.last_blind_reward
     g.best_ship_arr, g.best_ship_margin = 0, nil
-    if RunState.settle_blind() then                           -- couldn't make payroll → bankruptcy
+    local bankrupt = RunState.settle_blind()
+    Guidance.emit("blind_settled", { payroll = g.last_payroll, cash = g.cash, bankrupt = bankrupt })
+    if cleared_boss and not bankrupt then Guidance.emit("boss_won", { boss = g.blind and g.blind.event }) end
+    if bankrupt then                                           -- couldn't make payroll → bankruptcy
       g.won, g.result = false, "bankrupt"
       Audio.play("lose"); Juice.flash(0.4, G.C.lose)
+      Guidance.emit("run_lost", { result = g.result })
       require("game.profile").record_run(Centers)             -- persist career/discovery/unlocks
       StateMachine.set_state(G.STATES.GAME_OVER)
     elseif RunState.advance() == "won_run" then               -- cleared the ante-8 boss → IPO
       g.won, g.result = true, "IPO"
       g.ipo_value = Economy.ipo_value(g)
       Audio.win(); Juice.flash(0.5, G.C.win)
+      Guidance.emit("run_won", { ipo_value = g.ipo_value })
       require("game.profile").record_run(Centers)             -- win → unlock forms + beat stake
       StateMachine.set_state(G.STATES.GAME_OVER)
     else
+      if g.blind_idx == 3 then
+        Guidance.emit("boss_previewed", { boss = g.blind and g.blind.event })
+      end
       local Lifecycle = require("game.founder_lifecycle")
       for i = #G.jokers.cards, 1, -1 do
         local founder = G.jokers.cards[i]
@@ -324,9 +356,11 @@ function Round.cash_out_ship()
     Scoring.fire_hook("blind_lost")
     g.won, g.result = false, "failed_blind"
     Audio.play("lose"); Juice.flash(0.4, G.C.lose)
+    Guidance.emit("run_lost", { result = g.result })
     require("game.profile").record_run(Centers)
     StateMachine.set_state(G.STATES.GAME_OVER)
   else
+    Guidance.emit("ship_failed", { remaining = g.blind.target - g.cumulative_arr })
     StateMachine.set_state(G.STATES.DRAW_TO_HAND)             -- continue this blind
   end
 end

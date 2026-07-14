@@ -14,7 +14,13 @@ Profile.MARQUEE_LOCK = {}            -- thin marquee tier to lock (empty v1; the
 
 local function default()
   return { unlocked = {}, discovered = {}, beaten_stakes = {},
-           career = { runs = 0, wins = 0, best_arr = 0, best_ante = 1 } }
+           career = { runs = 0, wins = 0, best_arr = 0, best_ante = 1 },
+           preferences = { guidance = true, cofounder_chatter = true },
+           tutorial = {
+             version = 1, script = "indie_saas_v1", started = false,
+             completed = false, first_win = false, seen = {}, milestones = {},
+             contextual_seen = {}, chatter_counts = {},
+           } }
 end
 Profile.default = default
 
@@ -31,9 +37,16 @@ local function available()
 end
 
 local function backup_once(name, contents)
-  if love.filesystem.getInfo(name) then return true end
-  local ok, err = love.filesystem.write(name, contents)
-  return ok, err
+  if not love.filesystem.getInfo(name) then return love.filesystem.write(name, contents) end
+  if love.filesystem.read(name) == contents then return true end
+  -- A restored older save may be migrated more than once. Never silently keep a backup belonging
+  -- to a different source profile; retain the next available sibling instead.
+  for index = 1, 999 do
+    local candidate = name .. "." .. tostring(index)
+    if not love.filesystem.getInfo(candidate) then return love.filesystem.write(candidate, contents) end
+    if love.filesystem.read(candidate) == contents then return true end
+  end
+  return false, "profile migration backup namespace is exhausted"
 end
 
 -- love.filesystem has no cross-version rename primitive. Write and verify a sibling first, then use the
@@ -90,10 +103,12 @@ function Profile.load()
   end
 
   G.PROFILE = data
-  if meta.legacy then
-    local backed, backup_err = backup_once(Profile.SAVE .. ".bak", raw)
+  if meta.migrated then
+    local backup_name = meta.legacy and (Profile.SAVE .. ".bak")
+      or (Profile.SAVE .. ".v" .. tostring(meta.source_version) .. ".bak")
+    local backed, backup_err = backup_once(backup_name, raw)
     if not backed then
-      Profile.last_error = "legacy profile backup failed: " .. tostring(backup_err)
+      Profile.last_error = "profile migration backup failed: " .. tostring(backup_err)
       return G.PROFILE
     end
     local encoded, encode_err = Codec.encode(G.PROFILE)
@@ -128,7 +143,23 @@ function Profile.apply_to_centers(Centers)
 end
 
 function Profile.unlock(key) (G.PROFILE.unlocked)[key] = true end
-function Profile.discover(key) (G.PROFILE.discovered)[key] = true end
+
+function Profile.discover_many(keys, persist)
+  if G.MIMIC_HEADLESS or not (G.PROFILE and G.PROFILE.discovered) then return false end
+  local changed = false
+  for _, key in ipairs(keys or {}) do
+    if type(key) == "string" and key ~= "" and not G.PROFILE.discovered[key] then
+      G.PROFILE.discovered[key] = true
+      changed = true
+    end
+  end
+  if changed and persist ~= false and G.GUIDANCE_RUNTIME then Profile.save() end
+  return changed
+end
+
+function Profile.discover(key, persist)
+  return Profile.discover_many({ key }, persist)
+end
 
 -- highest selectable stake = 1 + highest beaten (cap 8).
 function Profile.max_stake()
@@ -164,9 +195,15 @@ function Profile.record_run(Centers)
   p.career.best_arr = math.max(p.career.best_arr or 0, g.cumulative_arr or 0)
   p.career.best_ante = math.max(p.career.best_ante or 1, g.ante or 1)
   for _, c in ipairs(Centers.pool("Founder")) do if c.discovered then p.discovered[c.key] = true end end
+  -- Scripted lessons belong only to the first recorded run. Whether guidance was muted or the run
+  -- ended early, no later ordinary Market offer may inherit a fixed-scenario requirement.
+  p.tutorial = p.tutorial or {}
+  p.tutorial.completed = true
+  p.tutorial.active_lesson = nil
   if g.won then
     p.career.wins = (p.career.wins or 0) + 1
     p.beaten_stakes[g.stake or 1] = true                 -- beat stake N → stake N+1 selectable
+    p.tutorial.first_win = true                          -- contextual onboarding retires after the first IPO
   end
   Profile.check_unlocks(Centers)                         -- progressive form reveal (any run, by best-ante)
   Profile.save()

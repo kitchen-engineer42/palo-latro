@@ -65,6 +65,9 @@ function love.load()
   G.E_MANAGER = EventManager()
   local Profile = require("game.profile")
   Profile.load()                                  -- cross-run unlocks/discovery/stakes
+  local tutorial_preview = os.getenv("PL_FRESH_TUTORIAL")
+  if tutorial_preview then G.PROFILE = Profile.default() end   -- ephemeral QA profile; never overwrite the real save
+  G.GUIDANCE_RUNTIME = not tutorial_preview
   Centers.load_all()
   Profile.apply_to_centers(Centers)               -- lock 2nd-forms etc. unless unlocked in the profile
   Centers.load_art()
@@ -73,7 +76,16 @@ function love.load()
   Audio.load()
   load_shaders()                                  -- P4: compile assets/shaders/*.glsl → G.SHADERS (guarded)
   StateMachine.prep_stage(G.STAGES.MAIN_MENU, G.STATES.MENU)   -- boot to the stake-select menu
-  if os.getenv("PL_AUTORUN") then                              -- dev: skip the menu, jump into a run at stake N
+  if tutorial_preview then
+    G.FUNCS.start_run_at()
+    if tutorial_preview == "play" then                         -- dev: inspect the compact in-run lesson panel
+      G.FUNCS.guidance_ack()
+      for index, market in ipairs(G.GAME.market_choices or {}) do
+        if market.id == "indie-saas" then G.FUNCS["market_pick_" .. index](); break end
+      end
+      G.FUNCS.play_blind()
+    end
+  elseif os.getenv("PL_AUTORUN") then                         -- dev: skip the menu, jump into a run at stake N
     Round.start_run({ stake = tonumber(os.getenv("PL_AUTORUN")) or 1,
       market_id = os.getenv("PL_MARKET") or "indie-saas" })
     if os.getenv("PL_PLAY") and G.FUNCS.play_blind then G.FUNCS.play_blind() end   -- + deal into the play screen
@@ -89,6 +101,10 @@ function love.load()
       local C = require("game.consumables")
       C.grant("tl_seed_round"); C.grant("tl_moores_law")
     end
+  end
+  if os.getenv("PL_COLLECTION") then                          -- dev: open the read-only catalog for visual checks
+    require("game.collection").reset()
+    StateMachine.set_state(G.STATES.COLLECTION)
   end
   local ov = os.getenv("PL_OVERLAY")                           -- dev: force an overlay open (screenshot checks)
   if ov == "runinfo" then G.SHOW_RUN_INFO = true
@@ -219,7 +235,8 @@ function love.draw()
   love.graphics.scale(G.VIEW.scale, G.VIEW.scale)
 
   Juice.apply_transform()    -- screen shake wraps the scene only (UI stays steady/clickable)
-  if G.STATE ~= G.STATES.SHOP and G.STATE ~= G.STATES.MENU and G.STATE ~= G.STATES.BLIND_SELECT then   -- full-screen pages skip the play scene
+  if G.STATE ~= G.STATES.SHOP and G.STATE ~= G.STATES.MENU and G.STATE ~= G.STATES.COLLECTION
+      and G.STATE ~= G.STATES.BLIND_SELECT then   -- full-screen pages skip the play scene
     draw_all()               -- cards + areas (fixed-order pools); zone labels are drawn by ui.lua (P3 layout)
     Particles.draw()         -- sparkle bursts
     Juice.draw()             -- floating combat text (on top)
@@ -233,6 +250,7 @@ function love.draw()
 
   UI.render()                -- HUD / buttons / overlay (no shake)
   Juice.draw_flash()         -- brief crescendo/win-lose flash over the scene + HUD
+  UI.draw_guidance()         -- static first-run lessons + independently toggleable Patch chatter
   UI.draw_tooltip()          -- hovered card's full ability text, on top of everything
   UI.draw_overlays()         -- Phase 4B: deck view / run info / options (topmost)
 

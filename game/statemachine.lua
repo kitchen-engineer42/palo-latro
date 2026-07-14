@@ -80,6 +80,7 @@ function StateMachine.prep_stage(stage, state)
   G.STATE_COMPLETE = false
   G.SHOW_RUN_INFO, G.SHOW_OPTIONS, G.SHOW_DECK_VIEW = nil, nil, nil
   G.DRAG, G.PENDING_CONSUMABLE = nil, nil
+  G.GUIDANCE_TOAST = nil
   -- G.ROOM stays identity for the slice (container transform is a later refinement).
 end
 

@@ -14,6 +14,8 @@ local Coverage = require("game.coverage")
 local Playbooks = require("game.playbooks")
 local Archetypes = require("game.archetypes")
 local Reliability = require("game.reliability")
+local Profile = require("game.profile")
+local Guidance = require("game.guidance")
 local ScoreTrace = require("game.score_trace")
 local Centers = require("game.centers")
 local Bosses = require("game.bosses")
@@ -150,6 +152,7 @@ end
 function Scoring.evaluate_ship(played)
   local coverage = Coverage.analyze(played)
   local app = AppTypes.classify(played)
+  Profile.discover(app.key)
   local base = {
     cardarea = G.play, full_hand = played, scoring_hand = played,
     scoring_name = app.name, poker_hands = { [app.key] = true }, coverage = coverage,
@@ -187,7 +190,10 @@ function Scoring.evaluate_ship(played)
     if c.center and c.center.clears_clash then G.GAME._clashes_active = 0; break end
   end
   local subs = #Compat.substitutes(played)
-  if subs > 0 then Meters.add("tech_debt", (G.GAME.tech_debt_accel and subs * 2 or subs)) end  -- stake 7
+  if subs > 0 then
+    Meters.add("tech_debt", (G.GAME.tech_debt_accel and subs * 2 or subs)) -- stake 7
+    if Meters.get("tech_debt") >= 3 then Guidance.emit("high_tech_debt", { debt = Meters.get("tech_debt") }) end
+  end
 
   -- "before" jokers (clear_clash ops decrement G.GAME._clashes_active)
   for _, jk in ipairs(G.jokers.cards) do

@@ -12,6 +12,9 @@ local Coverage = require("game.coverage")
 local Lifecycle = require("game.founder_lifecycle")
 local Economy = require("game.economy")
 local Pricing = require("game.pricing")
+local Collection = require("game.collection")
+local Guidance = require("game.guidance")
+local Profile = require("game.profile")
 
 local S = G.STATES
 
@@ -21,6 +24,7 @@ StateMachine.handlers[S.SHOP] = function() end               -- passive; input d
 StateMachine.handlers[S.BLIND_SELECT] = function() end       -- passive; Play button → play_blind (P2)
 StateMachine.handlers[S.MARKET_SELECT] = function() end
 StateMachine.handlers[S.TECH_DRAFT] = function() end
+StateMachine.handlers[S.COLLECTION] = function() end
 
 StateMachine.handlers[S.SCORING] = function()
   if not G.E_MANAGER:any_pending("base") then                -- juice finished
@@ -44,7 +48,9 @@ StateMachine.handlers[S.GAME_OVER] = function() end
 G.FUNCS.ship = function()
   if G.STATE ~= S.SELECTING_HAND or G.GAME.ships_left <= 0 then return end
   local sel = G.hand:highlighted()
-  if #sel < 1 or #sel > G.GAME.select_max then return end
+  if #sel < 1 then Guidance.emit("ship_rejected_no_selection"); return end
+  if #sel > G.GAME.select_max then return end
+  Guidance.emit("ship_committed", { count = #sel })
   Round.move_to_play(sel)
   Audio.play("ship", 0.7, 0.5)                                -- launch whoosh
   Scoring.evaluate_ship(G.play.cards)
@@ -66,6 +72,8 @@ G.FUNCS.pivot = function()
   G.GAME.discard_count = (G.GAME.discard_count or 0) + #sel
   Scoring.fire_hook("discard", { discard_count = #sel })
   Round.deal_to_full()
+  Guidance.emit("pivot_committed", { count = #sel })
+  Guidance.emit("compatibility_changed", { count = #sel })
 end
 
 G.FUNCS.restart = function()                                  -- game-over → back to the MENU (re-pick stake)
@@ -77,9 +85,40 @@ StateMachine.handlers[S.MENU] = function() end
 for s = 1, 8 do G.FUNCS["stake_" .. s] = function() G.MENU = G.MENU or {}; G.MENU.stake = s end end
 G.FUNCS.start_run_at = function()
   local st = (G.MENU and G.MENU.stake) or 1
+  local tutorial = Guidance.first_run_options()
   G.MIMIC_HEADLESS = false
   StateMachine.prep_stage(G.STAGES.RUN, G.STATES.SELECTING_HAND)
-  Round.start_run({ stake = st })
+  Round.start_run({
+    stake = st,
+    seed = tutorial and tutorial.seed or nil,
+    tutorial_script = tutorial and tutorial.script or nil,
+    tutorial_market_id = tutorial and tutorial.recommended_market_id or nil,
+  })
+end
+G.FUNCS.collection_open = function()
+  if G.STATE ~= S.MENU then return end
+  Collection.reset()
+  StateMachine.set_state(S.COLLECTION)
+end
+G.FUNCS.collection_back = function()
+  if G.STATE ~= S.COLLECTION then return end
+  StateMachine.set_state(S.MENU)
+end
+for i = 1, #Collection.CATEGORIES do
+  G.FUNCS["collection_category_" .. i] = function()
+    if G.STATE == S.COLLECTION then Collection.select_category(i) end
+  end
+end
+for i = 1, 7 do
+  G.FUNCS["collection_filter_" .. i] = function()
+    if G.STATE == S.COLLECTION then Collection.select_filter(i) end
+  end
+end
+G.FUNCS.collection_prev = function()
+  if G.STATE == S.COLLECTION then Collection.change_page(-1) end
+end
+G.FUNCS.collection_next = function()
+  if G.STATE == S.COLLECTION then Collection.change_page(1) end
 end
 for i = 1, 3 do
   G.FUNCS["market_pick_" .. i] = function()
@@ -213,6 +252,9 @@ end
 -- BLIND_SELECT (P2): commit to the previewed blind → deal + start playing
 G.FUNCS.play_blind = function()
   if G.STATE ~= S.BLIND_SELECT then return end
+  if G.GAME.blind and G.GAME.blind.is_boss then
+    Guidance.emit("boss_entered", { boss = G.GAME.blind.event })
+  end
   Round.next_blind()                                           -- rebuild deck + deal + → SELECTING_HAND
 end
 
@@ -228,6 +270,9 @@ G.FUNCS.skip_blind = function()
   end
   G.GAME.skips_run = (G.GAME.skips_run or 0) + 1
   require("game.runstate").advance()
+  if G.GAME.blind_idx == 3 then
+    Guidance.emit("boss_previewed", { boss = G.GAME.blind and G.GAME.blind.event })
+  end
   StateMachine.set_state(S.BLIND_SELECT)
 end
 
@@ -337,6 +382,22 @@ G.FUNCS.opt_shake  = function() if G.SHOW_OPTIONS then G.SETTINGS.shake = not (G
 G.FUNCS.opt_flash  = function() if G.SHOW_OPTIONS then G.SETTINGS.flash = not (G.SETTINGS.flash ~= false) end end
 G.FUNCS.opt_particles = function() if G.SHOW_OPTIONS then G.SETTINGS.particles = not (G.SETTINGS.particles ~= false) end end
 G.FUNCS.opt_crt    = function() if G.SHOW_OPTIONS then G.SETTINGS.crt = not G.SETTINGS.crt end end
+G.FUNCS.opt_guidance = function()
+  if not G.SHOW_OPTIONS then return end
+  local prefs = Guidance.preferences()
+  Guidance.set_preference("guidance", not prefs.guidance)
+  Profile.save()
+end
+G.FUNCS.opt_chatter = function()
+  if not G.SHOW_OPTIONS then return end
+  local prefs = Guidance.preferences()
+  Guidance.set_preference("cofounder_chatter", not prefs.cofounder_chatter)
+  Profile.save()
+end
+G.FUNCS.guidance_ack = function()
+  local lesson = Guidance.current()
+  if lesson and lesson.id == "welcome" then Guidance.emit("acknowledged") end
+end
 G.FUNCS.opt_quit   = function() if G.SHOW_OPTIONS then G.SHOW_OPTIONS = nil; G.FUNCS.restart() end end
 
 return true

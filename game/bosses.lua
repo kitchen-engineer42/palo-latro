@@ -17,6 +17,35 @@ end
 
 function Bosses.rule(key) return by_key[key] end
 
+local function pct(value) return tostring(math.floor(math.abs(value or 0) * 100 + 0.5)) .. "%" end
+
+function Bosses.describe(key)
+  local b = by_key[key]
+  if not b then return "Unknown market shock" end
+  if b.kind == "reliability" then
+    return (b.layer or "Affected") .. " cards lose " .. tostring(b.reliability or 0) .. " Reliability each"
+  elseif b.kind == "role" then
+    return (b.role or "Affected") .. " cards lose " .. tostring(b.reliability or 0) .. " Reliability each"
+  elseif b.kind == "margin" then
+    return "Operating Margin " .. ((b.margin_delta or 0) < 0 and "−" or "+") .. pct(b.margin_delta)
+  elseif b.kind == "payroll" then
+    return "Payroll ×" .. string.format("%.2f", b.payroll_mult or 1)
+  elseif b.kind == "depth" then
+    return "Each duplicate Layer loses " .. tostring(b.reliability_per_duplicate or 0) .. " Reliability"
+  elseif b.kind == "knowledge" then
+    return "Ship " .. tostring(b.required_knowledge or 1) .. "+ Knowledge or lose 2 Reliability"
+  elseif b.kind == "layer" then
+    return (b.layer or "Affected") .. " Ships score Revenue ×" .. string.format("%.2f", b.revenue_mult or 1)
+  elseif b.kind == "clashes" then
+    return "Lose " .. tostring(b.reliability_per_clash or 0) .. " Reliability per compatibility clash"
+  elseif b.kind == "fit" then
+    return "Below ×" .. string.format("%.2f", b.fit_floor or 1) .. " Fit scores Revenue ×0.80"
+  elseif b.kind == "showdown" then
+    return "Below " .. tostring(b.min_equity or 0) .. "% equity loses Reliability and ×0.85 Revenue"
+  end
+  return b.name or key
+end
+
 function Bosses.reliability_penalty(key, cards, context)
   local b = by_key[key]
   if not b then return 0 end

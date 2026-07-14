@@ -16,6 +16,8 @@ local PackPresentation = require("game.pack_presentation")
 local Stakes = require("game.stakes")
 local MarketRules = require("data.gameplay.market_rules")
 local RNG = require("game.rng")
+local Profile = require("game.profile")
+local Guidance = require("game.guidance")
 local random = RNG.fn("shop")
 local pack_random = RNG.fn("packs")
 local pack_shop_random = RNG.fn("pack_shop")
@@ -106,6 +108,7 @@ function Shop.buy_consumable()
   end
   G.GAME.cash = G.GAME.cash - cost
   sh.consumable = false
+  Profile.discover(c.key)
   Audio.play("hire")
   return true
 end
@@ -193,6 +196,17 @@ function Shop.enter()
     local pack = Packs.roll_shop(pack_shop_random, seen)
     if pack then seen[pack.key] = true; G.GAME.shop.packs[i] = pack end
   end
+  local discovered = {}
+  for _, offer in ipairs(G.GAME.shop.founders) do
+    if offer then discovered[#discovered + 1] = (offer.center or offer).key end
+  end
+  if G.GAME.shop.consumable then discovered[#discovered + 1] = G.GAME.shop.consumable.key end
+  Profile.discover_many(discovered)
+  Guidance.emit("shop_entered", { founder_offers = #G.GAME.shop.founders })
+  if #G.GAME.shop.packs > 0 then Guidance.emit("pack_available", { count = #G.GAME.shop.packs }) end
+  if (G.GAME.cash or 0) < (G.GAME.last_payroll or 0) then
+    Guidance.emit("low_cash", { cash = G.GAME.cash, payroll = G.GAME.last_payroll })
+  end
 end
 
 -- redeem the offered voucher: pay, apply its run-modifier generically, mark owned (one-time).
@@ -226,7 +240,10 @@ function Shop.buy(idx)
   local sh = G.GAME.shop
   local offer = sh and sh.founders[idx]
   if not offer then return false end
-  if #G.jokers.cards >= Shop.founder_cap() then return false end
+  if #G.jokers.cards >= Shop.founder_cap() then
+    Guidance.emit("founder_slots_full", { slots = Shop.founder_cap() })
+    return false
+  end
   local cost = Shop.price(offer)
   if (G.GAME.cash or 0) < cost then return false end
   G.GAME.cash = G.GAME.cash - cost
@@ -237,6 +254,8 @@ function Shop.buy(idx)
   maybe_edition(jk, offer.edition)
   Lifecycle.acquire(jk, { source = "shop", sell_basis = offer.sell_basis, stake_mod = offer.stake_mod })
   sh.founders[idx] = false                                     -- bought slot empties
+  Profile.discover(c.key)
+  Guidance.emit("founder_bought", { founder = c.key, salary = c.salary or 0 })
   Audio.play("hire")
   return true
 end
@@ -290,7 +309,10 @@ function Shop.open_pack(idx)
     sh.packs[idx] = false
     sh.pack_open = { kind = "playbook", name = definition.name, pack_key = definition.key,
       art_key = definition.art_key, options = opts, picks_left = definition.picks }
+    local keys = {}; for _, option in ipairs(opts) do keys[#keys + 1] = option.key end
+    Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
+    Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
     Audio.play("select", nil, 0.6)
     return true
   end
@@ -304,7 +326,10 @@ function Shop.open_pack(idx)
     sh.packs[idx] = false
     sh.pack_open = { kind = "tech_law", name = definition.name, pack_key = definition.key,
       art_key = definition.art_key, options = opts, picks_left = definition.picks }
+    local keys = {}; for _, option in ipairs(opts) do keys[#keys + 1] = option.key end
+    Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
+    Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
     Audio.play("select", nil, 0.6)
     return true
   end
@@ -330,7 +355,10 @@ function Shop.open_pack(idx)
   sh.packs[idx] = false
   sh.pack_open = { kind = "hiring", name = definition.name, pack_key = definition.key,
     art_key = definition.art_key, options = opts, picks_left = definition.picks }
+  local keys = {}; for _, option in ipairs(opts) do keys[#keys + 1] = (option.center or option).key end
+  Profile.discover_many(keys)
   PackPresentation.begin(sh.pack_open, idx, definition)
+  Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
   Audio.play("select", nil, 0.6)
   return true
 end
@@ -342,9 +370,11 @@ function Shop.pack_pick(i)
   if not c then return false end
   if po.kind == "playbook" then
     require("game.playbooks").upgrade(c.key, 1)
+    Profile.discover(c.key)
     po.options[i] = false; po.picks_left = po.picks_left - 1
     if po.picks_left <= 0 then sh.pack_open = nil end
     Audio.play("hire")
+    Guidance.emit("pack_picked", { family = po.kind, key = c.key })
     return true
   end
   if po.kind == "tech_law" then
@@ -353,13 +383,20 @@ function Shop.pack_pick(i)
     po.options[i] = false; po.picks_left = po.picks_left - 1
     if po.picks_left <= 0 then sh.pack_open = nil end
     Audio.play("hire")
+    Profile.discover(c.key)
+    Guidance.emit("pack_picked", { family = po.kind, key = c.key })
     return true
   end
-  if #G.jokers.cards >= Shop.founder_cap() then return false end
+  if #G.jokers.cards >= Shop.founder_cap() then
+    Guidance.emit("founder_slots_full", { slots = Shop.founder_cap() })
+    return false
+  end
   emplace_founder(c.center or c, 0, c.edition, i, #po.options); Audio.play("hire")
+  Profile.discover((c.center or c).key)
   po.options[i] = false
   po.picks_left = po.picks_left - 1
   if po.picks_left <= 0 then sh.pack_open = nil end             -- pack consumed
+  Guidance.emit("pack_picked", { family = po.kind, key = (c.center or c).key })
   return true
 end
 

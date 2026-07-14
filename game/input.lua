@@ -19,6 +19,7 @@
 local Controller = require("engine.controller")
 local PackPresentation = require("game.pack_presentation")
 local Audio = require("game.audio")
+local Guidance = require("game.guidance")
 
 local Input = {}
 Input.__index = Input
@@ -244,7 +245,7 @@ function Input:rebuild(button_specs)
     local w, h = g.WINDOW.w or 0, g.WINDOW.h or 0
     local backdrops
     if g.SHOW_OPTIONS then
-      local pw, ph = 420, 540
+      local pw, ph = 420, 660
       local px, py = (w - pw) / 2, (h - ph) / 2
       -- Options closes only outside its panel. Four rectangles leave the panel itself inert while
       -- avoiding a custom, stateful hit-test seam.
@@ -328,6 +329,14 @@ function Input:_toggle_hand(card)
   if card.toggle_select then card:toggle_select()
   else card.selected = not card.selected; if g.hand.align_cards then g.hand:align_cards() end end
   pulse(card, 0.35)
+  local count = selected_count(g.hand)
+  if count > 0 then
+    Guidance.emit("cards_selected", { count = count })
+    local lesson = Guidance.current()
+    if lesson and lesson.id == "compatibility" and count >= 2 then
+      Guidance.emit("compatibility_inspected", { count = count })
+    end
+  end
   return true
 end
 
@@ -400,6 +409,7 @@ end
 function Input:_cancel()
   local g = game()
   if not g then return false end
+  if state_is("COLLECTION") then return self:_call("collection_back") end
   if state_is("TARGET_SELECT") and g.CONSUMABLE_CANCEL then g.CONSUMABLE_CANCEL(); return true end
   if overlay_open() then return close_overlay() end
   if pack_open() then return self:_call("pack_skip") end

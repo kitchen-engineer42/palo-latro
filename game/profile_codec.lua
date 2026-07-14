@@ -8,7 +8,7 @@
 
 local Codec = {}
 
-Codec.VERSION = 2
+Codec.VERSION = 3
 Codec.MAX_BYTES = 1024 * 1024
 Codec.MAX_DEPTH = 24
 Codec.MAX_VALUES = 100000
@@ -220,6 +220,23 @@ local function nonnegative(value, name, default)
   return value
 end
 
+local function boolean(value, name, default)
+  if value == nil then return default end
+  if type(value) ~= "boolean" then return nil, name .. " must be boolean" end
+  return value
+end
+
+local function string_boolean_map(value, name)
+  if value == nil then return {} end
+  if type(value) ~= "table" then return nil, name .. " must be a table" end
+  for key, enabled in pairs(value) do
+    if type(key) ~= "string" or type(enabled) ~= "boolean" then
+      return nil, name .. " must map string keys to booleans"
+    end
+  end
+  return value
+end
+
 function Codec.validate(profile)
   if type(profile) ~= "table" then return nil, "profile root must be a table" end
   local out, err = plain_copy(profile, "profile", 1, {})
@@ -254,7 +271,89 @@ function Codec.validate(profile)
   if out.career.runs % 1 ~= 0 or out.career.wins % 1 ~= 0 or out.career.best_ante % 1 ~= 0 then
     return nil, "profile career counters must be integers"
   end
+
+  if out.preferences == nil then out.preferences = {} end
+  if type(out.preferences) ~= "table" then return nil, "profile.preferences must be a table" end
+  out.preferences.guidance, err = boolean(out.preferences.guidance,
+    "profile.preferences.guidance", true)
+  if err then return nil, err end
+  out.preferences.cofounder_chatter, err = boolean(out.preferences.cofounder_chatter,
+    "profile.preferences.cofounder_chatter", true)
+  if err then return nil, err end
+
+  if out.tutorial == nil then out.tutorial = {} end
+  if type(out.tutorial) ~= "table" then return nil, "profile.tutorial must be a table" end
+  local tutorial = out.tutorial
+  tutorial.version = tutorial.version or 1
+  if not finite_number(tutorial.version) or tutorial.version % 1 ~= 0 or tutorial.version < 1 then
+    return nil, "profile.tutorial.version must be a positive integer"
+  end
+  tutorial.script = tutorial.script or "indie_saas_v1"
+  if type(tutorial.script) ~= "string" then return nil, "profile.tutorial.script must be a string" end
+  local tutorial_defaults = {
+    started = (out.career.runs or 0) > 0,
+    completed = (out.career.runs or 0) > 0,
+    first_win = (out.career.wins or 0) > 0,
+  }
+  for _, field in ipairs({ "started", "completed", "first_win" }) do
+    tutorial[field], err = boolean(tutorial[field], "profile.tutorial." .. field, tutorial_defaults[field])
+    if err then return nil, err end
+  end
+  for _, field in ipairs({ "seen", "milestones", "contextual_seen" }) do
+    tutorial[field], err = string_boolean_map(tutorial[field], "profile.tutorial." .. field)
+    if err then return nil, err end
+  end
+  if tutorial.active_lesson ~= nil and type(tutorial.active_lesson) ~= "string" then
+    return nil, "profile.tutorial.active_lesson must be a string"
+  end
+  tutorial.chatter_counts = tutorial.chatter_counts or {}
+  if type(tutorial.chatter_counts) ~= "table" then
+    return nil, "profile.tutorial.chatter_counts must be a table"
+  end
+  for key, count in pairs(tutorial.chatter_counts) do
+    if type(key) ~= "string" or not finite_number(count) or count < 0 or count % 1 ~= 0 then
+      return nil, "profile.tutorial.chatter_counts must map strings to non-negative integers"
+    end
+  end
   return out
+end
+
+-- Migrations are intentionally small and ordered. v1 was an unwrapped restricted Lua literal; v2
+-- introduced the data-only envelope. v3 adds onboarding state and independent guidance preferences.
+local MIGRATIONS = {
+  [1] = function(profile) return profile end,
+  [2] = function(profile)
+    profile.preferences = type(profile.preferences) == "table" and profile.preferences or {}
+    if profile.preferences.guidance == nil then profile.preferences.guidance = true end
+    if profile.preferences.cofounder_chatter == nil then profile.preferences.cofounder_chatter = true end
+    profile.tutorial = type(profile.tutorial) == "table" and profile.tutorial or {}
+    local tutorial = profile.tutorial
+    tutorial.version = tutorial.version or 1
+    tutorial.script = tutorial.script or "indie_saas_v1"
+    local runs = (profile.career or {}).runs
+    local wins = (profile.career or {}).wins
+    local prior_runs = type(runs) == "number" and runs > 0
+    local prior_win = type(wins) == "number" and wins > 0
+    if tutorial.started == nil then tutorial.started = prior_runs end
+    if tutorial.completed == nil then tutorial.completed = prior_runs end
+    if tutorial.first_win == nil then tutorial.first_win = prior_win end
+    tutorial.seen = type(tutorial.seen) == "table" and tutorial.seen or {}
+    tutorial.milestones = type(tutorial.milestones) == "table" and tutorial.milestones or {}
+    tutorial.contextual_seen = type(tutorial.contextual_seen) == "table" and tutorial.contextual_seen or {}
+    tutorial.chatter_counts = type(tutorial.chatter_counts) == "table" and tutorial.chatter_counts or {}
+    return profile
+  end,
+}
+
+local function migrate(profile, source_version)
+  local current = source_version
+  while current < Codec.VERSION do
+    local step = MIGRATIONS[current]
+    if not step then return nil, "no profile migration from version " .. tostring(current) end
+    profile = step(profile)
+    current = current + 1
+  end
+  return profile
 end
 
 function Codec.encode(profile)
@@ -270,22 +369,28 @@ function Codec.decode(input)
   local root, err = parse_literal(input)
   if not root then return nil, nil, err end
   if type(root) ~= "table" then return nil, nil, "profile root must be a table" end
-  local profile, meta
+  local profile, source_version
   if root.version ~= nil then
     if not finite_number(root.version) or root.version % 1 ~= 0 then
       return nil, nil, "profile version must be an integer"
     end
     if root.version > Codec.VERSION then return nil, nil, "profile version is newer than this build" end
-    if root.version ~= Codec.VERSION then return nil, nil, "unsupported profile version " .. tostring(root.version) end
     if type(root.profile) ~= "table" then return nil, nil, "versioned profile is missing its data table" end
-    profile, meta = root.profile, { version = root.version, legacy = false }
+    profile, source_version = root.profile, root.version
   else
-    profile, meta = root, { version = 1, legacy = true }
+    profile, source_version = root, 1
   end
+  profile, err = migrate(profile, source_version)
+  if not profile then return nil, nil, err end
   local valid
   valid, err = Codec.validate(profile)
   if not valid then return nil, nil, err end
-  return valid, meta
+  return valid, {
+    version = Codec.VERSION,
+    source_version = source_version,
+    legacy = source_version == 1,
+    migrated = source_version < Codec.VERSION,
+  }
 end
 
 Codec.parse_literal = parse_literal
