@@ -10,8 +10,7 @@ function love.conf(t)
   t.window.resizable = true
   t.window.vsync = 1
   t.window.highdpi = true
-  -- Modules the lightweight runtime does not use:
+  -- Modules the lightweight runtime does not use. Joystick and touch stay enabled because
+  -- their callbacks share the same controller/input policy as mouse and keyboard.
   t.modules.physics = false
-  t.modules.joystick = false
-  t.modules.touch = false
 end

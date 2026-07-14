@@ -16,6 +16,7 @@ function Node:init(args)
     visible = true,
     collide = { can = (args.collideable ~= false), is = false },
     hover   = { can = false, is = false },
+    focus   = { can = false, is = false },
     click   = { can = false, is = false },
     drag    = { can = false, is = false },
   }
@@ -60,7 +61,11 @@ function Node:remove()
   if G.STAGE and G.STAGE_OBJECTS[G.STAGE] then
     remove_from_pool(G.STAGE_OBJECTS[G.STAGE], self)
   end
-  if G.CONTROLLER then
+  if G.CONTROLLER and type(G.CONTROLLER.release_node) == "function" then
+    G.CONTROLLER:release_node(self)
+  elseif G.CONTROLLER then
+    -- Compatibility for boot/test paths that install the older reference-only
+    -- controller shape before engine.controller is loaded.
     for _, k in ipairs({ "hovering", "clicked", "dragging", "focused" }) do
       if G.CONTROLLER[k] == self then G.CONTROLLER[k] = nil end
     end

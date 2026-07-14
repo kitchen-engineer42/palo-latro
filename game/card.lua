@@ -346,8 +346,10 @@ function Card:draw()
   local shx, shy = 0, 0
   if not G.SETTINGS.reduced_motion then
     rot = rot + 0.02 * math.sin(G.TIMERS.REAL * 1.1 + (self.ID or 0) * 0.7)   -- idle ambient sway
-    if self.states.hover.is or self.selected then                            -- lean toward cursor
-      local mx, my = vmouse()
+    if self.states.hover.is or (self.states.focus and self.states.focus.is) or self.selected then -- lean toward cursor
+      local mx, my
+      if G.CONTROLLER and G.CONTROLLER.cursor then mx, my = G.CONTROLLER.cursor.x, G.CONTROLLER.cursor.y
+      else mx, my = vmouse() end
       shx = clamp((mx - cx) / 600, -0.08, 0.08)   -- gentle lean (was too strong / distorted small cards)
       shy = clamp((my - cy) / 700, -0.05, 0.05)
       s = s + 0.04
@@ -387,13 +389,15 @@ function Card:draw_body(t)
 
   if self.center and self.center.set == "Founder" then        -- founder (joker) face → shared full-bleed renderer
     local ed = self.edition and Card.EDITIONS[self.edition]
-    local bcol = self.selected and G.C.lose or (self.states.hover.is and G.C.hover or (ed and ed.col) or G.C.border)
+    local active = self.states.hover.is or (self.states.focus and self.states.focus.is)
+    local bcol = self.selected and G.C.lose or (active and G.C.hover or (ed and ed.col) or G.C.border)
     Card.draw_founder_face(t, self.center, { card = self, border = bcol, line_w = self.selected and 3 or (ed and 3 or 2) })
     return
   end
 
   if self.center and self.center.set == "Consumable" then     -- Tech Law (Tarot) face → the art IS the card
-    local bcol = self.selected and G.C.select or (self.states.hover.is and G.C.hover or G.C.border)
+    local active = self.states.hover.is or (self.states.focus and self.states.focus.is)
+    local bcol = self.selected and G.C.select or (active and G.C.hover or G.C.border)
     Card.draw_consumable_face(t, self.center, { card = self, border = bcol, line_w = self.selected and 3 or 2 })
     return
   end
@@ -448,7 +452,7 @@ function Card:draw_body(t)
   -- selection / hover border
   local bcol, bw = G.C.border, 2
   if self.selected then bcol, bw = G.C.select, 3
-  elseif self.states.hover.is then bcol, bw = G.C.hover, 2 end
+  elseif self.states.hover.is or (self.states.focus and self.states.focus.is) then bcol, bw = G.C.hover, 2 end
   pixel_rect(t.x, t.y, t.w, t.h, nil, { chamfer = 6, border = bcol, line_w = bw })
 end
 

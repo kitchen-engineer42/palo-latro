@@ -9,6 +9,8 @@ require("engine.moveable")
 require("engine.event")
 require("engine.pools")
 require("engine.draw")
+require("engine.controller")
+require("engine.uibox")
 require("game.text")
 local Centers      = require("game.centers")
 require("game.card")
@@ -23,6 +25,8 @@ local Audio        = require("game.audio")
 local Juice        = require("game.juice")
 local Particles    = require("game.particles")
 local PackPresentation = require("game.pack_presentation")
+local Input         = require("game.input")
+local INPUT
 
 local layers = require("data.layers")
 local MarketTint = require("data.market_tint")   -- P4: per-market background tint
@@ -124,6 +128,11 @@ function love.load()
     love.window.setFullscreen(true)
     update_view(love.graphics.getDimensions())
   end
+  INPUT = Input.new({ width = G.VW, height = G.VH })
+  G.INPUT = INPUT
+  local mx, my = vmap(love.mouse.getPosition())
+  INPUT:pointer_moved(mx, my, "mouse")
+  INPUT:update(0, UI.prepare())
 end
 
 function love.update(dt)
@@ -153,45 +162,9 @@ function love.update(dt)
   for _, m in ipairs(G.I.MOVEABLE) do if m.move and not m.REMOVED then m:move(move_dt) end end
   for _, m in ipairs(G.I.MOVEABLE) do if m.update and not m.REMOVED then m:update(dt) end end
 
-  -- hover: topmost hand card under the cursor (virtual coords, P2)
-  local mx, my = vmouse()
-  if G.hand then
-    local top = nil
-    for i = #G.hand.cards, 1, -1 do
-      local c = G.hand.cards[i]
-      c.states.hover.is = false
-      if not top and c:collides_with_point(mx, my) then top = c end
-    end
-    if top then top.states.hover.is = true end
-  end
-  if G.jokers then
-    for _, c in ipairs(G.jokers.cards) do c.states.hover.is = c:collides_with_point(mx, my) end
-  end
-  if G.consumables then
-    for _, c in ipairs(G.consumables.cards) do c.states.hover.is = c:collides_with_point(mx, my) end
-  end
-
-  -- founder drag-to-reorder (order = scoring order): the held founder follows the cursor + slots into place
-  local d = G.DRAG
-  if d and love.mouse.isDown(1) and G.jokers and G.jokers.cards then
-    local cards = G.jokers.cards
-    local mxd = (vmouse())
-    if math.abs(mxd - d.downx) > 6 then d.moved = true end
-    if d.moved then
-      local i; for k, cc in ipairs(cards) do if cc == d.card then i = k; break end end
-      if i then
-        local n, cw, gap = #cards, d.card.T.w, 12
-        local startx = G.jokers.T.x + (G.jokers.T.w - (n * cw + (n - 1) * gap)) / 2
-        local target = n
-        for k = 1, n do if mxd < startx + (k - 1) * (cw + gap) + cw / 2 then target = k; break end end
-        if target ~= i then table.remove(cards, i); table.insert(cards, target, d.card); G.jokers:align_cards() end
-        d.card:set_T(mxd - d.grabx, G.jokers.T.y - 14)     -- lifted, following the cursor
-      end
-    end
-  end
-
   -- per-state logic
   StateMachine.update(dt)
+  if INPUT then INPUT:update(dt, UI.prepare()) end
 
   if os.getenv("PL_SHOT") then                       -- dev: grab a settled frame to a PNG, then quit
     G._shot = (G._shot or 0) + 1
@@ -279,120 +252,69 @@ function love.draw()
   end
 end
 
--- input is locked while the scoring count-up animates (Balatro does the same) → no mid-crescendo misfires.
-local function input_locked() return G.STATE == G.STATES.SCORING end
-
 function love.mousepressed(x, y, button)
-  if button == 2 and G.STATE == G.STATES.TARGET_SELECT then G.CONSUMABLE_CANCEL(); return end   -- B4 cancel
-  if button ~= 1 then return end
-  x, y = vmap(x, y)                      -- window → virtual coords (P2)
-  if G.STATE == G.STATES.GAME_OVER then G.FUNCS.restart(); return end
-  if input_locked() then return end
-
-  -- Modal overlays own input. Covered gameplay buttons are never dispatched.
-  if G.SHOW_DECK_VIEW or G.SHOW_RUN_INFO or G.SHOW_OPTIONS then
-    local b = UI.button_at(x, y)
-    if b and G.FUNCS[b] and (b:match("^opt_") or b == "run_info" or b == "options") then G.FUNCS[b](); return end
-    G.SHOW_DECK_VIEW, G.SHOW_RUN_INFO, G.SHOW_OPTIONS = nil, nil, nil
-    return
-  end
-  local b = UI.button_at(x, y)
-  if b and G.FUNCS[b] then G.FUNCS[b](); return end
-  -- click the draw pile → deck-view overlay
-  if G.STATE == G.STATES.SELECTING_HAND and G.deck
-     and x >= G.deck.T.x and x <= G.deck.T.x + Card.W and y >= G.deck.T.y and y <= G.deck.T.y + Card.H then
-    G.SHOW_DECK_VIEW = true
-    return
-  end
-
-  -- B4: TARGET_SELECT — ONLY eligible hand cards are clickable (hard-gated; buttons above still work
-  -- so the Layer picker + cancel reach their FUNCS). Everything else falls through to nothing.
-  if G.STATE == G.STATES.TARGET_SELECT then
-    local pc = G.PENDING_CONSUMABLE
-    if pc and not pc.need_layer and G.hand then
-      for i = #G.hand.cards, 1, -1 do
-        local c = G.hand.cards[i]
-        if c:collides_with_point(x, y) and not c.selected then
-          c:juice_up(0.35); Audio.play("select", nil, 0.5)
-          G.CONSUMABLE_TARGET_PICK(c)
-          break
-        end
-      end
-    end
-    return
-  end
-
-  -- B2: consumable click-to-select (Use/Sell buttons appear beneath; separate from founder drag)
-  if (G.STATE == G.STATES.SELECTING_HAND or G.STATE == G.STATES.SHOP) and G.consumables then
-    for i = #G.consumables.cards, 1, -1 do
-      local c = G.consumables.cards[i]
-      if c:collides_with_point(x, y) then
-        c.selected = not c.selected
-        for _, o in ipairs(G.consumables.cards) do if o ~= c then o.selected = false end end
-        c:juice_up(0.3); Audio.play("select", nil, 0.5)
-        return
-      end
-    end
-  end
-
-  if (G.STATE == G.STATES.SELECTING_HAND or G.STATE == G.STATES.SHOP) and G.jokers then  -- grab a founder: drag to reorder, click to select/sell
-    for i = #G.jokers.cards, 1, -1 do
-      local c = G.jokers.cards[i]
-      if c:collides_with_point(x, y) then
-        G.DRAG = { card = c, grabx = x - c.T.x, downx = x, moved = false }   -- order = scoring order
-        return
-      end
-    end
-  end
-
-  if G.STATE == G.STATES.SELECTING_HAND and G.hand then
-    for i = #G.hand.cards, 1, -1 do
-      local c = G.hand.cards[i]
-      if c:collides_with_point(x, y) then
-        if c.selected or #G.hand:highlighted() < G.GAME.select_max then
-          c:toggle_select(); c:juice_up(0.35); Audio.play("select", nil, 0.5)
-        end
-        break
-      end
-    end
-  end
+  if not INPUT then return end
+  local vx, vy = vmap(x, y)
+  INPUT:pointer_pressed(vx, vy, button, "mouse")
 end
 
 function love.mousereleased(x, y, button)
-  if button ~= 1 then return end
-  local d = G.DRAG
-  if not d then return end
-  if not d.moved and G.jokers then                 -- a click (not a drag) → toggle selection
-    for _, j in ipairs(G.jokers.cards) do if j ~= d.card then j.selected = false end end
-    d.card.selected = not d.card.selected
-    d.card:juice_up(0.35); Audio.play("select", nil, 0.5)
-  end
-  if G.jokers then G.jokers:align_cards() end       -- snap the reordered row back into place
-  G.DRAG = nil
+  if not INPUT then return end
+  local vx, vy = vmap(x, y)
+  INPUT:pointer_released(vx, vy, button, "mouse")
+end
+
+function love.mousemoved(x, y)
+  if not INPUT then return end
+  local vx, vy = vmap(x, y)
+  INPUT:pointer_moved(vx, vy, "mouse")
 end
 
 function love.keypressed(key)
-  -- always-live keys (quit / restart / dev toggles) — work even mid-animation
-  if key == "escape" then
-    if G.STATE == G.STATES.TARGET_SELECT then G.CONSUMABLE_CANCEL(); return end
-    if G.SHOW_RUN_INFO or G.SHOW_OPTIONS or G.SHOW_DECK_VIEW then
-      G.SHOW_RUN_INFO, G.SHOW_OPTIONS, G.SHOW_DECK_VIEW = nil, nil, nil; return
-    end
-    love.event.quit(); return
-  elseif key == "r" then G.FUNCS.restart(); return
-  elseif key == "m" then G.SETTINGS.sound = not G.SETTINGS.sound; return          -- dev: toggle sound
+  -- Dev toggles remain explicit; all gameplay, focus, modal, and cancel policy lives in Input.
+  if key == "m" then G.SETTINGS.sound = not G.SETTINGS.sound; return             -- dev: toggle sound
   elseif key == "j" then G.SETTINGS.reduced_motion = not G.SETTINGS.reduced_motion; return  -- dev: toggle motion
   elseif key == "h" then G.SETTINGS.shaders = not G.SETTINGS.shaders; return                -- dev: toggle shaders (P4)
   elseif key == "c" then G.SETTINGS.crt = not G.SETTINGS.crt; return                        -- dev: toggle CRT post-fx (P4.4)
   end
-  if input_locked() then return end                                              -- lock actions during the count-up
-  if key == "space" then if G.FUNCS.ship then G.FUNCS.ship() end
-  elseif key == "f" then if G.FUNCS.refactor then G.FUNCS.refactor() end   -- pay down tech-debt (E3)
-  elseif key == "d" then if G.FUNCS.distill then G.FUNCS.distill() end      -- distill selected founder (E4)
-  elseif key == "p" then if G.FUNCS.promote then G.FUNCS.promote() end      -- automate selected founder (E4)
-  elseif key == "e" then if G.FUNCS.raise then G.FUNCS.raise() end          -- raise round / dilute equity (E4)
-  elseif key == "v" then if G.FUNCS.market_pivot then G.FUNCS.market_pivot() end  -- pivot markets (E5)
-  end
+  local handled = INPUT and INPUT:key_pressed(key, "keyboard")
+  if key == "escape" and not handled then love.event.quit() end
+end
+
+function love.keyreleased(key)
+  if INPUT then INPUT:key_released(key) end
+end
+
+local GAMEPAD_KEY = { a = "a", b = "cancel", dpup = "dpup", dpdown = "dpdown",
+  dpleft = "dpleft", dpright = "dpright", start = "enter" }
+
+function love.gamepadpressed(_, button)
+  if not INPUT then return end
+  local key = GAMEPAD_KEY[button]
+  if key then INPUT:key_pressed(key, "gamepad") end
+end
+
+function love.gamepadreleased(_, button)
+  local key = GAMEPAD_KEY[button]
+  if INPUT and key then INPUT:key_released(key) end
+end
+
+function love.touchpressed(id, x, y)
+  if not INPUT then return end
+  local vx, vy = vmap(x, y)
+  INPUT:pointer_pressed(vx, vy, 1, "touch:" .. tostring(id))
+end
+
+function love.touchmoved(id, x, y)
+  if not INPUT then return end
+  local vx, vy = vmap(x, y)
+  INPUT:pointer_moved(vx, vy, "touch:" .. tostring(id))
+end
+
+function love.touchreleased(id, x, y)
+  if not INPUT then return end
+  local vx, vy = vmap(x, y)
+  INPUT:pointer_released(vx, vy, 1, "touch:" .. tostring(id))
 end
 
 function love.resize(w, h)

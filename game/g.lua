@@ -26,6 +26,10 @@ G.STATES = {
 -- (the runtime contract; benchmark: load-bearing for many on-screen objects).
 G.I = { NODE = {}, MOVEABLE = {}, CARD = {}, CARDAREA = {}, UIBOX = {} }
 G.STAGE_OBJECTS = {}              -- [stage] = { nodes created during that stage } (mass-teardown)
+G.CONTROLLER = nil                -- installed by the input adapter after engine.controller is available
+G.UI_ROOT = nil                   -- retained UIBox owned by the current stage/state, if any
+G.UI_BOXES = {}                   -- additional retained UIBoxes; lifecycle-owned, not a draw-order pool
+G.UI_OWNER = { stage = nil, state = nil } -- documents who may retain/rebuild the UI registry
 G.FLOATING = {}                   -- transient floating combat-text ("+N Users", "x N Rev", "+$N")
 G.PARTICLES = {}                  -- transient sparkle-burst particles
 G.SHAKE = 0                       -- screen-shake amplitude (decays each frame)

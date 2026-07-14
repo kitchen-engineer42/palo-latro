@@ -1,6 +1,6 @@
--- game/ui.lua — immediate-mode HUD / buttons / overlay (the declarative UIBox system is a later
--- module). All strings come from G.TEXT; all buttons fire G.FUNCS[name]() — so the later rewrite
--- swaps rendering without touching handlers/text. Render and input (button_at) are separate.
+-- game/ui.lua — game-specific rendering over a retained UIBox target tree. The existing renderers
+-- still draw the authored fixed-pixel screens; UI.prepare builds their interactive geometry before
+-- input, so drawing is no longer responsible for hit-test or focus ownership.
 
 local UI = {}
 UI.rects = {}
@@ -11,6 +11,12 @@ local Shop = require("game.shop")
 local PackPresentation = require("game.pack_presentation")
 local RunState = require("game.runstate")
 local Coverage = require("game.coverage")
+local UIBox = require("engine.uibox")
+
+local function cursor()
+  if G.CONTROLLER and G.CONTROLLER.cursor then return G.CONTROLLER.cursor.x, G.CONTROLLER.cursor.y end
+  return vmouse()
+end
 
 local SHOP_RARITY_COL = {
   Legendary = { 0.80, 0.45, 0.42, 1 }, Rare = { 0.62, 0.50, 0.78, 1 },
@@ -38,8 +44,22 @@ local function centered_segments(segs, cy, font)
   end
 end
 
+local function button_hovered(r, fallback)
+  if G.CONTROLLER then
+    local function matches(node)
+      local bounds = node and (node.VT or node.T)
+      return bounds and bounds.x == r.x and bounds.y == r.y
+        and bounds.w == r.w and bounds.h == r.h or false
+    end
+    return matches(G.CONTROLLER.hovering) or matches(G.CONTROLLER.focused)
+  end
+  return fallback == true
+end
+
 local function draw_button(r, label, enabled, hovered)
-  local pressed = enabled and hovered and love.mouse.isDown(1)
+  hovered = button_hovered(r, hovered)
+  local pressed = enabled and hovered and G.CONTROLLER and G.CONTROLLER.clicked == G.CONTROLLER.hovering
+    and G.CONTROLLER.hid and G.CONTROLLER.hid.buttons[1] == true
   local col = enabled and (hovered and G.C.btn_hi or G.C.btn) or G.C.btn_off
   local ox, oy = 0, 0
   if pressed then ox, oy = 2, 2 end                          -- sink into the page on press
@@ -47,6 +67,190 @@ local function draw_button(r, label, enabled, hovered)
     { chamfer = 4, border = G.C.border, line_w = 2, shadow = not pressed, soy = 4 })
   UI.text(G.FONTS.normal, label, r.x + ox, r.y + oy + r.h / 2 - 13,
     enabled and G.C.text or G.C.text_dim, r.w, "center")
+end
+
+-- Build every button from current state without drawing. UIBox owns deterministic z/order/focus
+-- metadata; the runtime input adapter consumes the flattened specs bottom-to-top.
+function UI.prepare()
+  local W, H, GAME = G.WINDOW.w, G.WINDOW.h, G.GAME
+  local definitions, rects = {}, {}
+  local order = 0
+  local function add(action, rect, enabled, scope, z)
+    if not (action and rect) then return end
+    order = order + 1
+    rects[action] = rect
+    definitions[#definitions + 1] = UIBox.button({
+      id = "ui:" .. action, action = action, w = rect.w, h = rect.h,
+      offset_x = rect.x, offset_y = rect.y, order = order, focus_order = order,
+      z = z or 10, enabled = enabled ~= false, modal_scope = scope,
+    })
+  end
+  local function selected(area)
+    for _, card in ipairs((area and area.cards) or {}) do if card.selected then return card end end
+  end
+  local function add_left_rail()
+    local px, py, pw = 12, 14, 320
+    local ix, iw = px + 16, pw - 32
+    local half, rx = (iw - 12) / 2, ix + (iw - 12) / 2 + 12
+    add("run_info", { x = ix, y = py + 554, w = half, h = 50 }, true)
+    add("options", { x = rx, y = py + 554, w = half, h = 50 }, true)
+  end
+
+  if G.STATE == G.STATES.MENU then
+    G.MENU = G.MENU or { stake = 1 }
+    local maxst = require("game.profile").max_stake()
+    local n, bw, gap, y = 8, 132, 12, 254
+    local x0 = (W - (n * bw + (n - 1) * gap)) / 2
+    for stake = 1, n do
+      if stake <= maxst then
+        add("stake_" .. stake, { x = x0 + (stake - 1) * (bw + gap), y = y, w = bw, h = 72 }, true)
+      end
+    end
+    add("start_run_at", { x = W / 2 - 120, y = y + 116, w = 240, h = 56 }, true)
+  elseif G.STATE == G.STATES.MARKET_SELECT and GAME then
+    local choices, cw, ch, gap, y = GAME.market_choices or {}, 340, 390, 34, 176
+    local x0 = (W - (#choices * cw + math.max(0, #choices - 1) * gap)) / 2
+    for i = 1, #choices do
+      add("market_pick_" .. i, { x = x0 + (i - 1) * (cw + gap) + 55,
+        y = y + ch - 72, w = cw - 110, h = 48 }, true)
+    end
+  elseif G.STATE == G.STATES.TECH_DRAFT and GAME then
+    local choices = (GAME.tech_draft and GAME.tech_draft.choices) or {}
+    local cw, ch, gap, y = (#choices > 3 and 260 or 320), 350, 32, 184
+    local x0 = (W - (#choices * cw + math.max(0, #choices - 1) * gap)) / 2
+    for i = 1, #choices do
+      add("tech_pick_" .. i, { x = x0 + (i - 1) * (cw + gap) + 55,
+        y = y + ch - 66, w = cw - 110, h = 44 }, true)
+    end
+  elseif G.STATE == G.STATES.BLIND_SELECT and GAME then
+    local y0, ch = 168, 248
+    local play = { x = W / 2 - 130, y = y0 + ch + 62, w = 260, h = 60 }
+    add("play_blind", play, true)
+    if ((GAME.blind and GAME.blind.idx) or 1) < 3 then
+      add("skip_blind", { x = W / 2 - 120, y = play.y + 74, w = 240, h = 34 }, true)
+    end
+  elseif G.STATE == G.STATES.GAME_OVER and GAME then
+    -- Input owns one full-screen restart target. Do not prepare obscured HUD controls above it.
+  elseif G.STATE == G.STATES.SHOP and GAME then
+    add_left_rail()
+    local sh = GAME.shop or { founders = {} }
+    local founder = selected(G.jokers)
+    if founder and founder.center then
+      add("fire", { x = founder.VT.x + (founder.VT.w - 100) / 2,
+        y = founder.VT.y + founder.VT.h + 4, w = 100, h = 28 }, true,
+        sh.pack_open and "pack" or nil)
+    end
+    if sh.pack_open then
+      local po, frame = sh.pack_open, PackPresentation.snapshot(sh.pack_open)
+      if frame.ready then
+        local n, cw, ch, gap, y0 = #po.options, 160, 206, 30, 360
+        local play_cx = 332 + (W - 332) / 2
+        local x0 = play_cx - (n * cw + (n - 1) * gap) / 2
+        local can_pick = po.kind == "playbook"
+          or (po.kind == "tech_law" and #(GAME.consumables or {}) < (GAME.consumable_slots or 2))
+          or (po.kind == "hiring" and #G.jokers.cards < Shop.founder_cap())
+        for i, option in ipairs(po.options or {}) do
+          if option then add("pack_pick_" .. i, { x = x0 + (i - 1) * (cw + gap) + 10,
+            y = y0 + ch + 8, w = cw - 20, h = 32 }, can_pick, "pack") end
+        end
+        add("pack_skip", { x = play_cx - 100, y = y0 + ch + 50, w = 200, h = 46 }, true, "pack")
+      end
+    else
+      local slots, cw, ch, gap, y0 = Shop.slots(), 160, 206, 30, 312
+      local x0 = (W - (Shop.slots() * cw + (Shop.slots() - 1) * gap)) / 2
+      for i = 1, slots do
+        local offer = sh.founders and sh.founders[i]
+        if offer then add("shop_buy_" .. i, { x = x0 + (i - 1) * (cw + gap) + 10,
+          y = y0 + ch + 8, w = cw - 20, h = 32 },
+          (GAME.cash or 0) >= Shop.price(offer) and #G.jokers.cards < Shop.founder_cap()) end
+      end
+      if sh.consumable then
+        local x = x0 + slots * (cw + gap)
+        add("shop_buy_consumable", { x = x, y = y0 + Card.H + 8, w = Card.W, h = 32 },
+          (GAME.cash or 0) >= Shop.consumable_price(sh.consumable)
+            and #((G.consumables and G.consumables.cards) or {}) < (GAME.consumable_slots or 2))
+      end
+      local reroll = sh.reroll_cost or Shop.reroll_cost(0)
+      add("shop_reroll", { x = W / 2 - 230, y = y0 + ch + 50, w = 200, h = 50 },
+        (GAME.cash or 0) >= reroll)
+      add("shop_continue", { x = W / 2 + 30, y = y0 + ch + 50, w = 200, h = 50 }, true)
+      if sh.voucher then
+        local vw, vy = 480, y0 + ch + 112
+        local vx = (W - vw) / 2
+        add("shop_redeem", { x = vx + vw - 108, y = vy + 12, w = 96, h = 30 },
+          (GAME.cash or 0) >= Shop.voucher_price(sh.voucher))
+      end
+      local packs, pw = sh.packs or {}, 220
+      local px0, py = (W - (#packs * pw + (#packs - 1) * 24)) / 2, y0 + ch + 174
+      for i = 1, #packs do
+        local pack = packs[i]
+        add("shop_open_pack_" .. i, { x = px0 + (i - 1) * (pw + 24), y = py, w = pw, h = 44 },
+          pack and (GAME.cash or 0) >= Shop.pack_price(pack))
+      end
+    end
+  elseif GAME then
+    add_left_rail()
+    local selecting = G.STATE == G.STATES.SELECTING_HAND
+    local highlighted = G.hand and G.hand:highlighted() or {}
+    local n_selected = #highlighted
+    local consumable = selected(G.consumables)
+    if consumable and selecting then
+      local bw, bh = 92, 28
+      local x = consumable.VT.x + (consumable.VT.w - bw * 2 - 8) / 2
+      local y = consumable.VT.y + consumable.VT.h + 4
+      add("use_consumable", { x = x, y = y, w = bw, h = bh }, true)
+      add("sell_consumable", { x = x + bw + 8, y = y, w = bw, h = bh }, true)
+    end
+    if G.STATE == G.STATES.TARGET_SELECT and G.PENDING_CONSUMABLE
+        and G.PENDING_CONSUMABLE.need_layer then
+      local layers, lw, lh, gap = { "Frontend", "Backend", "Data", "Infra", "AI" }, 150, 40, 12
+      local x0 = (W - (#layers * lw + (#layers - 1) * gap)) / 2
+      for i, layer in ipairs(layers) do
+        add("pick_layer_" .. layer, { x = x0 + (i - 1) * (lw + gap), y = 320, w = lw, h = lh },
+          true, "target")
+      end
+    end
+    local shipw, sortw, bh, gap = 170, 80, 40, 10
+    local rowx = G.hand and (G.hand.T.x + (G.hand.T.w - (shipw * 2 + sortw * 2 + gap * 3)) / 2) or 0
+    local rowy = H - 48
+    add("ship", { x = rowx, y = rowy, w = shipw, h = bh },
+      selecting and n_selected >= 1 and n_selected <= (GAME.select_max or 5) and (GAME.ships_left or 0) > 0)
+    add("sort_users", { x = rowx + shipw + gap, y = rowy, w = sortw, h = bh }, selecting)
+    add("sort_layer", { x = rowx + shipw + sortw + gap * 2, y = rowy, w = sortw, h = bh }, selecting)
+    add("pivot", { x = rowx + shipw + sortw * 2 + gap * 3, y = rowy, w = shipw, h = bh },
+      selecting and n_selected >= 1 and (GAME.pivots_left or 0) > 0)
+    local founder = selected(G.jokers)
+    if founder then add("fire", { x = founder.VT.x + (founder.VT.w - 90) / 2,
+      y = G.jokers.T.y + G.jokers.T.h + 4, w = 90, h = 30 }, true) end
+  end
+
+  if G.SHOW_OPTIONS then
+    local pw, ph = 420, 540
+    local x, y = (W - pw) / 2 + 60, (H - ph) / 2 + 64
+    for _, action in ipairs({ "opt_motion", "opt_sound", "opt_shake", "opt_flash",
+      "opt_particles", "opt_crt", "opt_quit" }) do
+      add(action, { x = x, y = y, w = pw - 120, h = 46 }, true, "overlay", 100)
+      y = y + 58
+    end
+  end
+
+  local box = UIBox.new(UIBox.root({ id = "ui:root" }, definitions),
+    { bounds = { x = 0, y = 0, w = W, h = H } })
+  G.UI_ROOT, G.UI_OWNER.stage, G.UI_OWNER.state = box, G.STAGE, G.STATE
+  UI.rects, UI.buttons = rects, {}
+  for _, target in ipairs(box:targets(nil, { order = "draw" })) do
+    UI.buttons[#UI.buttons + 1] = {
+      id = target.id, action = target.action, rect = target.bounds,
+      enabled = target.enabled, visible = target.visible, scope = target.modal_scope,
+      global = target.global, allow_when_locked = target.allow_when_locked,
+      focusable = target.focusable,
+    }
+  end
+  return UI.buttons
+end
+
+function UI.button_specs()
+  return UI.buttons or UI.prepare()
 end
 
 local function ease_out_cubic(t)
@@ -128,7 +332,7 @@ end
 -- swaps the blind header for a SHOP badge. Everything else (target/score/chips×mult/ships/cash/ante·round/
 -- run-info·options/extras) is identical, mirroring how Balatro keeps the same left rail in the shop.
 function UI.left_panel(GAME, shop_mode)
-  local mx, my = vmouse()
+  local mx, my = cursor()
   local bl = GAME.blind or { target = 1, kind = "?", stage = "?" }
   local px, py, pw, ph = 12, 14, 320, G.WINDOW.h - 28
   panel(px, py, pw, ph)
@@ -207,7 +411,7 @@ end
 
 function UI.render()
   local W, H = G.WINDOW.w, G.WINDOW.h
-  UI.rects = {}                                         -- rebuild button rects per frame/state
+  UI.prepare()                                          -- pure retained tree; draw only consumes it
   if G.STATE == G.STATES.MENU then UI.render_menu(W, H); return end
   local GAME = G.GAME
   if not GAME then return end
@@ -216,7 +420,7 @@ function UI.render()
   if G.STATE == G.STATES.BLIND_SELECT then UI.render_blind_select(W, H, GAME); return end
   if G.STATE == G.STATES.SHOP then UI.render_shop(W, H, GAME); return end
 
-  local mx, my = vmouse()
+  local mx, my = cursor()
   local bl = GAME.blind or { target = 1, kind = "?", stage = "?" }
   local selecting = (G.STATE == G.STATES.SELECTING_HAND)
   local n_sel = #G.hand:highlighted()
@@ -292,9 +496,9 @@ function UI.render()
   UI.rects.ship = { x = rowx, y = rowy, w = shipw, h = bh3 }
   draw_button(UI.rects.ship, G.TEXT.ship, ship_on, point_in_rect(mx, my, rowx, rowy, shipw, bh3))
   UI.rects.sort_users = { x = rowx + shipw + gap3, y = rowy, w = sortw, h = bh3 }
-  draw_button(UI.rects.sort_users, "Users", true, point_in_rect(mx, my, UI.rects.sort_users.x, rowy, sortw, bh3))
+  draw_button(UI.rects.sort_users, "Users", selecting, point_in_rect(mx, my, UI.rects.sort_users.x, rowy, sortw, bh3))
   UI.rects.sort_layer = { x = rowx + shipw + sortw + gap3 * 2, y = rowy, w = sortw, h = bh3 }
-  draw_button(UI.rects.sort_layer, "Layer", true, point_in_rect(mx, my, UI.rects.sort_layer.x, rowy, sortw, bh3))
+  draw_button(UI.rects.sort_layer, "Layer", selecting, point_in_rect(mx, my, UI.rects.sort_layer.x, rowy, sortw, bh3))
   UI.text(G.FONTS.tiny, "sort hand", rowx + shipw + gap3, rowy - 17, G.C.text_dim, sortw * 2 + gap3, "center")
   UI.rects.pivot = { x = rowx + shipw + sortw * 2 + gap3 * 3, y = rowy, w = shipw, h = bh3 }
   draw_button(UI.rects.pivot, G.TEXT.pivot, pivot_on, point_in_rect(mx, my, UI.rects.pivot.x, rowy, shipw, bh3))
@@ -307,7 +511,9 @@ function UI.render()
     local bw, bh = 90, 30
     local bx, by = fsel.VT.x + (fsel.VT.w - bw) / 2, G.jokers.T.y + G.jokers.T.h + 4
     UI.rects.fire = { x = bx, y = by, w = bw, h = bh }
-    pixel_rect(bx, by, bw, bh, point_in_rect(mx, my, bx, by, bw, bh) and G.C.lose or { 0.70, 0.26, 0.26, 1 }, { chamfer = 3, border = G.C.border })
+    pixel_rect(bx, by, bw, bh, button_hovered(UI.rects.fire,
+      point_in_rect(mx, my, bx, by, bw, bh)) and G.C.lose or { 0.70, 0.26, 0.26, 1 },
+      { chamfer = 3, border = G.C.border })
     UI.text(G.FONTS.small, "Fire", bx, by + 3, G.C.text, bw, "center")
   end
 
@@ -330,7 +536,7 @@ function UI.render()
 end
 
 function UI.render_market_select(W, H, GAME)
-  local mx, my = vmouse()
+  local mx, my = cursor()
   UI.text(G.FONTS.big, "CHOOSE YOUR MARKET", 0, 54, G.C.arr, W, "center")
   UI.text(G.FONTS.small, "Your Market defines the starting stack, operating perk, Fit, and future drafts.",
     0, 108, G.C.text_dim, W, "center")
@@ -358,7 +564,7 @@ function UI.render_market_select(W, H, GAME)
 end
 
 function UI.render_tech_draft(W, H, GAME)
-  local mx, my = vmouse()
+  local mx, my = cursor()
   UI.text(G.FONTS.big, "ERA TECH DRAFT", 0, 54, G.C.arr, W, "center")
   UI.text(G.FONTS.small, "Choose one technology to add permanently to your company stack.",
     0, 106, G.C.text_dim, W, "center")
@@ -408,8 +614,8 @@ end
 
 function UI.draw_tooltip()
   if G.STATE == G.STATES.MENU then return end             -- no cards in the menu
-  if not love.mouse.isDown(2) then return end             -- RIGHT-CLICK / press-and-hold to inspect (no blocking on hover)
-  local mx, my = vmouse()
+  if not (G.CONTROLLER and G.CONTROLLER.hid and G.CONTROLLER.hid.buttons[2]) then return end
+  local mx, my = cursor()
   local hovered
   for _, area in ipairs({ G.jokers, G.hand, G.play }) do
     if area and area.cards then
@@ -446,7 +652,7 @@ end
 
 -- the pre-run MENU: career stats + collection summary + Funding-Stake select + Start.
 function UI.render_menu(W, H)
-  local mx, my = vmouse()
+  local mx, my = cursor()
   local Centers = require("game.centers")
   local Profile = require("game.profile")
   local p = G.PROFILE or { career = {} }
@@ -500,7 +706,7 @@ local EVENT_DESC = {
 -- (Small/Big/Boss) with ARR targets, the current one highlighted, the boss event telegraphed, the economy
 -- readout, a Play button, and a disabled Skip seam (Leads/Tags come later).
 function UI.render_blind_select(W, H, GAME)
-  local mx, my = vmouse()
+  local mx, my = cursor()
   local bl = GAME.blind or {}
   UI.text(G.FONTS.big, ("ANTE %d / 8"):format(GAME.ante or 1), 0, 40, G.C.arr, W, "center")
   lg.setFont(G.FONTS.small); lg.setColor(G.C.text_dim)
@@ -559,7 +765,7 @@ end
 -- the between-blinds SHOP screen: founder offers + reroll + continue. Immediate-mode;
 -- offer panels are drawn from center data (no Card objects to manage). Buttons → G.FUNCS.shop_*.
 function UI.render_shop(W, H, GAME)
-  local mx, my = vmouse()
+  local mx, my = cursor()
   UI.left_panel(GAME, true)                              -- same left counter rail as play, with a SHOP badge
   -- shiny page title (top-centre) + a short founders label (the sell hint moved to the tooltip flow)
   UI.text(G.FONTS.big, "*  THE SHOP  *", 330, 2, G.C.arr, W - 330, "center")   -- ASCII stars: m5x7/m6x11 lack the fancy glyphs
@@ -576,7 +782,7 @@ function UI.render_shop(W, H, GAME)
     local bx = selF.VT.x + (selF.VT.w - bw) / 2
     local by = selF.VT.y + selF.VT.h + 4
     UI.rects.fire = { x = bx, y = by, w = bw, h = bh }
-    local hov = point_in_rect(mx, my, bx, by, bw, bh)
+    local hov = button_hovered(UI.rects.fire, point_in_rect(mx, my, bx, by, bw, bh))
     pixel_rect(bx, by, bw, bh, hov and G.C.lose or { 0.70, 0.26, 0.26, 1 }, { chamfer = 3, border = G.C.border })
     UI.text(G.FONTS.small, "Sell $" .. Shop.sell_value(selF), bx, by + 5, G.C.text, bw, "center")
   end
@@ -773,12 +979,15 @@ function UI.render_shop(W, H, GAME)
   if hovcc then UI.tip_box(hovccx, hovccy, hovcc.name, (hovcc.kind or "Tech Law") .. "   \194\183   " .. (hovcc.rarity or ""), hovcc.desc or "") end
 end
 
--- input: which button (if any) is under the point — handler validates enabled state
+-- Compatibility query for tooling that has not adopted game.input yet. The retained list is ordered,
+-- so overlays and later/higher-z controls win deterministically.
 function UI.button_at(x, y)
   local po = G.STATE == G.STATES.SHOP and G.GAME and G.GAME.shop and G.GAME.shop.pack_open
   if PackPresentation.input_locked(po) then return "pack_locked" end
-  for name, r in pairs(UI.rects) do
-    if point_in_rect(x, y, r.x, r.y, r.w, r.h) then return name end
+  for i = #(UI.buttons or {}), 1, -1 do
+    local button, r = UI.buttons[i], UI.buttons[i].rect
+    if button.enabled ~= false and button.visible ~= false
+        and point_in_rect(x, y, r.x, r.y, r.w, r.h) then return button.action end
   end
   return nil
 end
@@ -787,7 +996,7 @@ end
 function UI.draw_overlays()
   if not (G.SHOW_DECK_VIEW or G.SHOW_RUN_INFO or G.SHOW_OPTIONS) then return end
   local W, H = G.WINDOW.w, G.WINDOW.h
-  local mx, my = vmouse()
+  local mx, my = cursor()
   lg.setColor(0, 0, 0, 0.62); lg.rectangle("fill", 0, 0, W, H)
 
   if G.SHOW_DECK_VIEW then
