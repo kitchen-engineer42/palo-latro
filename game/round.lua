@@ -61,6 +61,7 @@ function Round.next_blind()
   for i = #G.hand.cards, 1, -1 do local c = G.hand.cards[i]; G.hand:remove_card(c, true); c:remove() end
   for i = #G.deck.cards, 1, -1 do local c = G.deck.cards[i]; G.deck:remove_card(c, true); c:remove() end
   Round.build_deck()
+  G.GAME.cash_spent_round, G.GAME.founders_hired_round, G.GAME.pivots_round = 0, 0, 0
   Scoring.fire_hook("setting_blind")
   Round.deal_to_full()
   Scoring.fire_hook("first_hand_drawn")

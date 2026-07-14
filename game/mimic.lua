@@ -21,6 +21,7 @@ local CardModel = require("game.card")
 local Leads = require("game.leads")
 local Consumables = require("game.consumables")
 local Moonshots = require("game.moonshots")
+local FounderActions = require("game.founder_actions")
 
 local function roadmap_pack(kind)
   return kind == "tech_law" or kind == "moonshot"
@@ -156,6 +157,9 @@ local function card_view(card, area, index)
     out.effect_scale = terms.effect_scale
     out.distilled = terms.distilled
     out.rental_salary_mult = terms.rental_salary_mult
+    out.state = CardModel.founder_state_rows(center, card)
+    out.action = FounderActions.descriptor(card)
+    if out.action then out.action.available = FounderActions.can_activate(card) end
   elseif center.set == "TechCard" then
     out.layer = CardModel.tech_layer_label(card, center)
     out.edition = card.edition -- compatibility-only; not a Block 6 Tech modifier
@@ -431,17 +435,25 @@ function Mimic.legal_actions()
     end
     local founder_ids = ids(G.jokers and G.jokers.cards, "founder")
     if #founder_ids > 0 then
-      local fireable, distillable = {}, {}
+      local fireable, distillable, activatable = {}, {}, {}
       for i, card in ipairs(G.jokers.cards) do
         local cfg = card.ability and card.ability.config or {}
         local id = card_id(card, "founder", i)
         if not g.founders_locked and not cfg._unsellable then fireable[#fireable + 1] = id end
-        if not cfg._distilled then distillable[#distillable + 1] = id end
+        if require("game.founder_lifecycle").can_distill(card) then distillable[#distillable + 1] = id end
+        if FounderActions.can_activate(card) then activatable[#activatable + 1] = id end
       end
       if #fireable > 0 then add_action(out, "fire_founder", { founder_id = "string" }, fireable) end
       if #distillable > 0 then add_action(out, "distill_founder", { founder_id = "string" }, distillable,
         Markets.can_free_distill(g) and "Market upgrade: $0 Salary" or "Generic Distill: half Salary and effect") end
-      add_action(out, "promote_founder", { founder_id = "string" }, founder_ids)
+      local promotable = {}
+      for i, card in ipairs(G.jokers.cards) do
+        if require("game.founder_lifecycle").can_promote(card) then
+          promotable[#promotable + 1] = card_id(card, "founder", i)
+        end
+      end
+      if #promotable > 0 then add_action(out, "promote_founder", { founder_id = "string" }, promotable) end
+      if #activatable > 0 then add_action(out, "activate_founder", { founder_id = "string" }, activatable) end
     end
     add_consumable_actions(out, g)
   elseif state == G.STATES.TARGET_SELECT then
@@ -526,6 +538,15 @@ function Mimic.legal_actions()
         if #choices > 0 then add_action(out, "pick_pack_option", { index = "integer" }, choices) end
       end
       add_action(out, "skip_pack")
+      local fireable, activatable = {}, {}
+      for i, card in ipairs((G.jokers and G.jokers.cards) or {}) do
+        local cfg = card.ability and card.ability.config or {}
+        local id = card_id(card, "founder", i)
+        if not g.founders_locked and not cfg._unsellable then fireable[#fireable + 1] = id end
+        if FounderActions.can_activate(card) then activatable[#activatable + 1] = id end
+      end
+      if #fireable > 0 then add_action(out, "fire_founder", { founder_id = "string" }, fireable) end
+      if #activatable > 0 then add_action(out, "activate_founder", { founder_id = "string" }, activatable) end
     else
       add_consumable_actions(out, g)
       for i, offer in ipairs((sh and sh.founders) or {}) do
@@ -542,6 +563,15 @@ function Mimic.legal_actions()
         if pack and (price == 0 or (g.cash or 0) >= price) then add_action(out, "open_pack", { index = i }) end
       end
       add_raise_action(out, g)
+      local activatable = {}
+      for i, card in ipairs((G.jokers and G.jokers.cards) or {}) do
+        if FounderActions.can_activate(card) then
+          activatable[#activatable + 1] = card_id(card, "founder", i)
+        end
+      end
+      if #activatable > 0 then
+        add_action(out, "activate_founder", { founder_id = "string" }, activatable)
+      end
       if not g.founders_locked then
         local choices = {}
         for i, card in ipairs((G.jokers and G.jokers.cards) or {}) do
@@ -726,7 +756,7 @@ local function dispatch(action)
   elseif id == "market_pivot" then
     G.FUNCS.market_pivot()
     return g.last_market_pivot_ante == g.ante and true or nil, "market pivot failed"
-  elseif id == "fire_founder" or id == "distill_founder" or id == "promote_founder" then
+  elseif id == "fire_founder" or id == "distill_founder" or id == "promote_founder" or id == "activate_founder" then
     local card, err = find_one(G.jokers.cards, "founder", action.founder_id); if not card then return nil, err end
     local cfg = card.ability and card.ability.config or {}
     if id == "fire_founder" and (g.founders_locked or cfg._unsellable) then
@@ -735,8 +765,10 @@ local function dispatch(action)
     if id == "distill_founder" and cfg._distilled then return nil, "founder is already distilled" end
     select_one(G.jokers.cards, "founder", action.founder_id)
     local before_count = #G.jokers.cards
-    local fn = id == "fire_founder" and "fire" or id == "distill_founder" and "distill" or "promote"
-    G.FUNCS[fn]()
+    local fn = id == "fire_founder" and "fire" or id == "distill_founder" and "distill"
+      or id == "activate_founder" and "activate_founder" or "promote"
+    local activated = G.FUNCS[fn]()
+    if id == "activate_founder" then return activated and true or nil, "founder activation failed" end
     if id == "distill_founder" then return cfg._distilled and true or nil, "founder distillation failed" end
     return #G.jokers.cards < before_count and true or nil, "founder removal failed"
   elseif id == "use_consumable" or id == "sell_consumable" then

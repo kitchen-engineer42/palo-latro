@@ -197,15 +197,56 @@ local function fmt1(x)  -- compact number: integer if whole, else 1 decimal
   return string.format("%.1f", x)
 end
 
+local function dsl_specs(dsl)
+  if not dsl then return {} end
+  return dsl.clauses or { dsl }
+end
+
+local function state_label(key)
+  local label = tostring(key or "state"):gsub("_", " ")
+  return (label:gsub("^%l", string.upper))
+end
+
+function Card.founder_state_rows(center, card)
+  local rows, seen = {}, {}
+  local cfg = card and card.ability and card.ability.config or {}
+  for _, spec in ipairs(dsl_specs(center and center.dsl)) do
+    for _, op in ipairs(spec.ops or {}) do
+      if op.k == "state" and op.mode ~= "clear" and op.state and not seen[op.state] then
+        seen[op.state] = true
+        rows[#rows + 1] = {
+          key = op.state,
+          label = state_label(op.state),
+          value = cfg["_state_" .. op.state] or 0,
+          cap = op.cap,
+        }
+      end
+    end
+  end
+  return rows
+end
+
+local function state_summary(center, card)
+  local row = Card.founder_state_rows(center, card)[1]
+  if not row then return nil end
+  local value = fmt1(row.value)
+  return row.label .. " " .. value .. (row.cap and ("/" .. fmt1(row.cap)) or "")
+end
+
 function Card.effect_brief(center, card)
   if not center then return "" end
   local d = center.dsl
   -- 1) LIVE accumulated value (owned card + accumulator op) — the real number this run, on the card face.
   -- Scan ALL ops for the first growing accumulator (post-audit DSLs may place acc behind a per-op gate, not first).
-  if card and d and d.ops then
+  if card and d then
     local op
-    for _, o in ipairs(d.ops) do
-      if o.k == "acc" and (o.field == "x_mult" or o.field == "mult" or o.field == "chips") then op = o; break end
+    for _, spec in ipairs(dsl_specs(d)) do
+      for _, o in ipairs(spec.ops or {}) do
+        if not o.key and o.k == "acc" and (o.field == "x_mult" or o.field == "mult" or o.field == "chips") then
+          op = o; break
+        end
+      end
+      if op then break end
     end
     if op then
       local f = op.field
@@ -215,6 +256,10 @@ function Card.effect_brief(center, card)
       if f == "x_mult" then return "\195\151" .. fmt1(live) .. " Rev" end
       return "+" .. fmt1(live) .. (f == "chips" and " Users" or " Rev")
     end
+  end
+  local live_state = card and state_summary(center, card)
+  if live_state and center.effect_brief and center.effect_brief ~= "" then
+    return center.effect_brief .. "  ·  " .. live_state
   end
   -- 2) curated concise descriptor (subagent sweep) — accurate for growth / conditions
   if center.effect_brief and center.effect_brief ~= "" then return center.effect_brief end
@@ -251,10 +296,15 @@ end
 function Card.face_tag(center, card)
   if not center then return "" end
   local d = center.dsl
-  if card and d and d.ops then                                  -- live accumulator value (the real number this run)
+  if card and d then                                  -- live accumulator value (the real number this run)
     local op
-    for _, o in ipairs(d.ops) do
-      if o.k == "acc" and (o.field == "x_mult" or o.field == "mult" or o.field == "chips") then op = o; break end
+    for _, spec in ipairs(dsl_specs(d)) do
+      for _, o in ipairs(spec.ops or {}) do
+        if not o.key and o.k == "acc" and (o.field == "x_mult" or o.field == "mult" or o.field == "chips") then
+          op = o; break
+        end
+      end
+      if op then break end
     end
     if op then
       local f = op.field
@@ -265,6 +315,8 @@ function Card.face_tag(center, card)
       return "+" .. fmt1(live) .. (f == "chips" and " Users" or " Rev")
     end
   end
+  local live_state = card and state_summary(center, card)
+  if live_state then return live_state end
   if d and d.retrigger then return "Retrigger" end               -- DSL-derived short category
   local op = d and d.ops and d.ops[1]
   if op then

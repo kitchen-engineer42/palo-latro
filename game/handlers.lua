@@ -63,6 +63,7 @@ G.FUNCS.pivot = function()
   local sel = G.hand:highlighted()
   if #sel < 1 then return end
   G.GAME.last_tech_modifier_discard = require("game.tech_modifiers").on_discard(sel)
+  local full_hand_discarded = #sel == #G.hand.cards
   for _, c in ipairs(sel) do
     G.hand:remove_card(c, true)
     c:remove()
@@ -70,8 +71,10 @@ G.FUNCS.pivot = function()
   G.hand:align_cards()
   G.GAME.pivots_left = G.GAME.pivots_left - 1
   G.GAME.pivot_count = (G.GAME.pivot_count or 0) + 1
+  G.GAME.pivots_round = (G.GAME.pivots_round or 0) + 1
   G.GAME.discard_count = (G.GAME.discard_count or 0) + #sel
-  Scoring.fire_hook("discard", { discard_count = #sel })
+  Scoring.fire_hook("discard", { discard_count = #sel, full_hand_discarded = full_hand_discarded,
+    discarded_layers = require("game.coverage").analyze(sel).distinct })
   Round.deal_to_full()
   Guidance.emit("pivot_committed", { count = #sel })
   Guidance.emit("compatibility_changed", { count = #sel })
@@ -146,6 +149,16 @@ local function selected_founder()
   for _, c in ipairs(G.jokers.cards) do if c.selected then return c end end
 end
 
+G.FUNCS.activate_founder = function()
+  if G.STATE ~= S.SELECTING_HAND and G.STATE ~= S.SHOP then return end
+  if G.STATE == S.SHOP and Shop.negotiation_pending() then return end
+  local card = selected_founder()
+  if not card then return end
+  local ok = require("game.founder_actions").activate(card)
+  if ok then Audio.play("hire") end
+  return ok
+end
+
 G.FUNCS.distill = function()   -- halve a founder's Salary (pay-once → cheap recurring earner)
   if G.STATE ~= S.SELECTING_HAND then return end
   local c = selected_founder(); if not c or not c.center then return end
@@ -162,6 +175,7 @@ end
 G.FUNCS.promote = function()   -- automate a founder into the harness → climb the ladder, free the slot
   if G.STATE ~= S.SELECTING_HAND then return end
   local c = selected_founder(); if not c then return end
+  if not Lifecycle.can_promote(c) then return end
   require("game.meters").add("rung_progress", 8)
   if Lifecycle.remove(c, { promote = true }) then Audio.play("fire") end
 end
@@ -183,7 +197,7 @@ G.FUNCS.market_pivot = function()   -- costed Market re-roll: abandon fit for a 
   end
   if not next_market then return end
   if not Markets.queue(G.GAME, next_market, founder_count) then return end
-  G.GAME.cash = G.GAME.cash - cost
+  if not require("game.founder_events").spend(G.GAME, cost, "market_pivot") then return end
   G.GAME.last_market_pivot_ante = G.GAME.ante
   G.GAME.market_pivots = (G.GAME.market_pivots or 0) + 1
   Audio.play("fire")

@@ -100,6 +100,8 @@ function RunState.set_blind(ante, blind_idx)
     g.blind.event = (g.boss_sequence and g.boss_sequence[ante]) or ev[((ante - 1) % #ev) + 1]
   end
   g.cumulative_arr, g.this_blind_arr = 0, 0
+  g._running_arr, g._pre_after_arr, g._pre_market_arr, g._final_arr = 0, 0, 0, 0
+  g.previous_ship_arr = nil
   g.best_ship_arr, g.best_ship_margin, g.market_best_fit = 0, nil, 0
   g.ships_left  = RunState.SHIPS_PER_BLIND + (g.ships_bonus or 0)     -- voucher: Extra Sprint
   g.pivots_left = RunState.PIVOTS_PER_BLIND + (g.pivots_bonus or 0)   -- voucher: DevOps
@@ -183,9 +185,10 @@ function RunState.new(opts)
     hand_size = opts.hand_size or RunState.HAND_SIZE,
     select_max = 5,
     score = { chips = 0, mult = 0, arr = 0 },
-    this_ship_arr = 0, scoring_name = nil, this_app = nil,
+    this_ship_arr = 0, previous_ship_arr = nil, last_ship_arr = nil, scoring_name = nil, this_app = nil,
     _new_app_types = 0, _new_layers = 0, _running_arr = 0, _armed_buffs = {},   -- ability primitives (B/A/D)
-    founders_hired_run = 0, markets_seen_run = {}, _last_hand_ndl = 0, _passives = {}, passive_salary = 0,   -- ability primitives (1.5a/b)
+    founders_hired_run = 0, founders_hired_round = 0, cash_spent_round = 0, pivots_round = 0,
+    markets_seen_run = {}, _last_hand_ndl = 0, _passives = {}, passive_salary = 0,   -- ability primitives (1.5a/b)
     pending_dollars = 0,
     hire_idx = 0, pivot_count = 0, discard_count = 0,
     -- SHOP scope + voucher run-modifiers -------------

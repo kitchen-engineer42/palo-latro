@@ -23,6 +23,7 @@ local Economy = require("game.economy")
 local TechLaws = require("game.tech_laws")
 local Moonshots = require("game.moonshots")
 local FounderNegotiation = require("game.founder_negotiation")
+local FounderEvents = require("game.founder_events")
 local Markets = require("game.markets")
 local random = RNG.fn("shop")
 local pack_random = RNG.fn("packs")
@@ -152,7 +153,7 @@ function Shop.buy_consumable()
     source = "shop", sell_basis = cost,
   })                                                              -- respects the slot cap
   if not entry then return false end                              -- inventory full → don't charge
-  G.GAME.cash = G.GAME.cash - cost
+  if not FounderEvents.spend(G.GAME, cost, "consumable", { center_key = c.key }) then return false end
   sh.consumable = false
   Profile.discover(c.key)
   Audio.play("hire")
@@ -244,6 +245,7 @@ function Shop.enter()
     if pack then seen[pack.key] = true; G.GAME.shop.packs[i] = pack end
   end
   require("game.leads").on_shop_enter(G.GAME, G.GAME.shop)
+  FounderEvents.fire("shop_entered", { shop = G.GAME.shop })
   local discovered = {}
   for _, offer in ipairs(G.GAME.shop.founders) do
     if offer then discovered[#discovered + 1] = (offer.center or offer).key end
@@ -265,7 +267,7 @@ function Shop.redeem()
   if not v then return false end
   local cost = Shop.voucher_price(v)
   if (G.GAME.cash or 0) < cost then return false end
-  G.GAME.cash = G.GAME.cash - cost
+  if not FounderEvents.spend(G.GAME, cost, "voucher", { center_key = v.key }) then return false end
   local m = v.mod or {}
   if m.field then G.GAME[m.field] = (G.GAME[m.field] or 0) + (m.delta or 0) end
   G.GAME.vouchers_owned[v.key] = true
@@ -278,7 +280,7 @@ function Shop.reroll()
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
   if not sh or (G.GAME.cash or 0) < sh.reroll_cost then return false end
-  G.GAME.cash = G.GAME.cash - sh.reroll_cost
+  if not FounderEvents.spend(G.GAME, sh.reroll_cost, "reroll") then return false end
   sh.rerolls = sh.rerolls + 1
   sh.reroll_cost = Shop.reroll_cost(sh.rerolls)
   roll_offers()
@@ -297,7 +299,7 @@ function Shop.buy(idx)
   end
   local cost = Shop.price(offer)
   if cost > 0 and (G.GAME.cash or 0) < cost then return false end
-  G.GAME.cash = G.GAME.cash - cost
+  if not FounderEvents.spend(G.GAME, cost, "founder", { center_key = (offer.center or offer).key }) then return false end
   local c = offer.center or offer
   local jk = Card({ center = c, T = { x = G.jokers.T.x, y = G.jokers.T.y } })
   G.jokers:emplace(jk)
@@ -391,7 +393,7 @@ function Shop.open_pack(idx)
     end
     if #moonshot_options < definition.options then return false end
   end
-  G.GAME.cash = G.GAME.cash - cost
+  if not FounderEvents.spend(G.GAME, cost, "pack", { pack_key = definition.key, family = definition.family }) then return false end
   if definition.family == "tech_evaluation" then
     sh.packs[idx] = false
     local targets = TechEvaluation.deprecated_targets(G.GAME)
@@ -493,6 +495,7 @@ local function consume_pack_option(sh, po, index, option, mode)
   Profile.discover(option.key)
   Audio.play("hire")
   Guidance.emit("pack_picked", { family = po.kind, key = option.key, mode = mode })
+  FounderEvents.pack_selected({ family = po.kind, center_key = option.key, mode = mode })
   if po.picks_left <= 0 then sh.pack_open = nil end
 end
 
@@ -634,6 +637,7 @@ function Shop.pack_pick(i)
     if po.picks_left <= 0 then sh.pack_open = nil end
     Audio.play("hire")
     Guidance.emit("pack_picked", { family = po.kind, key = c.key })
+    FounderEvents.pack_selected({ family = po.kind, center_key = c.key, mode = "pick" })
     return true
   end
   if po.kind == "tech_law" then
@@ -646,6 +650,7 @@ function Shop.pack_pick(i)
     Audio.play("hire")
     Profile.discover(c.key)
     Guidance.emit("pack_picked", { family = po.kind, key = c.key })
+    FounderEvents.pack_selected({ family = po.kind, center_key = c.key, mode = "pick" })
     return true
   end
   if po.kind == "moonshot" then
@@ -658,6 +663,7 @@ function Shop.pack_pick(i)
     Audio.play("hire")
     Profile.discover(c.key)
     Guidance.emit("pack_picked", { family = po.kind, key = c.key })
+    FounderEvents.pack_selected({ family = po.kind, center_key = c.key, mode = "pick" })
     return true
   end
   local offered = c.center or c
@@ -686,6 +692,7 @@ function Shop.pack_pick(i)
   po.picks_left = po.picks_left - 1
   if po.picks_left <= 0 then sh.pack_open = nil end             -- pack consumed
   Guidance.emit("pack_picked", { family = po.kind, key = (c.center or c).key })
+  FounderEvents.pack_selected({ family = po.kind, center_key = (c.center or c).key, mode = "pick" })
   return true
 end
 

@@ -24,6 +24,7 @@ local Markets = require("game.markets")
 local Leads = require("game.leads")
 local Consumables = require("game.consumables")
 local Moonshots = require("game.moonshots")
+local FounderActions = require("game.founder_actions")
 
 local function roadmap_pack(kind)
   return kind == "tech_law" or kind == "moonshot"
@@ -369,9 +370,18 @@ function UI.prepare()
     else
     local founder = selected(G.jokers)
     if founder and founder.center then
-      add("fire", { x = founder.VT.x + (founder.VT.w - 100) / 2,
-        y = founder.VT.y + founder.VT.h + 4, w = 100, h = 28 }, true,
-        sh.pack_open and "pack" or nil)
+      local descriptor = FounderActions.descriptor(founder)
+      local y, scope = founder.VT.y + founder.VT.h + 4, sh.pack_open and "pack" or nil
+      if descriptor then
+        local total, gap, activate_w, fire_w = 154, 6, 88, 60
+        local x = founder.VT.x + (founder.VT.w - total) / 2
+        add("activate_founder", { x=x, y=y, w=activate_w, h=28 },
+          FounderActions.can_activate(founder), scope)
+        add("fire", { x=x + activate_w + gap, y=y, w=fire_w, h=28 }, true, scope)
+      else
+        add("fire", { x = founder.VT.x + (founder.VT.w - 100) / 2,
+          y = y, w = 100, h = 28 }, true, scope)
+      end
     end
     local consumable = selected(G.consumables)
     if consumable and consumable.center then
@@ -486,8 +496,20 @@ function UI.prepare()
     add("pivot", { x = rowx + shipw + sortw * 2 + gap * 3, y = rowy, w = shipw, h = bh },
       selecting and n_selected >= 1 and (GAME.pivots_left or 0) > 0)
     local founder = selected(G.jokers)
-    if founder then add("fire", { x = founder.VT.x + (founder.VT.w - 90) / 2,
-      y = G.jokers.T.y + G.jokers.T.h + 4, w = 90, h = 30 }, true) end
+    if founder then
+      local descriptor = FounderActions.descriptor(founder)
+      local y = G.jokers.T.y + G.jokers.T.h + 4
+      if descriptor then
+        local total, gap, activate_w, fire_w = 154, 6, 88, 60
+        local x = founder.VT.x + (founder.VT.w - total) / 2
+        add("activate_founder", { x=x, y=y, w=activate_w, h=30 },
+          FounderActions.can_activate(founder))
+        add("fire", { x=x + activate_w + gap, y=y, w=fire_w, h=30 }, true)
+      else
+        add("fire", { x = founder.VT.x + (founder.VT.w - 90) / 2,
+          y = y, w = 90, h = 30 }, true)
+      end
+    end
   end
 
   local lesson = Guidance.current()
@@ -853,18 +875,23 @@ function UI.render()
   UI.rects.pivot = { x = rowx + shipw + sortw * 2 + gap3 * 3, y = rowy, w = shipw, h = bh3 }
   draw_button(UI.rects.pivot, G.TEXT.pivot, pivot_on, point_in_rect(mx, my, UI.rects.pivot.x, rowy, shipw, bh3))
 
-  -- selected founder -> a Fire button below it (Balatro-style two-step sell)
-  UI.rects.fire = nil
+  -- selected founder -> explicit action / Fire controls below it.
   local fsel
   for _, c in ipairs(G.jokers.cards) do if c.selected then fsel = c; break end end
   if fsel then
-    local bw, bh = 90, 30
-    local bx, by = fsel.VT.x + (fsel.VT.w - bw) / 2, G.jokers.T.y + G.jokers.T.h + 4
-    UI.rects.fire = { x = bx, y = by, w = bw, h = bh }
-    pixel_rect(bx, by, bw, bh, button_hovered(UI.rects.fire,
-      point_in_rect(mx, my, bx, by, bw, bh)) and G.C.lose or { 0.70, 0.26, 0.26, 1 },
-      { chamfer = 3, border = G.C.border })
-    UI.text(G.FONTS.small, "Fire", bx, by + 3, G.C.text, bw, "center")
+    local descriptor = FounderActions.descriptor(fsel)
+    if descriptor then
+      draw_button(UI.rects.activate_founder, descriptor.label, FounderActions.can_activate(fsel),
+        UI.rects.activate_founder and point_in_rect(mx, my, UI.rects.activate_founder.x,
+          UI.rects.activate_founder.y, UI.rects.activate_founder.w, UI.rects.activate_founder.h), G.FONTS.tiny)
+    end
+    local fire = UI.rects.fire
+    if fire then
+      pixel_rect(fire.x, fire.y, fire.w, fire.h, button_hovered(fire,
+        point_in_rect(mx, my, fire.x, fire.y, fire.w, fire.h)) and G.C.lose or { 0.70, 0.26, 0.26, 1 },
+        { chamfer = 3, border = G.C.border })
+      UI.text(G.FONTS.small, "Fire", fire.x, fire.y + 3, G.C.text, fire.w, "center")
+    end
   end
 
   -- game over overlay
@@ -1388,13 +1415,18 @@ function UI.render_shop(W, H, GAME)
   local selF
   for _, c in ipairs((G.jokers and G.jokers.cards) or {}) do if c.selected then selF = c; break end end
   if selF and selF.center then
-    local bw, bh = 100, 28
-    local bx = selF.VT.x + (selF.VT.w - bw) / 2
-    local by = selF.VT.y + selF.VT.h + 4
-    UI.rects.fire = { x = bx, y = by, w = bw, h = bh }
-    local hov = button_hovered(UI.rects.fire, point_in_rect(mx, my, bx, by, bw, bh))
-    pixel_rect(bx, by, bw, bh, hov and G.C.lose or { 0.70, 0.26, 0.26, 1 }, { chamfer = 3, border = G.C.border })
-    UI.text(G.FONTS.small, "Sell $" .. Shop.sell_value(selF), bx, by + 5, G.C.text, bw, "center")
+    local descriptor = FounderActions.descriptor(selF)
+    if descriptor then
+      draw_button(UI.rects.activate_founder, descriptor.label, FounderActions.can_activate(selF),
+        UI.rects.activate_founder and point_in_rect(mx, my, UI.rects.activate_founder.x,
+          UI.rects.activate_founder.y, UI.rects.activate_founder.w, UI.rects.activate_founder.h), G.FONTS.tiny)
+    end
+    local fire = UI.rects.fire
+    if fire then
+      local hov = button_hovered(fire, point_in_rect(mx, my, fire.x, fire.y, fire.w, fire.h))
+      pixel_rect(fire.x, fire.y, fire.w, fire.h, hov and G.C.lose or { 0.70, 0.26, 0.26, 1 }, { chamfer = 3, border = G.C.border })
+      UI.text(G.FONTS.small, "Sell $" .. Shop.sell_value(selF), fire.x, fire.y + 5, G.C.text, fire.w, "center")
+    end
   end
 
   -- Pack ceremony: shop dims, the cover opens, cards deal face-down and flip in sequence. The options

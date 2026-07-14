@@ -5,6 +5,7 @@
 
 local Centers = {}
 local ContentValidate = require("game.content_validate")
+local FounderRestorations = require("game.founder_restorations")
 
 function Centers.register(c)
   assert(c.key and c.set, "center needs key + set")
@@ -22,7 +23,7 @@ function Centers.pool(set) return G.P_CENTER_POOLS[set] or {} end
 function Centers.load_all()
   local content = {
     techcards = require("data.centers.techcards_gen"),
-    founders = require("data.centers.founders_gen"),
+    founders = FounderRestorations.apply(require("data.centers.founders_gen")),
     forms = require("data.centers.forms_gen"),
     signature_cards = require("data.centers.signature_cards"),
     vouchers = require("data.centers.vouchers"),

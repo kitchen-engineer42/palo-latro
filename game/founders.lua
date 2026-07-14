@@ -135,7 +135,7 @@ end
 Founders.FX = FX
 
 -- B1 fallback: the 262 graph-projected founders have no hand-coded FX yet (those f_<lastname> entries
--- are now fidelity fixtures). Until the B2 effect interpreter lands, every founder does SOMETHING —
+-- are now restoration fixtures). Until the B2 effect interpreter lands, every founder does SOMETHING —
 -- a flat effect keyed off its embedded effect.type + rarity tier — so the full pool is playable.
 local RTIER = { Common = 1, Uncommon = 2, Rare = 3, Legendary = 4 }
 local function fallback(card, ctx)
@@ -163,10 +163,12 @@ G.FOUNDER_CALC = function(card, ctx)
   else effect = fallback(card, ctx) end                        -- data-only fallback
   local scale = card.ability and card.ability.config and card.ability.config._effect_scale
   if effect and scale and scale ~= 1 then
-    for _, field in ipairs({ "chips", "mult", "dollars", "p_dollars" }) do
+    for _, field in ipairs({ "chips", "mult", "dollars", "p_dollars", "x_mult_add", "x_chips_add",
+        "chips_floor", "mult_floor", "arr_floor" }) do
       if effect[field] then effect[field] = effect[field] * scale end
     end
     if effect.x_mult then effect.x_mult = 1 + (effect.x_mult - 1) * scale end
+    if effect.x_chips then effect.x_chips = 1 + (effect.x_chips - 1) * scale end
   end
   if effect and not (card.center and card.center.signature) and effect.x_mult then
     effect.x_mult = math.min(Founders.MAX_X_MULT, effect.x_mult)

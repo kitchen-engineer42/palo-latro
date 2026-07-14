@@ -2,7 +2,7 @@
 --
 -- This is intentionally kept beside the runtime vocabulary: generators may emit
 -- data, but they do not get to extend the interpreter by typo.  A small set of
--- historical gate-key aliases is normalized before registration; no unknown
+-- historical gate-key aliases are rejected before registration; no unknown
 -- hook, gate, operation, counter source, or cross-reference is accepted.
 
 local Validate = {}
@@ -16,16 +16,23 @@ local HOOKS = {
   setting_blind=true, first_hand_drawn=true, pre_cash_out=true, end_of_round=true,
   blind_won=true, blind_lost=true, discard=true, selling_self=true, selling_card=true,
   sell_consumable=true, use_consumable=true, skip_blind=true,
+  founder_hired=true, shop_entered=true, cash_spent=true, pack_selected=true,
+  short_ship=true, post_resolution=true, activated=true,
 }
-local RESET_HOOKS = { selling_self=true, selling_card=true, blind_lost=true, discard=true }
+local RESET_HOOKS = {
+  selling_self=true, selling_card=true, blind_lost=true, blind_won=true, discard=true,
+  founder_hired=true, shop_entered=true, cash_spent=true, pack_selected=true,
+}
 local OPS = {
   scale=true, acc=true, grant=true, clear_clash=true, gen=true, meter=true,
   gamble=true, delete_card=true, clash_tax=true, arm=true,
+  x_add=true, score_floor=true, state=true, spend=true,
 }
 local GATES = {
   layer_present=true, card_layer=true, app_type_in=true, count=true, ante=true, overkill=true,
   is_boss_blind=true, market=true, has_group=true, ["and"]=true, ["or"]=true, ["not"]=true,
-  arr_ratio=true, all_distinct_layers=true, market_fit=true,
+  arr_ratio=true, all_distinct_layers=true, market_fit=true, state=true, event=true,
+  previous_arr_ratio=true,
 }
 local COMPARATORS = { [">="]=true, ["<="]=true, ["=="]=true, [">"]=true, ["<"]=true }
 local PER_SOURCES = {
@@ -36,7 +43,8 @@ local PER_SOURCES = {
   cards_of_layer=true, deck_layer_count=true, new_app_types=true, new_layers=true,
   arr_ratio=true, running_arr=true, run_best_arr=true, founders_hired_this_run=true,
   last_hand_distinct_layers=true, distinct_markets_seen_run=true, cards_of_layer_in_hand=true,
-  salary_due=true,
+  salary_due=true, blind_target=true, target_shortfall=true, final_arr=true,
+  cash_spent_round=true, founders_hired_round=true, pivots_round=true, counter=true,
 }
 
 local TECH_LAW_RARITIES = { common=true, uncommon=true, rare=true }
@@ -714,14 +722,7 @@ end
 
 local function gate_kind(g, path, r)
   if text(g.g) then
-    if (g.k and g.k ~= g.g) or (g.kind and g.kind ~= g.g) then add(r, path, "conflicting gate kind fields") end
     return g.g
-  end
-  local legacy = g.k or g.kind
-  if text(legacy) and GATES[legacy] then
-    g.g = legacy
-    r.aliases[#r.aliases + 1] = path .. " normalized legacy gate key to g"
-    return legacy
   end
   add(r, path, "missing gate kind g")
 end
@@ -736,6 +737,8 @@ end
 
 validate_gate = function(g, path, r, meter_names, owner, depth)
   if type(g) ~= "table" then add(r, path, "gate must be a table"); return end
+  only_fields(g, { g=true, layer=true, names=true, per=true, op=true, val=true,
+    group=true, attr=true, value=true, gs=true, g1=true, state=true, field=true, stage=true }, path, r)
   depth = depth or 1
   if depth > 12 then add(r, path, "gate nesting exceeds limit"); return end
   local kind = gate_kind(g, path, r)
@@ -758,15 +761,29 @@ validate_gate = function(g, path, r, meter_names, owner, depth)
     if (g.per == "cards_of_layer" or g.per == "cards_of_layer_in_hand" or g.per == "deck_layer_count")
        and not LAYERS[g.layer] then add(r, path .. ".layer", "counter requires a valid Layer") end
     if g.per == "count_group" and not text(g.group) then add(r, path .. ".group", "count_group requires a group") end
-  elseif kind == "ante" or kind == "overkill" or kind == "arr_ratio" or kind == "market_fit" then
+  elseif kind == "ante" or kind == "overkill" or kind == "arr_ratio" or kind == "previous_arr_ratio" or kind == "market_fit" then
     if not COMPARATORS[g.op] then add(r, path .. ".op", "unknown comparator " .. tostring(g.op)) end
     if not number(g.val) then add(r, path .. ".val", "must be a finite number") end
+    if kind == "arr_ratio" and g.stage ~= nil and not ({ pre_after=true, pre_market=true, final=true })[g.stage] then
+      add(r, path .. ".stage", "must be pre_after, pre_market, or final")
+    end
+    if kind == "arr_ratio" and g.stage == nil then add(r, path .. ".stage", "is required for arr_ratio") end
   elseif kind == "market" then
     if g.attr ~= nil and not text(g.attr) then add(r, path .. ".attr", "must be a string") end
     if g.attr ~= nil and g.value == nil then add(r, path .. ".value", "is required with attr") end
   elseif kind == "has_group" then
     if not text(g.group) then add(r, path .. ".group", "is required") end
     if g.val ~= nil and not number(g.val) then add(r, path .. ".val", "must be a number") end
+  elseif kind == "state" then
+    if not text(g.state) then add(r, path .. ".state", "is required") end
+    if not COMPARATORS[g.op] then add(r, path .. ".op", "unknown comparator " .. tostring(g.op)) end
+    if not number(g.val) then add(r, path .. ".val", "must be a finite number") end
+  elseif kind == "event" then
+    if not text(g.field) then add(r, path .. ".field", "is required") end
+    if g.op ~= nil then
+      if not COMPARATORS[g.op] then add(r, path .. ".op", "unknown comparator " .. tostring(g.op)) end
+      if not number(g.val) then add(r, path .. ".val", "must be a finite number") end
+    elseif g.value == nil then add(r, path .. ".value", "is required when op is absent") end
   end
 end
 
@@ -778,21 +795,49 @@ end
 
 local function validate_op(op, path, r, meter_names, owner)
   if type(op) ~= "table" then add(r, path, "operation must be a table"); return end
+  only_fields(op, {
+    k=true, gate=true, per=true, inc_per=true, base=true, coef=true, max=true, pct=true,
+    cap=true, floor=true, amount=true, field=true, what=true, state=true, key=true, group=true,
+    step=true, when=true, reset_on=true, mode=true, kind=true, layer=true, which=true,
+    name=true, p=true, win=true, lose=true, n=true, guaranteed=true, margin=true,
+    overcut=true, stage=true,
+  }, path, r)
   if not text(op.k) or not OPS[op.k] then add(r, path .. ".k", "unknown operation " .. tostring(op.k)); return end
   if op.gate ~= nil then validate_gate(op.gate, path .. ".gate", r, meter_names, owner) end
   if op.per ~= nil and op.k ~= "clash_tax" then validate_per(op.per, path .. ".per", r, meter_names, owner) end
+  if op.stage ~= nil and not ({ pre_after=true, pre_market=true, final=true })[op.stage] then
+    add(r, path .. ".stage", "must be pre_after, pre_market, or final")
+  end
+  if op.per == "running_arr" and op.stage == nil then add(r, path .. ".stage", "is required for running_arr") end
   if op.inc_per ~= nil then validate_per(op.inc_per, path .. ".inc_per", r, meter_names, owner) end
-  validate_number_fields(op, { "base", "coef", "max", "pct" }, path, r)
+  validate_number_fields(op, { "base", "coef", "max", "pct", "cap", "floor" }, path, r)
 
   if op.k == "scale" or op.k == "acc" or op.k == "arm" then
-    if not ({ chips=true, mult=true, x_mult=true, dollars=true })[op.field] then
+    if not ({ chips=true, mult=true, x_mult=true, x_chips=true, dollars=true })[op.field] then
       add(r, path .. ".field", "unknown score field " .. tostring(op.field))
     end
   end
-  if op.k == "acc" then
+  if op.k == "x_add" then
+    if op.field ~= "chips" and op.field ~= "mult" then add(r, path .. ".field", "must be chips or mult") end
+    if op.amount ~= nil and not number(op.amount) then add(r, path .. ".amount", "must be a finite number") end
+  elseif op.k == "score_floor" then
+    if not ({ users=true, rev=true, arr=true })[op.what] then add(r, path .. ".what", "must be users, rev, or arr") end
+    if op.amount == nil and op.per == nil then add(r, path, "requires amount or per") end
+    if op.amount ~= nil and not number(op.amount) then add(r, path .. ".amount", "must be a finite number") end
+  elseif op.k == "state" then
+    if not text(op.state) then add(r, path .. ".state", "is required") end
+    if op.mode ~= nil and not ({ add=true, set=true, clear=true, max=true, min=true })[op.mode] then
+      add(r, path .. ".mode", "must be add, set, clear, max, or min")
+    end
+    if op.mode ~= "clear" and op.amount == nil and op.per == nil then add(r, path, "requires amount or per") end
+    if op.amount ~= nil and not number(op.amount) then add(r, path .. ".amount", "must be a finite number") end
+    if op.reset_on ~= nil then
+      if not dense_array(op.reset_on) then add(r, path .. ".reset_on", "must be an array")
+      else for i, hook in ipairs(op.reset_on) do if not RESET_HOOKS[hook] then add(r, path .. ".reset_on[" .. i .. "]", "unknown reset hook " .. tostring(hook)) end end end
+    end
+  elseif op.k == "acc" then
     if op.field == "x_mult" and op.max == nil and number(op.coef) and op.coef > 0 then
-      op.max = math.max(0, math.floor((5 - (op.base or 1)) / op.coef))
-      r.aliases[#r.aliases + 1] = path .. " capped unbounded x_mult accumulator"
+      add(r, path .. ".max", "is required for a growing x_mult accumulator")
     end
     if op.step ~= nil and op.step ~= "round" and op.step ~= "ship" then add(r, path .. ".step", "must be round or ship") end
     if op.when ~= nil and op.when ~= "post" and op.when ~= "pre" then add(r, path .. ".when", "must be pre or post") end
@@ -803,14 +848,14 @@ local function validate_op(op, path, r, meter_names, owner)
   elseif op.k == "grant" then
     if not ({ cash=true, margin=true, salary=true })[op.what] then add(r, path .. ".what", "unknown grant target " .. tostring(op.what)) end
     if op.amount ~= nil and not number(op.amount) then add(r, path .. ".amount", "must be a finite number") end
+  elseif op.k == "spend" then
+    if op.amount == nil and op.per == nil then add(r, path, "requires amount or per") end
+    if op.amount ~= nil and (not number(op.amount) or op.amount < 0) then
+      add(r, path .. ".amount", "must be a non-negative finite number")
+    end
   elseif op.k == "clear_clash" then
     if type(op.amount) == "table" and op.per == nil then
-      local legacy = op.amount
-      if legacy.per and (legacy.base == nil or number(legacy.base)) and (legacy.coef == nil or number(legacy.coef)) then
-        op.per, op.base, op.coef, op.amount = legacy.per, legacy.base, legacy.coef, nil
-        r.aliases[#r.aliases + 1] = path .. " normalized legacy scalable amount"
-        validate_per(op.per, path .. ".per", r, meter_names, owner)
-      else add(r, path .. ".amount", "invalid scalable amount") end
+      add(r, path .. ".amount", "legacy scalable tables are not allowed; use per/base/coef")
     end
     if op.amount ~= nil and op.amount ~= "all" and not number(op.amount) then add(r, path .. ".amount", "must be a number or all") end
   elseif op.k == "gen" then
@@ -823,9 +868,9 @@ local function validate_op(op, path, r, meter_names, owner)
   elseif op.k == "gamble" then
     validate_number_fields(op, { "p", "win", "lose", "n", "guaranteed" }, path, r)
     if not number(op.p) or op.p < 0 or op.p > 1 then add(r, path .. ".p", "must be a probability") end
-    if number(op.lose) and op.lose >= 1 then op.lose = 0.75; r.aliases[#r.aliases + 1] = path .. " added a real gamble downside" end
-    if number(op.win) and op.win > 5 then op.win = 5; r.aliases[#r.aliases + 1] = path .. " capped gamble win multiplier" end
-    if number(op.guaranteed) and op.guaranteed > 5 then op.guaranteed = 5; r.aliases[#r.aliases + 1] = path .. " capped gamble guarantee" end
+    if number(op.lose) and op.lose >= 1 then add(r, path .. ".lose", "must be below 1") end
+    if number(op.win) and op.win > 5 then add(r, path .. ".win", "must not exceed 5") end
+    if number(op.guaranteed) and op.guaranteed > 5 then add(r, path .. ".guaranteed", "must not exceed 5") end
   elseif op.k == "delete_card" then
     validate_number_fields(op, { "margin", "overcut" }, path, r)
   elseif op.k == "clash_tax" then
@@ -838,26 +883,73 @@ local function validate_dsl(dsl, path, r, owner)
   if type(dsl) ~= "table" then add(r, path, "DSL must be a table"); return end
   local meter_names = {}
   for _, op in ipairs(dsl.ops or {}) do if type(op) == "table" and op.k == "meter" and text(op.name) then meter_names[op.name] = true end end
-  if dsl.hook ~= nil and not HOOKS[dsl.hook] then add(r, path .. ".hook", "unknown hook " .. tostring(dsl.hook)) end
-  if dsl.once ~= nil and type(dsl.once) ~= "boolean" then add(r, path .. ".once", "must be boolean") end
-  if dsl.once_scope ~= nil and not ({ run=true, ante=true, blind=true })[dsl.once_scope] then add(r, path .. ".once_scope", "unknown once scope") end
-  if dsl.gate ~= nil then validate_gate(dsl.gate, path .. ".gate", r, meter_names, owner) end
-  if dsl.ops ~= nil then
-    if not dense_array(dsl.ops) then add(r, path .. ".ops", "must be an array")
-    else for i, op in ipairs(dsl.ops) do validate_op(op, path .. ".ops[" .. i .. "]", r, meter_names, owner) end end
+  for _, clause in ipairs(dsl.clauses or {}) do
+    for _, op in ipairs(type(clause) == "table" and (clause.ops or {}) or {}) do
+      if type(op) == "table" and op.k == "meter" and text(op.name) then meter_names[op.name] = true end
+    end
   end
-  if dsl.retrigger ~= nil then
-    if type(dsl.retrigger) == "table" then
-      validate_number_fields(dsl.retrigger, { "base", "coef" }, path .. ".retrigger", r)
-      validate_per(dsl.retrigger.per, path .. ".retrigger.per", r, meter_names, owner)
-    elseif not number(dsl.retrigger) then add(r, path .. ".retrigger", "must be a number or scale table") end
+  local function validate_spec(spec, spec_path)
+    if type(spec) ~= "table" then add(r, spec_path, "clause must be a table"); return end
+    only_fields(spec, { clauses=true, passive=true, action=true, hook=true, gate=true, ops=true,
+      once=true, once_scope=true, retrigger=true, retrigger_target=true, id=true, once_id=true }, spec_path, r)
+    if spec.hook ~= nil and not HOOKS[spec.hook] then add(r, spec_path .. ".hook", "unknown hook " .. tostring(spec.hook)) end
+    if spec.id ~= nil and not text(spec.id) then add(r, spec_path .. ".id", "must be non-empty text") end
+    if spec.once_id ~= nil and not text(spec.once_id) then add(r, spec_path .. ".once_id", "must be non-empty text") end
+    if spec.once ~= nil and type(spec.once) ~= "boolean" then add(r, spec_path .. ".once", "must be boolean") end
+    if spec.once_scope ~= nil and not ({ run=true, ante=true, blind=true })[spec.once_scope] then add(r, spec_path .. ".once_scope", "unknown once scope") end
+    if spec.gate ~= nil then validate_gate(spec.gate, spec_path .. ".gate", r, meter_names, owner) end
+    if spec.ops ~= nil then
+      if not dense_array(spec.ops) then add(r, spec_path .. ".ops", "must be an array")
+      else for i, op in ipairs(spec.ops) do validate_op(op, spec_path .. ".ops[" .. i .. "]", r, meter_names, owner) end end
+    end
+    if spec.retrigger ~= nil then
+      if type(spec.retrigger) == "table" then
+        validate_number_fields(spec.retrigger, { "base", "coef" }, spec_path .. ".retrigger", r)
+        validate_per(spec.retrigger.per, spec_path .. ".retrigger.per", r, meter_names, owner)
+      elseif not number(spec.retrigger) then add(r, spec_path .. ".retrigger", "must be a number or scale table") end
+    end
+    if spec.retrigger_target ~= nil and spec.retrigger_target ~= "highest" then add(r, spec_path .. ".retrigger_target", "unknown target") end
+    if spec.hook == "activated" or spec.hook == "post_resolution" then
+      for i, op in ipairs(spec.ops or {}) do
+        if type(op) == "table" and ((op.k == "scale" and op.field ~= "dollars")
+            or op.k == "x_add" or op.k == "score_floor" or op.k == "gamble" or op.k == "clash_tax") then
+          add(r, spec_path .. ".ops[" .. i .. "]", spec.hook .. " cannot mutate an absent score")
+        end
+      end
+    end
   end
-  if dsl.retrigger_target ~= nil and dsl.retrigger_target ~= "highest" then add(r, path .. ".retrigger_target", "unknown target") end
+  validate_spec(dsl, path)
+  if dsl.clauses ~= nil then
+    if not dense_array(dsl.clauses) or #dsl.clauses == 0 then add(r, path .. ".clauses", "must be a non-empty array")
+    elseif #dsl.clauses > 12 then add(r, path .. ".clauses", "must contain at most 12 clauses")
+    else
+      local ids = {}
+      for i, clause in ipairs(dsl.clauses) do
+        local cp = path .. ".clauses[" .. i .. "]"
+        validate_spec(clause, cp)
+        if type(clause) == "table" and text(clause.id) then
+          if ids[clause.id] then add(r, cp .. ".id", "duplicates " .. clause.id) else ids[clause.id] = true end
+        end
+      end
+    end
+  end
   if dsl.passive ~= nil then
     if type(dsl.passive) ~= "table" then add(r, path .. ".passive", "must be a table")
     else
       if not ({ hand_size=true, founder_slots=true, salary=true })[dsl.passive.what] then add(r, path .. ".passive.what", "unknown passive target") end
       if not number(dsl.passive.amount) then add(r, path .. ".passive.amount", "must be a finite number") end
+    end
+  end
+  if dsl.action ~= nil then
+    if type(dsl.action) ~= "table" then add(r, path .. ".action", "must be a table")
+    else
+      only_fields(dsl.action, { label=true, description=true }, path .. ".action", r)
+      if not text(dsl.action.label) then add(r, path .. ".action.label", "is required") end
+      if dsl.action.description ~= nil and not text(dsl.action.description) then add(r, path .. ".action.description", "must be non-empty text") end
+      local found = false
+      for _, clause in ipairs(dsl.clauses or {}) do if clause.hook == "activated" then found = true end end
+      if dsl.hook == "activated" then found = true end
+      if not found then add(r, path .. ".action", "requires an activated clause") end
     end
   end
 end

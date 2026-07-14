@@ -26,7 +26,7 @@ local Input = {}
 Input.__index = Input
 
 local KEY_ACTION = {
-  space = "ship", f = "refactor", d = "distill", p = "promote",
+  space = "ship", f = "refactor", d = "distill", p = "promote", x = "activate_founder",
   e = "raise", v = "market_pivot", r = "restart",
 }
 

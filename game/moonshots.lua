@@ -9,6 +9,7 @@ local Eras = require("game.eras")
 local Coverage = require("game.coverage")
 local TechModifiers = require("game.tech_modifiers")
 local TechLifecycle = require("game.tech_lifecycle")
+local FounderEvents = require("game.founder_events")
 
 local Moonshots = {}
 local SPECIAL = { ms_acquihire = true, ms_disruption = true }
@@ -821,7 +822,8 @@ function Moonshots.apply(center_or_instance, targets, opts, supplied_plan)
         field = "users", mode = "add", amount = amount, label = "Viral Moment", source = key } end
       sync_tech(entry)
     end
-    local lost = game.cash; game.cash = 0
+    local lost = game.cash
+    assert(FounderEvents.spend(game, lost, "moonshot", { moonshot_key=key }))
     game.moonshot_state.viral_moment_uses = (game.moonshot_state.viral_moment_uses or 0) + 1
     result_change(result, "mass_users", { amount = 15, count = #game.master_deck }); result_change(result, "cash", { amount = -lost })
   elseif key == "ms_blitzscale" then
@@ -881,7 +883,7 @@ function Moonshots.apply(center_or_instance, targets, opts, supplied_plan)
     for _, uid in ipairs(plan.affected_uids) do remove_uid(game, uid); result_change(result, "destroy_tech", { uid = uid }) end
     local gain = 5 * funding_unit(game); game.cash = (game.cash or 0) + gain; result_change(result, "cash", { amount = gain })
   elseif key == "ms_patent_blitz" then
-    game.cash = game.cash - plan.cash_cost
+    assert(FounderEvents.spend(game, plan.cash_cost, "moonshot", { moonshot_key=key }))
     for _, uid in ipairs(plan.affected_uids) do local entry = entry_by_uid(game, uid); entry.seal = plan.payload.seal; sync_tech(entry) end
     result_change(result, "cash", { amount = -plan.cash_cost }); result_change(result, "seal", { key = plan.payload.seal, uids = plan.affected_uids })
   elseif key == "ms_open_core" then
@@ -897,7 +899,9 @@ function Moonshots.apply(center_or_instance, targets, opts, supplied_plan)
     result_change(result, "enhancement", { key = plan.payload.enhancement, uids = plan.affected_uids }); result_change(result, "debt", { amount = #plan.affected_uids })
   elseif key == "ms_talent_raid" then
     local card = add_founder(plan.founder, "moonshot_talent_raid"); result.generated[#result.generated + 1] = { kind = "founder", key = card.center_key }
-    local lost = game.cash; game.cash = 0; result_change(result, "cash", { amount = -lost })
+    local lost = game.cash
+    assert(FounderEvents.spend(game, lost, "moonshot", { moonshot_key=key }))
+    result_change(result, "cash", { amount = -lost })
   elseif key == "ms_spinout" then
     local copied = add_founder(plan.spinout_center, "moonshot_spinout")
     for i = #G.jokers.cards, 1, -1 do

@@ -64,7 +64,18 @@ local function apply_effect(S, eff)
   if not eff then return end
   if eff.chips  then S.chips = math.min(MAX_USERS, S.chips + eff.chips) end
   if eff.mult   then S.mult  = math.min(MAX_REVENUE, S.mult + eff.mult) end
+  if eff.x_chips_add then S.chips = math.min(MAX_USERS, S.chips * math.max(0, 1 + eff.x_chips_add)) end
+  if eff.x_chips then S.chips = math.min(MAX_USERS, S.chips * math.max(0, math.min(8, eff.x_chips))) end
+  if eff.x_mult_add then S.mult = math.min(MAX_REVENUE, S.mult * math.max(0, 1 + eff.x_mult_add)) end
   if eff.x_mult then S.mult  = math.min(MAX_REVENUE, S.mult * math.max(0, math.min(5, eff.x_mult))) end
+  if eff.chips_floor then S.chips = math.max(S.chips, eff.chips_floor) end
+  if eff.mult_floor then S.mult = math.max(S.mult, eff.mult_floor) end
+  if eff.arr_floor and S.chips * S.mult < eff.arr_floor then
+    S.arr_floor = math.max(S.arr_floor or 0, eff.arr_floor)
+    S.chips = math.min(MAX_USERS, eff.arr_floor / math.max(0.000001, S.mult))
+  elseif eff.arr_floor then
+    S.arr_floor = math.max(S.arr_floor or 0, eff.arr_floor)
+  end
   if eff.dollars   then G.GAME.pending_dollars = G.GAME.pending_dollars + eff.dollars end
   if eff.p_dollars then G.GAME.pending_dollars = G.GAME.pending_dollars + eff.p_dollars end
   local e = eff.edition
@@ -153,10 +164,12 @@ function Scoring.evaluate_ship(played)
   local coverage = Coverage.analyze(played)
   local app = AppTypes.classify(played)
   local ai_maturity = AIMaturity.evaluate(played, app)
+  local current_fit = Markets.fit_mult(played, G.GAME.market)
   Profile.discover(app.key)
   local base = {
     cardarea = G.play, full_hand = played, scoring_hand = played,
     scoring_name = app.name, poker_hands = { [app.key] = true }, coverage = coverage,
+    is_short_ship = #played <= 3, market_fit = current_fit,
   }
   G.GAME.scoring_name = app.name
   G.GAME.this_app = app
@@ -207,6 +220,16 @@ function Scoring.evaluate_ship(played)
   each_automated(ctx(base, { before = true }), function(e)
     local b = score_snap(S); apply_effect(S, e); queue_score_feedback(nil, "Automated", b, score_snap(S), "score_system", G.C.arr)
   end)
+  if base.is_short_ship then
+    for _, jk in ipairs(G.jokers.cards) do
+      local b = score_snap(S); apply_effect(S, eval_card(jk, ctx(base, { short_ship = true })))
+      queue_score_feedback(jk, founder_name(jk), b, score_snap(S))
+    end
+    each_automated(ctx(base, { short_ship = true }), function(e)
+      local b = score_snap(S); apply_effect(S, e)
+      queue_score_feedback(nil, "Automated", b, score_snap(S), "score_system", G.C.arr)
+    end)
+  end
 
   -- each scoring card, left -> right
   local step = 0
@@ -278,6 +301,7 @@ function Scoring.evaluate_ship(played)
   end)
   G.GAME._pre_after_arr = math.floor(S.chips * S.mult + 0.5)
   G.GAME._running_arr = G.GAME._pre_after_arr
+  base.pre_after_arr = G.GAME._pre_after_arr
   for _, jk in ipairs(G.jokers.cards) do
     local b = score_snap(S); apply_effect(S, eval_card(jk, ctx(base, { after = true })))
     queue_score_feedback(jk, founder_name(jk), b, score_snap(S))
@@ -395,10 +419,15 @@ function Scoring.evaluate_ship(played)
     active = G.GAME.last_named_stack ~= nil, stack = G.GAME.last_named_stack })
   systems_trace.stack = G.GAME.last_named_stack -- compatibility alias for older trace readers
 
+  G.GAME._pre_market_arr = math.floor(S.chips * S.mult + 0.5)
+  base.pre_market_arr = G.GAME._pre_market_arr
+  ScoreTrace.capture(G.GAME.score_trace, "pre_market", {
+    chips = S.chips, mult = S.mult, arr = G.GAME._pre_market_arr })
+
   -- E5 Market fit (earned mult) + telegraphed boss event penalty
-  local fit = Markets.fit_mult(played, G.GAME.market)
+  local fit = current_fit
   local boss_key = G.GAME.blind and G.GAME.blind.event
-  local evm = Bosses.score_multiplier(boss_key, played, { fit = fit })
+  local evm = Bosses.score_multiplier(boss_key, played, { fit = fit, coverage = coverage })
   G.GAME.current_boss_margin_delta = Bosses.margin_delta(boss_key)
   G.GAME.last_fit = fit
   G.GAME.market_best_fit = math.max(G.GAME.market_best_fit or 0, fit)
@@ -436,12 +465,21 @@ function Scoring.evaluate_ship(played)
     + Markets.reliability_bonus(G.GAME.market))
   reliability.multiplier = 0.50 + 0.05 * reliability.score
   S.chips, S.mult = math.min(MAX_USERS, S.chips), math.min(MAX_REVENUE, S.mult)
-  local final_arr = math.floor(S.chips * S.mult * reliability.multiplier + 0.5)
+  local final_arr = math.max(S.arr_floor or 0, math.floor(S.chips * S.mult * reliability.multiplier + 0.5))
   G.GAME.last_reliability, G.GAME.last_misfire = reliability, false
   G.GAME._final_arr = final_arr
+  G.GAME.last_ship_arr = final_arr
+  G.GAME.previous_ship_arr = final_arr
+  base.final_arr = final_arr
   ScoreTrace.finalize(G.GAME.score_trace, { chips = S.chips, mult = S.mult, fit = fit, boss_mult = evm,
     market = G.GAME.market and G.GAME.market.id,
     reliability = reliability.score, reliability_mult = reliability.multiplier, arr = final_arr })
+  -- Post-resolution clauses can write counters, create cards, or grant economy
+  -- effects against the genuine final ARR. Their score fields are deliberately
+  -- applied to a scratch value so no circular final-score mutation is possible.
+  local post = ctx(base, { post_resolution = true })
+  for _, jk in ipairs(G.jokers.cards) do apply_effect({ chips = 0, mult = 0 }, eval_card(jk, post)) end
+  each_automated(post, function(e) apply_effect({ chips = 0, mult = 0 }, e) end)
   G.E_MANAGER:add_event(Event({ trigger = "immediate", blocking = true, func = function()
     local target = math.max(1, (G.GAME.blind and G.GAME.blind.target) or final_arr)
     local intensity = clamp(.7 + math.log(1 + final_arr / target) / math.log(2), .7, 2.5)
@@ -478,6 +516,8 @@ function Scoring.fire_hook(name, over)
     local c = ctx(base, over); c[name] = true
     apply_effect(scratch, eval_card(jk, c))
   end
+  local automated_context = ctx(base, over); automated_context[name] = true
+  each_automated(automated_context, function(effect) apply_effect(scratch, effect) end)
 end
 
 return Scoring

@@ -86,24 +86,39 @@ function Lifecycle.acquire(card, opts)
     if opts.stake_mod.kind == "rental" then cfg._rental_salary_mult = opts.stake_mod.salary_mult or 1.5 end
   end
   G.GAME.founders_hired_run = (G.GAME.founders_hired_run or 0) + 1
+  G.GAME.founders_hired_round = (G.GAME.founders_hired_round or 0) + 1
   require("game.leads").on_founder_acquired(G.GAME, card)
   Interp.apply_passive(card)
   if card.center_key == "f_kitchen-engineer42" and G.GENERATE then
     G.GENERATE("specific_tech_card", { key = "t_joharness-burg", amount = 1 })
     cfg._signature_key = "t_joharness-burg"
   end
+  require("game.founder_events").fire("founder_hired", {
+    founder = card, other_card = card, founder_key = card.center_key,
+    source = cfg._source, founders_hired_round = G.GAME.founders_hired_round,
+  })
   return true
 end
 
 function Lifecycle.distill(card)
   local cfg = card and config(card)
-  if not cfg or cfg._distilled then return false end
+  if not cfg or cfg._distilled or (card.center and card.center.dsl and card.center.dsl.passive) then return false end
   local current_salary = cfg._salary
   if current_salary == nil then current_salary = (card.center and card.center.salary) or 2 end
   cfg._distilled = true
   cfg._salary = math.max(1, math.floor(current_salary / 2))
   cfg._effect_scale = 0.5
   return true
+end
+
+function Lifecycle.can_distill(card)
+  local cfg = card and card.ability and card.ability.config
+  return card ~= nil and not (cfg and cfg._distilled)
+    and not (card.center and card.center.dsl and card.center.dsl.passive)
+end
+
+function Lifecycle.can_promote(card)
+  return card ~= nil and not (card.center and card.center.dsl and card.center.dsl.action)
 end
 
 function Lifecycle.tick_blind(card)
