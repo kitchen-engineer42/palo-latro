@@ -21,11 +21,15 @@ local Profile = require("game.profile")
 local Guidance = require("game.guidance")
 local Economy = require("game.economy")
 local TechLaws = require("game.tech_laws")
+local Moonshots = require("game.moonshots")
 local random = RNG.fn("shop")
 local pack_random = RNG.fn("packs")
 local pack_shop_random = RNG.fn("pack_shop")
 local law_shop_random = RNG.fn("tech_law_shop")
 local law_pack_random = RNG.fn("tech_law_pack")
+local moonshot_pack_random = RNG.fn("moonshot_pack")
+local moonshot_special_random = RNG.fn("moonshot_special")
+local moonshot_payload_random = RNG.fn("moonshot_payload")
 
 local Shop = {}
 
@@ -266,7 +270,7 @@ function Shop.buy(idx)
 end
 
 -- ── Pitch packs (P3) ──────────────────────────────────────────────────────────────────────────────
--- Hiring Rounds draft founders; Playbook Workshops upgrade App Types; Tech Law Packs
+-- Hiring Rounds draft founders; Playbook Workshops upgrade App Types; Roadmap packs
 -- add consumables. Every definition carries its own Balatro-like size/choice band.
 function Shop.pack_price(definition)
   if type(definition) == "number" then
@@ -309,11 +313,36 @@ function Shop.open_pack(idx)
   local cost = Shop.pack_price(definition)
   if cost > 0 and (G.GAME.cash or 0) < cost then return false end
   local tech_options
+  local moonshot_options
   if definition.family == "tech_evaluation" then
     if TechEvaluation.available_count(G.GAME) < definition.options then return false end
     tech_options = TechEvaluation.generate_offers(G.GAME, definition.options, pack_random,
       RNG.fn("tech_modifier_offer"))
     if #tech_options < definition.options then return false end -- no charge for an exhausted evaluation
+  elseif definition.family == "moonshot" then
+    moonshot_options = {}
+    local seen, attempts = {}, 0
+    local max_attempts = #Moonshots.pool() + definition.options + 2
+    while #moonshot_options < definition.options and attempts < max_attempts do
+      attempts = attempts + 1
+      local center = Moonshots.roll(moonshot_pack_random, {
+        special_rng = moonshot_special_random,
+        exclude = seen,
+      })
+      if not center then break end
+      seen[center.key] = true
+      local instance = Moonshots.materialize(center, {
+        game = G.GAME,
+        rng = moonshot_payload_random,
+      })
+      if instance then
+        local option = {}
+        for key, value in pairs(center) do option[key] = value end
+        option.moonshot_payload = deep_copy(instance.payload or instance)
+        moonshot_options[#moonshot_options + 1] = option
+      end
+    end
+    if #moonshot_options < definition.options then return false end
   end
   G.GAME.cash = G.GAME.cash - cost
   if definition.family == "tech_evaluation" then
@@ -362,6 +391,18 @@ function Shop.open_pack(idx)
       art_key = definition.art_key, fallback_art = definition.fallback_art,
       options = opts, picks_left = definition.picks }
     local keys = {}; for _, option in ipairs(opts) do keys[#keys + 1] = option.key end
+    Profile.discover_many(keys)
+    PackPresentation.begin(sh.pack_open, idx, definition)
+    Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
+    Audio.play("select", nil, 0.6)
+    return true
+  end
+  if definition.family == "moonshot" then
+    sh.packs[idx] = false
+    sh.pack_open = { kind = "moonshot", name = definition.name, pack_key = definition.key,
+      art_key = definition.art_key, fallback_art = definition.fallback_art,
+      options = moonshot_options, picks_left = definition.picks }
+    local keys = {}; for _, option in ipairs(moonshot_options) do keys[#keys + 1] = option.key end
     Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
     Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
@@ -481,6 +522,18 @@ function Shop.pack_pick(i)
   if po.kind == "tech_law" then
     local entry = require("game.consumables").grant(c.key, {
       source = "pack", sell_basis = 0,
+    })
+    if not entry then return false end
+    po.options[i] = false; po.picks_left = po.picks_left - 1
+    if po.picks_left <= 0 then sh.pack_open = nil end
+    Audio.play("hire")
+    Profile.discover(c.key)
+    Guidance.emit("pack_picked", { family = po.kind, key = c.key })
+    return true
+  end
+  if po.kind == "moonshot" then
+    local entry = require("game.consumables").grant(c.key, {
+      source = "pack", sell_basis = 0, moonshot_payload = c.moonshot_payload,
     })
     if not entry then return false end
     po.options[i] = false; po.picks_left = po.picks_left - 1

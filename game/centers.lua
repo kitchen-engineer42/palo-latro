@@ -26,12 +26,12 @@ function Centers.load_all()
     forms = require("data.centers.forms_gen"),
     signature_cards = require("data.centers.signature_cards"),
     vouchers = require("data.centers.vouchers"),
-    consumables = require("data.gameplay.tech_laws"),
+    consumables = require("data.gameplay.consumables"),
     compat = require("data.centers.compat_gen"),
     markets = require("data.centers.markets_gen"),
   }
   Centers.content_report = ContentValidate.assert_catalog(content, {
-    minimums = { techcards = 226, founders = 262, forms = 17, tech_laws = 22 },
+    minimums = { techcards = 226, founders = 262, forms = 17, tech_laws = 22, moonshots = 16 },
   })
 
   for _, c in ipairs(content.techcards) do Centers.register(c) end   -- 226 (bridge B1)
@@ -40,7 +40,7 @@ function Centers.load_all()
   for _, s in ipairs(content.signature_cards) do Centers.register(s) end -- signature pair
   for _, fm in ipairs(content.forms) do Centers.register(fm) end          -- legendary 2nd forms
   for _, v in ipairs(content.vouchers) do Centers.register(v) end         -- investment vouchers
-  for _, c in ipairs(content.consumables) do Centers.register(c) end       -- authored Tech Law consumables
+  for _, c in ipairs(content.consumables) do Centers.register(c) end       -- authored Roadmap consumables
 end
 
 -- preload founder art into G.FOUNDER_ART (call from love.load — needs love.graphics).

@@ -7,6 +7,10 @@ local TechLaws = require("game.tech_laws")
 
 local Consumables = {}
 
+-- Kept lazy because the Moonshot runtime also resolves through this shared
+-- inventory boundary. Loading either module must not depend on require order.
+local function moonshots() return require("game.moonshots") end
+
 local function copy(value, seen)
   if type(value) ~= "table" then return value end
   seen = seen or {}
@@ -22,6 +26,14 @@ local function finite(value)
 end
 
 local function game_of(game) return game or (G and G.GAME) end
+
+local function moonshot_payload(value)
+  if type(value) ~= "table" then return nil end
+  if value.moonshot_payload ~= nil then return value.moonshot_payload end
+  if value.payload ~= nil then return value.payload end
+  local config = value.ability and value.ability.config
+  return config and (config._moonshot_payload or config.moonshot_payload) or nil
+end
 
 local function center_of(value)
   if type(value) == "string" then return Centers.get(value) end
@@ -107,6 +119,11 @@ function Consumables.can_target(card_or_center, target, game)
   local center = center_of(card_or_center)
   game = game_of(game)
   if not (center and center.target) then return false, "This consumable does not take a target" end
+  if moonshots().handles(center) then
+    return moonshots().can_target(card_or_center, target, game, {
+      payload = moonshot_payload(card_or_center),
+    })
+  end
   local entry = target_entry(target, game)
   if not entry then return false, "Choose an owned Tech card" end
   if TechLaws.handles(center) then return TechLaws.can_target(center, target, game) end
@@ -114,6 +131,26 @@ function Consumables.can_target(card_or_center, target, game)
     return false, "This Tech's Layer is locked"
   end
   return true
+end
+
+-- Target routing is part of the shared consumable contract. Tech Laws use the
+-- hand; Moonshots may instead address the Founder row without teaching input,
+-- UI, or Mimic about individual card keys.
+function Consumables.target_area(card_or_center)
+  local center = center_of(card_or_center)
+  local area = center and center.target and center.target.area
+  if area == "founders" then return G and G.jokers, "founder" end
+  if area == "hand" then return G and G.hand, "hand" end
+  return nil, area
+end
+
+function Consumables.target_candidates(card_or_center, game)
+  local area, area_name = Consumables.target_area(card_or_center)
+  local out = {}
+  for _, candidate in ipairs((area and area.cards) or {}) do
+    if Consumables.can_target(card_or_center, candidate, game) then out[#out + 1] = candidate end
+  end
+  return out, area_name, area
 end
 
 local function legacy_preflight(center, targets, opts)
@@ -251,6 +288,12 @@ function Consumables.apply(center_or_card, targets, opts)
   if not center then return failed(nil, "Unknown consumable") end
   opts.game = game_of(opts.game)
   opts.card = opts.card or (type(center_or_card) == "table" and center_or_card.center and center_or_card)
+  opts.payload = opts.payload or moonshot_payload(center_or_card)
+  if moonshots().handles(center) then
+    local plan, reason = moonshots().preflight(center_or_card, targets, opts)
+    if not plan then return failed(center, reason) end
+    return moonshots().apply(center_or_card, targets, opts, plan)
+  end
   if TechLaws.handles(center) then
     local plan, reason = TechLaws.preflight(center, targets, opts)
     if not plan then return failed(center, reason) end
@@ -265,6 +308,11 @@ function Consumables.can_use(card_or_center, game)
   local center = center_of(card_or_center)
   game = game_of(game)
   if not (center and game) then return false, "Unknown consumable" end
+  if moonshots().handles(center) then
+    return moonshots().can_use(card_or_center, game, nil, {
+      game = game, payload = moonshot_payload(card_or_center),
+    })
+  end
   if TechLaws.handles(center) then
     return TechLaws.can_use(card_or_center, game, nil, { game = game,
       card = type(card_or_center) == "table" and card_or_center.center and card_or_center or nil })
@@ -302,6 +350,10 @@ local function make_live(entry)
   card.consumable_instance_id = entry.instance_id
   card.ability.config._consumable_id = entry.instance_id
   card.ability.config._sell_basis = entry.sell_basis or 0
+  if entry.moonshot_payload ~= nil then
+    card.moonshot_payload = copy(entry.moonshot_payload)
+    card.ability.config._moonshot_payload = copy(entry.moonshot_payload)
+  end
   card.consumable_source = entry.source
   G.consumables:emplace(card)
   return card
@@ -323,11 +375,20 @@ function Consumables.normalize(game)
         id = next_id
       end
       next_id, seen[id] = math.max(next_id, id), true
-      normalized[#normalized + 1] = {
+      local clean = {
         instance_id = id, key = center.key,
         source = type(entry.source) == "string" and entry.source or "legacy",
         sell_basis = math.max(0, finite(entry.sell_basis) and entry.sell_basis or 0),
       }
+      if moonshots().handles(center) then
+        local payload = moonshots().normalize(moonshot_payload(entry), game, center)
+        if payload ~= nil then
+          clean.moonshot_payload = copy(payload.payload or payload)
+          normalized[#normalized + 1] = clean
+        end
+      else
+        normalized[#normalized + 1] = clean
+      end
     end
   end
   game.consumables, game.consumable_next_id = normalized, next_id
@@ -359,6 +420,8 @@ function Consumables.rehydrate(game)
       card.consumable_instance_id = entry.instance_id
       card.ability.config._consumable_id = entry.instance_id
       card.ability.config._sell_basis = entry.sell_basis
+      card.moonshot_payload = entry.moonshot_payload and copy(entry.moonshot_payload) or nil
+      card.ability.config._moonshot_payload = entry.moonshot_payload and copy(entry.moonshot_payload) or nil
     else make_live(entry) end
   end
   return true
@@ -370,10 +433,24 @@ function Consumables.grant(key, opts)
   if not (center and center.set == "Consumable" and game) then return nil end
   Consumables.normalize(game)
   if #game.consumables >= (game.consumable_slots or 2) then return nil end
+  local payload
+  if moonshots().handles(center) then
+    local instance = opts.moonshot_payload or opts.payload
+    local reason
+    if instance == nil then
+      instance, reason = moonshots().materialize(center, { game = game, rng = opts.rng })
+    end
+    if instance == nil then return nil, reason end
+    local normalized
+    normalized, reason = moonshots().normalize(instance, game, center)
+    if normalized == nil then return nil, reason end
+    payload = copy(normalized.payload or normalized)
+  end
   local entry = {
     instance_id = next_instance_id(game), key = key,
     source = opts.source or "generated",
     sell_basis = math.max(0, finite(opts.sell_basis) and opts.sell_basis or 0),
+    moonshot_payload = payload,
   }
   game.consumables[#game.consumables + 1] = entry
   local card = make_live(entry)

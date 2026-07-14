@@ -1,3 +1,3 @@
 -- Compatibility import for loaders that still address the historical center path.
--- Authored Tech Law content lives in data/gameplay/tech_laws.lua.
-return require("data.gameplay.tech_laws")
+-- Authored family manifests are aggregated beside the other gameplay data.
+return require("data.gameplay.consumables")

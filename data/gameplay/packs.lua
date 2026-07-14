@@ -41,6 +41,18 @@ for i = 1, 2 do add("tech_law_jumbo_" .. i, "tech_law", "Jumbo Tech Law Pack",
 for i = 1, 2 do add("tech_law_mega_" .. i, "tech_law", "Mega Tech Law Pack",
   "mega", i, 5, 2, 0.25, { fallback_art = "tech_law" }) end
 
+-- Moonshot/Spectral analogue: 2 normal covers, 1 jumbo, 1 mega (4 total).
+-- Until the dedicated Skunkworks cover lands, use the existing Roadmap art
+-- rather than silently borrowing a Hiring or Tech-Evaluation identity.
+add("moonshot",          "moonshot", "Skunkworks",       "normal", 1, 2, 1, 0.30,
+  { fallback_art = "tech_law" })
+add("moonshot_normal_2", "moonshot", "Skunkworks",       "normal", 2, 2, 1, 0.30,
+  { fallback_art = "tech_law" })
+add("moonshot_jumbo",    "moonshot", "Jumbo Skunkworks", "jumbo",  1, 4, 1, 0.30,
+  { fallback_art = "tech_law" })
+add("moonshot_mega",     "moonshot", "Mega Skunkworks",  "mega",   1, 4, 2, 0.075,
+  { fallback_art = "tech_law" })
+
 -- Tech Evaluation is a supplemental adoption lane, not a replacement for the
 -- guaranteed post-Boss Tech draft. Its 0.30/0.075 weights mirror a rare booster
 -- family: visible often enough to build around, but materially below the two

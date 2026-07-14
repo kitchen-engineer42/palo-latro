@@ -23,6 +23,11 @@ local Pricing = require("game.pricing")
 local Markets = require("game.markets")
 local Leads = require("game.leads")
 local Consumables = require("game.consumables")
+local Moonshots = require("game.moonshots")
+
+local function roadmap_pack(kind)
+  return kind == "tech_law" or kind == "moonshot"
+end
 
 local function lead_state(game)
   local view = Leads.view(game)
@@ -96,6 +101,7 @@ end
 local SHOP_RARITY_COL = {
   Legendary = { 0.80, 0.45, 0.42, 1 }, Rare = { 0.62, 0.50, 0.78, 1 },
   Uncommon = { 0.45, 0.62, 0.78, 1 }, Common = { 0.50, 0.66, 0.52, 1 },
+  ordinary = { 0.44, 0.64, 0.78, 1 }, special = { 0.92, 0.62, 0.24, 1 },
 }
 
 local function panel(x, y, w, h, col)
@@ -360,7 +366,7 @@ function UI.prepare()
           add("pack_skip", { x = play_cx - 100, y = y0 + ch + 120, w = 200, h = 42 }, true, "pack")
         else
           local can_pick = po.kind == "playbook"
-            or (po.kind == "tech_law" and #(GAME.consumables or {}) < (GAME.consumable_slots or 2))
+            or (roadmap_pack(po.kind) and #(GAME.consumables or {}) < (GAME.consumable_slots or 2))
             or (po.kind == "hiring" and #G.jokers.cards < Shop.founder_cap())
           for i, option in ipairs(po.options or {}) do
             if option then add("pack_pick_" .. i, { x = x0 + (i - 1) * (cw + gap) + 10,
@@ -722,8 +728,9 @@ function UI.render()
   if G.STATE == G.STATES.TARGET_SELECT and G.PENDING_CONSUMABLE then
     local pc = G.PENDING_CONSUMABLE
     lg.setColor(0, 0, 0, 0.35); lg.rectangle("fill", 0, 260, W, 44)
+    local target_label = pc.target_area_name == "founder" and "Founder" or "Tech card"
     UI.text(G.FONTS.small, pc.need_layer and "Pick the new Layer:" or
-      ("Select a target card for " .. (pc.center.name or "?") .. "  (right-click to cancel)"),
+      ("Select a " .. target_label .. " for " .. (pc.center.name or "?") .. "  (right-click to cancel)"),
       332, 270, G.C.arr, W - 332, "center")
     if pc.error then
       UI.text(G.FONTS.tiny, tostring(pc.error), 332, 294, G.C.lose, W - 332, "center")
@@ -964,6 +971,12 @@ function UI.draw_tooltip()
     local usable, reason = Consumables.can_use(hovered)
     sub = (c.kind or "Consumable") .. "  ·  " .. tostring(c.rarity or "")
     body = c.desc or ""
+    if c.kind == "Moonshot" then
+      local payload_text, _, payload_preview = Moonshots.payload_summary(hovered, nil, G.GAME)
+      if payload_text and payload_preview and payload_preview.kind ~= "none" then
+        body = body .. "\n\nPre-rolled outcome · " .. payload_text
+      end
+    end
     if usable then body = body .. "\n\nReady to use."
     elseif reason then body = body .. "\n\nUnavailable: " .. tostring(reason) end
     body = body .. "\nSell value $" .. tostring(Shop.consumable_sell_value(hovered))
@@ -1271,7 +1284,8 @@ function UI.render_shop(W, H, GAME)
     local frame = PackPresentation.snapshot(po)
     local title = (po.name or (po.kind == "playbook" and "Playbook Workshop" or
       (po.kind == "tech_law" and "Tech Law Pack" or
-      (po.kind == "tech_evaluation" and "Tech Evaluation" or "Hiring Round")))):upper()
+      (po.kind == "moonshot" and "Skunkworks" or
+      (po.kind == "tech_evaluation" and "Tech Evaluation" or "Hiring Round"))))):upper()
 
     lg.setColor(0, 0, 0, frame.ready and 0.58 or 0.72)
     lg.rectangle("fill", 332, 0, W - 332, H)
@@ -1289,7 +1303,7 @@ function UI.render_shop(W, H, GAME)
     if not frame.cover then
       lg.setFont(G.FONTS.normal); lg.setColor(G.C.arr)
       local capacity_hint = po.kind == "hiring" and "  (sell a founder above to free a slot)" or
-        (po.kind == "tech_law" and "  (use or sell a Tech Law to free a slot)" or
+        (roadmap_pack(po.kind) and "  (use or sell a Roadmap card to free a slot)" or
         (po.kind == "tech_evaluation" and "  ·  Adopt +1 or Migrate +0" or ""))
       lg.printf(title .. " \194\183 pick " .. po.picks_left .. capacity_hint, 332, 318, W - 332, "center")
       if po.kind == "tech_evaluation" then
@@ -1342,7 +1356,7 @@ function UI.render_shop(W, H, GAME)
           UI.text(G.FONTS.small, c.name, tx + 8, ty + 32, G.C.arr, dw - 16, "center")
           local level = require("game.playbooks").level(c.key)
           UI.text(G.FONTS.tiny, "Level " .. level .. " -> " .. (level + 1), tx, ty + 116, G.C.win, dw, "center")
-        elseif po.kind == "tech_law" then
+        elseif roadmap_pack(po.kind) then
           Card.draw_consumable_face({ x = tx, y = ty, w = dw, h = dh }, c,
             { border = hov and G.C.hover or G.C.arr, line_w = hov and 3 or 2 })
         elseif po.kind == "tech_evaluation" then
@@ -1382,7 +1396,7 @@ function UI.render_shop(W, H, GAME)
             local r = { x = x + 10, y = y0 + ch + 8, w = cw - 20, h = 32 }
             UI.rects["pack_pick_" .. i] = r
             local can_pick = po.kind == "playbook" or
-              (po.kind == "tech_law" and #(GAME.consumables or {}) < (GAME.consumable_slots or 2)) or
+              (roadmap_pack(po.kind) and #(GAME.consumables or {}) < (GAME.consumable_slots or 2)) or
               (po.kind == "hiring" and #G.jokers.cards < Shop.founder_cap())
             draw_button(r, "Pick", can_pick,
               point_in_rect(mx, my, r.x, r.y, r.w, r.h))
@@ -1439,8 +1453,17 @@ function UI.render_shop(W, H, GAME)
       if hc and po.kind == "hiring" then UI.tip_box(hx, hy, hc.name,
         Card.effect_brief(hc) .. "   \194\183   " .. (hc.rarity or ""),
         (hc.ability_name or "") .. "\n\n" .. (hc.ability_text or hc.hint or ""))
-      elseif hc and po.kind == "tech_law" then UI.tip_box(hx, hy, hc.name,
-        (hc.kind or "Tech Law") .. "   \194\183   " .. (hc.rarity or ""), hc.desc or "")
+      elseif hc and roadmap_pack(po.kind) then
+        local detail = hc.desc or ""
+        if po.kind == "moonshot" then
+          local payload_text, _, payload_preview = Moonshots.payload_summary(
+            hc, hc.moonshot_payload, GAME)
+          if payload_text and payload_preview and payload_preview.kind ~= "none" then
+            detail = detail .. "\n\nPre-rolled outcome · " .. payload_text
+          end
+        end
+        UI.tip_box(hx, hy, hc.name,
+          (hc.kind or "Roadmap") .. "   \194\183   " .. (hc.rarity or ""), detail)
       elseif hc and po.kind == "tech_evaluation" then
         local center = tech_offer_center(hc)
         local subject = tech_offer_subject(hc, center)

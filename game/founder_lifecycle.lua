@@ -9,10 +9,61 @@ local function config(card)
   return card.ability.config
 end
 
+local function valid_id(value)
+  return type(value) == "number" and value == value and value ~= math.huge
+    and value ~= -math.huge and value % 1 == 0 and value >= 1
+end
+
+-- Founder centers are not instances: Spinout can deliberately leave two live
+-- cards pointing at the same center. Keep a monotonic live-run identity on card
+-- config so protocol actions survive reorder and remain unique. The counter is
+-- plain RunState data; active Founder cards themselves are not save-serialized yet.
+function Lifecycle.normalize_ids(game, cards)
+  game = game or (G and G.GAME)
+  if not game then return 0 end
+  local next_id = tonumber(game.founder_next_id)
+  if not next_id or next_id ~= next_id or next_id == math.huge or next_id == -math.huge then next_id = 0 end
+  next_id = math.max(0, math.floor(next_id))
+
+  local used, pending = {}, {}
+  for _, record in ipairs(game.automated_founders or {}) do
+    local id = record.config and record.config._founder_id
+    if valid_id(id) then used[id], next_id = true, math.max(next_id, id) end
+  end
+  for _, card in ipairs(cards or ((G and G.jokers and G.jokers.cards) or {})) do
+    local cfg, id = config(card), nil
+    id = cfg._founder_id
+    if valid_id(id) and not used[id] then
+      used[id], next_id = true, math.max(next_id, id)
+    else
+      cfg._founder_id = nil
+      pending[#pending + 1] = cfg
+    end
+  end
+  for _, cfg in ipairs(pending) do
+    repeat next_id = next_id + 1 until not used[next_id]
+    cfg._founder_id, used[next_id] = next_id, true
+  end
+  game.founder_next_id = next_id
+  return next_id
+end
+
+local function assign_id(card)
+  local game = G and G.GAME
+  if not game then return nil end
+  Lifecycle.normalize_ids(game)
+  local cfg = config(card)
+  if valid_id(cfg._founder_id) then return cfg._founder_id end
+  local next_id = (game.founder_next_id or 0) + 1
+  game.founder_next_id, cfg._founder_id = next_id, next_id
+  return next_id
+end
+
 function Lifecycle.acquire(card, opts)
   opts = opts or {}
   assert(card and card.center and card.center.set == "Founder", "Founder lifecycle requires a Founder card")
   local cfg = config(card)
+  assign_id(card)
   if cfg._acquired then return false end
   cfg._acquired = true
   cfg._hire_round = (G.GAME and G.GAME.round_num) or 0

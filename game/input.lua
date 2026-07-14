@@ -206,15 +206,17 @@ function Input:rebuild(button_specs)
     })
   end
 
-  if (selectable_state() or state_is("TARGET_SELECT")) and g and g.hand then
+  local pending = state_is("TARGET_SELECT") and g and g.PENDING_CONSUMABLE or nil
+  local target_area_name = pending and (pending.target_area_name
+    or select(2, Consumables.target_area(pending.card)))
+  if (selectable_state() or (pending and target_area_name == "hand")) and g and g.hand then
     for i, card in ipairs(cards(g.hand)) do
-      local target_mode = state_is("TARGET_SELECT")
+      local target_mode = pending ~= nil
       add("hand:" .. tostring(card.ID or card), card, {
         id = "hand:" .. tostring(card.ID or i), action = target_mode and "target_card" or "hand_card",
         scope = target_mode and "target" or nil,
         enabled = function(node)
           if not target_mode then return true end
-          local pending = g.PENDING_CONSUMABLE
           return pending ~= nil and not pending.need_layer and not node.selected
             and Consumables.can_target(pending.card, node, g.GAME) == true
         end,
@@ -223,12 +225,18 @@ function Input:rebuild(button_specs)
     end
   end
 
-  if founder_state() and g and g.jokers then
+  if (founder_state() or (pending and target_area_name == "founder")) and g and g.jokers then
     for i, card in ipairs(cards(g.jokers)) do
+      local target_mode = pending ~= nil and target_area_name == "founder"
       add("founder:" .. tostring(card.ID or card), card, {
-        id = "founder:" .. tostring(card.ID or i), action = "founder_card",
-        scope = pack_open() and "pack" or nil,
-        meta = { kind = "founder_card", card = card },
+        id = "founder:" .. tostring(card.ID or i), action = target_mode and "target_card" or "founder_card",
+        scope = target_mode and "target" or (pack_open() and "pack" or nil),
+        enabled = function(node)
+          if not target_mode then return true end
+          return pending ~= nil and not pending.need_layer and not node.selected
+            and Consumables.can_target(pending.card, node, g.GAME) == true
+        end,
+        meta = { kind = target_mode and "target_card" or "founder_card", card = card },
       })
     end
   end

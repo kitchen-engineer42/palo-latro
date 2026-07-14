@@ -14,6 +14,7 @@ Collection.CATEGORIES = {
   { id = "forms", label = "Forms" },
   { id = "playbooks", label = "Playbooks" },
   { id = "tech_laws", label = "Tech Laws" },
+  { id = "moonshots", label = "Moonshots" },
   { id = "tech_modifiers", label = "Tech Mods" },
   { id = "leads", label = "Leads" },
 }
@@ -65,6 +66,10 @@ end
 
 local function all_tech_laws()
   return wrap(centers_pool("Consumable"), "key", function(center) return center.kind == "TechLaw" end)
+end
+
+local function all_moonshots()
+  return wrap(centers_pool("Consumable"), "key", function(center) return center.kind == "Moonshot" end)
 end
 
 local function all_tech_modifiers()
@@ -145,6 +150,11 @@ local FILTERS = {
     { id = "uncommon", label = "Uncommon", matches = value_filter("rarity", "uncommon") },
     { id = "rare", label = "Rare", matches = value_filter("rarity", "rare") },
   },
+  moonshots = {
+    { id = "all", label = "All" },
+    { id = "ordinary", label = "Ordinary", matches = value_filter("rarity", "ordinary") },
+    { id = "special", label = "Special", matches = value_filter("rarity", "special") },
+  },
   tech_modifiers = {
     { id = "all", label = "All" },
     { id = "enhancement", label = "Enhancements", matches = value_filter("kind", "enhancement") },
@@ -160,6 +170,7 @@ local CATALOGS = {
   forms = all_forms,
   playbooks = all_playbooks,
   tech_laws = all_tech_laws,
+  moonshots = all_moonshots,
   tech_modifiers = all_tech_modifiers,
   leads = all_leads,
 }
@@ -203,6 +214,9 @@ local function summary(category, source)
       "Margin " .. tostring(math.floor((source.margin or 0) * 100 + 0.5)) .. "%"
   elseif category == "tech_laws" then
     return (source.rarity or "common"):gsub("^%l", string.upper), source.desc or ""
+  elseif category == "moonshots" then
+    return (source.rarity or "ordinary"):gsub("^%l", string.upper) .. " · double-edged Roadmap card",
+      source.desc or ""
   elseif category == "tech_modifiers" then
     return source.kind:gsub("^%l", string.upper) .. " · persistent Tech modifier", source.desc or ""
   elseif category == "leads" then

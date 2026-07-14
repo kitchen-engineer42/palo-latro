@@ -17,6 +17,20 @@ local Consumables = require("game.consumables")
 
 local RunState = {}
 
+local function normalize_moonshot_state(g)
+  local source = type(g.moonshot_state) == "table" and g.moonshot_state or {}
+  local function bounded_counter(value)
+    value = tonumber(value)
+    if not value or value ~= value or value == math.huge or value == -math.huge then value = 0 end
+    return math.max(0, math.min(2, math.floor(value)))
+  end
+  g.moonshot_state = {
+    viral_moment_uses = bounded_counter(source.viral_moment_uses),
+    blitzscale_uses = bounded_counter(source.blitzscale_uses),
+  }
+  return g.moonshot_state
+end
+
 -- ARR target curve. Ruleset v2 uses the scaling-1 reconstruction; difficult Stakes add offer constraints
 -- and an ante-progressive late curve rather than starting every run on the old scaling-3 table.
 RunState.ANTE_BASE  = { 300, 800, 2000, 5000, 11000, 20000, 35000, 50000 }
@@ -154,10 +168,12 @@ function RunState.new(opts)
     master_deck = {}, _deck_uid = 0, _deck_seeded = false, deck_thinned = {},   -- persistent run-owned tech deck (Track C A)
     consumables = {}, consumable_slots = 2, consumable_next_id = 0,              -- consumable inventory (Track C B)
     tech_law_state = {}, last_ship_app_key = nil, last_ship_coverage = 0,
+    moonshot_state = { viral_moment_uses = 0, blitzscale_uses = 0 },
     last_shipped_app_key = nil, last_shipped_distinct_layers = 0,
     -- maturity / equity seams (E4) -------------------------------------------
     maturity_rung = 1, leverage_mult = 1,
     equity_pct = 100, valuation = 0, ipo_value = 0, automated_founders = {}, raises_taken = 0, last_raise_ante = 0,
+    founder_next_id = 0,
     app_levels = {}, tech_drafts_taken = 0,
     -- BLIND / ROUND scope (filled by set_blind / scoring) --------------------
     blind = nil, blind_idx = 1,
@@ -205,7 +221,9 @@ end
 -- serialization boundary (G.GAME is plain data minus transient display; cards rehydrate elsewhere).
 function RunState.serialize()
   local g, out = G.GAME, {}
+  require("game.founder_lifecycle").normalize_ids(g)
   TechLaws.normalize(g)
+  normalize_moonshot_state(g)
   Consumables.normalize(g)
   for k, v in pairs(g) do
     if k ~= "score" and k ~= "this_app" then out[k] = v end
@@ -215,6 +233,9 @@ end
 
 function RunState.deserialize(t)
   G.GAME = t
+  -- The current authored ruleset owns normalization from older plain-data run
+  -- snapshots. Consumable normalization below safely drops malformed payloads.
+  G.GAME.ruleset_version = MarketRules.ruleset_version
   G.GAME.master_deck = G.GAME.master_deck or {}
   G.GAME.lead_offers = G.GAME.lead_offers or {}
   G.GAME.lead_queue = G.GAME.lead_queue or {}
@@ -229,7 +250,9 @@ function RunState.deserialize(t)
   end
   G.GAME.score = { chips = 0, mult = 0, arr = 0 }
   TechLaws.normalize(G.GAME)
+  normalize_moonshot_state(G.GAME)
   Consumables.normalize(G.GAME)
+  require("game.founder_lifecycle").normalize_ids(G.GAME)
   if G.consumables then Consumables.rehydrate(G.GAME) end
 end
 

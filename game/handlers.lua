@@ -320,14 +320,16 @@ local function selected_consumable()
   for _, c in ipairs(G.consumables.cards) do if c.selected then return c end end
 end
 
-local function restore_hand_selection(pc)
-  if not G.hand then return end
+local function restore_target_selection(pc)
+  local area = pc and pc.target_area
+  if not area then area = Consumables.target_area(pc and pc.card) end
+  if not area then return end
   local present = {}
-  for _, card in ipairs(G.hand.cards or {}) do present[card] = true; card.selected = false end
+  for _, card in ipairs(area.cards or {}) do present[card] = true; card.selected = false end
   for _, card in ipairs((pc and pc.prior_selection) or {}) do
     if present[card] then card.selected = true end
   end
-  G.hand:align_cards()
+  if area.align_cards then area:align_cards() end
 end
 
 G.FUNCS.use_consumable = function()
@@ -338,11 +340,16 @@ G.FUNCS.use_consumable = function()
   if not usable then return { ok = false, key = c.center_key,
     reason = reason, consumed = false, changes = {}, generated = {} } end
   if c.center.target then                                      -- B4: two-stage — pick target card(s) first
+    local target_area, target_area_name = Consumables.target_area(c)
+    if not target_area then return { ok = false, key = c.center_key,
+      reason = "Unknown consumable target area", consumed = false, changes = {}, generated = {} } end
     local prior = {}
-    for _, h in ipairs(G.hand.cards) do if h.selected then prior[#prior + 1] = h end end
-    for _, h in ipairs(G.hand.cards) do h.selected = false end
+    for _, target in ipairs(target_area.cards or {}) do
+      if target.selected then prior[#prior + 1] = target end
+      target.selected = false
+    end
     G.PENDING_CONSUMABLE = { card = c, center = c.center, picks = {}, prior_selection = prior,
-      return_state = return_state }
+      return_state = return_state, target_area = target_area, target_area_name = target_area_name }
     StateMachine.set_state(S.TARGET_SELECT)
     return { ok = true, pending = true, key = c.center_key, consumed = false }
   else                                                          -- B2: instant (cash / auto-target ops)
@@ -363,12 +370,12 @@ end
 
 G.FUNCS.shop_buy_consumable = function() if G.STATE == S.SHOP then Shop.buy_consumable() end end
 
-function G.CONSUMABLE_TARGET_PICK(card)                        -- a hand card clicked during TARGET_SELECT
+function G.CONSUMABLE_TARGET_PICK(card)                        -- an eligible card clicked during TARGET_SELECT
   local pc = G.PENDING_CONSUMABLE
   if not (pc and card) then return false end
   for _, picked in ipairs(pc.picks) do
     if picked == card or (picked.uid and picked.uid == card.uid) then
-      pc.error = "Choose distinct Tech targets"
+      pc.error = "Choose distinct targets"
       return false
     end
   end
@@ -404,7 +411,7 @@ function G.CONSUMABLE_RESOLVE(layer)                           -- apply + consum
     end
     return result
   end
-  restore_hand_selection(pc)
+  restore_target_selection(pc)
   G.PENDING_CONSUMABLE = nil
   Audio.play("ship"); Juice.pulse("cash")
   StateMachine.set_state(return_state)
@@ -415,7 +422,7 @@ function G.CONSUMABLE_CANCEL()                                 -- right-click/Es
   local pc = G.PENDING_CONSUMABLE
   if not pc then return end
   local return_state = pc.return_state or S.SELECTING_HAND
-  restore_hand_selection(pc)
+  restore_target_selection(pc)
   G.PENDING_CONSUMABLE = nil
   StateMachine.set_state(return_state)
 end

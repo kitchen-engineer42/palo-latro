@@ -48,6 +48,74 @@ local TECH_LAW_OPS = {
   create_consumable=true, well_formed=true, copy_layer=true, cull=true,
 }
 
+local MOONSHOT_RARITIES = { ordinary=true, special=true }
+local MOONSHOT_OPS = {
+  mass_users=true, cash_zero=true, cash_units=true, margin_add=true,
+  debt_equity=true, market_pivot=true, relayer_lowest=true,
+  replace_centers=true, clone_tech=true, hand_size=true,
+  replace_one_with_offers=true, debt_add=true, destroy_lowest_cash=true,
+  apply_seal=true, apply_enhancement=true, hire_founder=true,
+  clone_founder_purge=true, founder_viral_salary=true,
+  hire_legendary_slot=true, level_all_apps=true,
+}
+-- Runtime dispatches Moonshots by stable key, so a merely well-typed operation
+-- bundle is insufficient: renaming cards or swapping valid bundles would make
+-- the description/catalog disagree with executable behavior. Lock every key to
+-- its authored target and exact operation bundle at the content boundary.
+local MOONSHOT_AUTHORED = {
+  ms_viral_moment = { rarity="ordinary", ops={
+    { k="mass_users", amount=15, source="ms_viral_moment", per_card_cap=30 },
+    { k="cash_zero", require_positive=true },
+  } },
+  ms_blitzscale = { rarity="ordinary", ops={
+    { k="cash_units", amount=6 },
+    { k="margin_add", amount=-0.10, source_cap=-0.20 },
+  } },
+  ms_debt_equity_swap = { rarity="ordinary", ops={
+    { k="debt_equity", max_debt=10, equity_per_debt=2, equity_floor=1 },
+  } },
+  ms_market_pivot = { rarity="ordinary", ops={
+    { k="market_pivot", equity_cost=8, equity_floor=1, payload="market_id" },
+  } },
+  ms_platform_shift = { rarity="ordinary", target={ area="hand", n=1 }, ops={
+    { k="relayer_lowest", count=4, debt_per_card=1 },
+  } },
+  ms_stack_rewrite = { rarity="ordinary", target={ area="hand", n=3 }, ops={
+    { k="replace_centers", count=3, payload="tech_keys", clear_investment=true },
+  } },
+  ms_hard_fork = { rarity="ordinary", target={ area="hand", n=1 }, ops={
+    { k="clone_tech", count=2, fresh=true }, { k="hand_size", amount=-1, floor=5 },
+  } },
+  ms_cambrian_explosion = { rarity="ordinary", target={ area="hand", n=1 }, ops={
+    { k="replace_one_with_offers", count=3, payload="tech_offers" },
+    { k="debt_add", amount=3 },
+  } },
+  ms_fire_sale = { rarity="ordinary", ops={
+    { k="destroy_lowest_cash", count=3, min_deck_size=12, cash_units=5 },
+  } },
+  ms_patent_blitz = { rarity="ordinary", ops={
+    { k="apply_seal", count=3, payload="seal", cash_units=-2 },
+  } },
+  ms_open_core = { rarity="ordinary", ops={
+    { k="apply_enhancement", count=3, payload="enhancement", debt_per_card=1 },
+  } },
+  ms_talent_raid = { rarity="ordinary", ops={
+    { k="hire_founder", payload="founder_key", rarity="Rare", cash_zero=true },
+  } },
+  ms_spinout = { rarity="ordinary", target={ area="founders", n=1 }, ops={
+    { k="clone_founder_purge", fresh=true },
+  } },
+  ms_hypergrowth_mandate = { rarity="ordinary", target={ area="founders", n=1 }, ops={
+    { k="founder_viral_salary", edition="viral", salary_mult=1.5 },
+  } },
+  ms_acquihire = { rarity="special", special=true, chance=0.003, ops={
+    { k="hire_legendary_slot", payload="founder_key", rarity="Legendary", slots=-1 },
+  } },
+  ms_disruption = { rarity="special", special=true, chance=0.003, ops={
+    { k="level_all_apps", amount=1, level_cap=15 }, { k="debt_add", amount=5 },
+  } },
+}
+
 local function report()
   return { errors = {}, aliases = {}, counts = {} }
 end
@@ -63,6 +131,16 @@ local function dense_array(value)
   if type(value) ~= "table" then return false end
   local n = #value
   for key in pairs(value) do if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > n then return false end end
+  return true
+end
+
+local function same_plain(actual, expected)
+  if type(actual) ~= type(expected) then return false end
+  if type(actual) ~= "table" then return actual == expected end
+  for key, value in pairs(expected) do
+    if not same_plain(actual[key], value) then return false end
+  end
+  for key in pairs(actual) do if expected[key] == nil then return false end end
   return true
 end
 
@@ -305,6 +383,217 @@ local function validate_tech_laws(list, r)
     end
   end
   r.counts.tech_laws = count
+end
+
+local function exact_text(value, expected, path, r)
+  if value ~= expected then add(r, path, "must be " .. tostring(expected)); return false end
+  return true
+end
+
+local function validate_moonshot_op(op, path, r)
+  if type(op) ~= "table" then add(r, path, "operation must be a table"); return nil end
+  if not text(op.k) or not MOONSHOT_OPS[op.k] then
+    add(r, path .. ".k", "unknown Moonshot operation " .. tostring(op.k)); return nil
+  end
+
+  local target
+  if op.k == "mass_users" then
+    only_fields(op, { k=true, amount=true, source=true, per_card_cap=true }, path, r)
+    required_number(op.amount, path .. ".amount", r, 1, 15)
+    exact_text(op.source, "ms_viral_moment", path .. ".source", r)
+    if required_number(op.per_card_cap, path .. ".per_card_cap", r, 1, 30)
+        and number(op.amount) and op.per_card_cap < op.amount then
+      add(r, path .. ".per_card_cap", "must cover at least one use")
+    end
+  elseif op.k == "cash_zero" then
+    only_fields(op, { k=true, require_positive=true }, path, r)
+    if op.require_positive ~= true then add(r, path .. ".require_positive", "must be true") end
+  elseif op.k == "cash_units" then
+    only_fields(op, { k=true, amount=true }, path, r)
+    required_integer(op.amount, path .. ".amount", r, -8, 8)
+    if op.amount == 0 then add(r, path .. ".amount", "must be non-zero") end
+  elseif op.k == "margin_add" then
+    only_fields(op, { k=true, amount=true, source_cap=true }, path, r)
+    required_number(op.amount, path .. ".amount", r, -1, 0)
+    if op.amount == 0 then add(r, path .. ".amount", "must be negative") end
+    if required_number(op.source_cap, path .. ".source_cap", r, -1, 0)
+        and number(op.amount) and op.source_cap > op.amount then
+      add(r, path .. ".source_cap", "must allow at least one application")
+    end
+  elseif op.k == "debt_equity" then
+    only_fields(op, { k=true, max_debt=true, equity_per_debt=true, equity_floor=true }, path, r)
+    required_integer(op.max_debt, path .. ".max_debt", r, 1, 10)
+    required_number(op.equity_per_debt, path .. ".equity_per_debt", r, 0, 20)
+    required_number(op.equity_floor, path .. ".equity_floor", r, 1, 100)
+  elseif op.k == "market_pivot" then
+    only_fields(op, { k=true, equity_cost=true, equity_floor=true, payload=true }, path, r)
+    required_number(op.equity_cost, path .. ".equity_cost", r, 0, 20)
+    required_number(op.equity_floor, path .. ".equity_floor", r, 1, 100)
+    exact_text(op.payload, "market_id", path .. ".payload", r)
+  elseif op.k == "relayer_lowest" then
+    only_fields(op, { k=true, count=true, debt_per_card=true }, path, r)
+    required_integer(op.count, path .. ".count", r, 1, 5)
+    required_integer(op.debt_per_card, path .. ".debt_per_card", r, 0, 5)
+    target = { area="hand", n=1 }
+  elseif op.k == "replace_centers" then
+    only_fields(op, { k=true, count=true, payload=true, clear_investment=true }, path, r)
+    required_integer(op.count, path .. ".count", r, 1, 5)
+    exact_text(op.payload, "tech_keys", path .. ".payload", r)
+    if op.clear_investment ~= true then add(r, path .. ".clear_investment", "must be true") end
+    target = { area="hand", n=op.count }
+  elseif op.k == "clone_tech" then
+    only_fields(op, { k=true, count=true, fresh=true }, path, r)
+    required_integer(op.count, path .. ".count", r, 1, 2)
+    if op.fresh ~= true then add(r, path .. ".fresh", "must be true") end
+    target = { area="hand", n=1 }
+  elseif op.k == "hand_size" then
+    only_fields(op, { k=true, amount=true, floor=true }, path, r)
+    required_integer(op.amount, path .. ".amount", r, -5, -1)
+    required_integer(op.floor, path .. ".floor", r, 1, 10)
+  elseif op.k == "replace_one_with_offers" then
+    only_fields(op, { k=true, count=true, payload=true }, path, r)
+    required_integer(op.count, path .. ".count", r, 1, 5)
+    exact_text(op.payload, "tech_offers", path .. ".payload", r)
+    target = { area="hand", n=1 }
+  elseif op.k == "debt_add" then
+    only_fields(op, { k=true, amount=true }, path, r)
+    required_integer(op.amount, path .. ".amount", r, 1, 10)
+  elseif op.k == "destroy_lowest_cash" then
+    only_fields(op, { k=true, count=true, min_deck_size=true, cash_units=true }, path, r)
+    if required_integer(op.count, path .. ".count", r, 1, 5)
+        and required_integer(op.min_deck_size, path .. ".min_deck_size", r, 6, 99)
+        and op.min_deck_size <= op.count then
+      add(r, path .. ".min_deck_size", "must exceed count")
+    end
+    required_integer(op.cash_units, path .. ".cash_units", r, 1, 8)
+  elseif op.k == "apply_seal" then
+    only_fields(op, { k=true, count=true, payload=true, cash_units=true }, path, r)
+    required_integer(op.count, path .. ".count", r, 1, 5)
+    exact_text(op.payload, "seal", path .. ".payload", r)
+    required_integer(op.cash_units, path .. ".cash_units", r, -8, -1)
+  elseif op.k == "apply_enhancement" then
+    only_fields(op, { k=true, count=true, payload=true, debt_per_card=true }, path, r)
+    required_integer(op.count, path .. ".count", r, 1, 5)
+    exact_text(op.payload, "enhancement", path .. ".payload", r)
+    required_integer(op.debt_per_card, path .. ".debt_per_card", r, 0, 5)
+  elseif op.k == "hire_founder" then
+    only_fields(op, { k=true, payload=true, rarity=true, cash_zero=true }, path, r)
+    exact_text(op.payload, "founder_key", path .. ".payload", r)
+    exact_text(op.rarity, "Rare", path .. ".rarity", r)
+    if op.cash_zero ~= true then add(r, path .. ".cash_zero", "must be true") end
+  elseif op.k == "clone_founder_purge" then
+    only_fields(op, { k=true, fresh=true }, path, r)
+    if op.fresh ~= true then add(r, path .. ".fresh", "must be true") end
+    target = { area="founders", n=1 }
+  elseif op.k == "founder_viral_salary" then
+    only_fields(op, { k=true, edition=true, salary_mult=true }, path, r)
+    exact_text(op.edition, "viral", path .. ".edition", r)
+    required_number(op.salary_mult, path .. ".salary_mult", r, 1, 2)
+    target = { area="founders", n=1 }
+  elseif op.k == "hire_legendary_slot" then
+    only_fields(op, { k=true, payload=true, rarity=true, slots=true }, path, r)
+    exact_text(op.payload, "founder_key", path .. ".payload", r)
+    exact_text(op.rarity, "Legendary", path .. ".rarity", r)
+    required_integer(op.slots, path .. ".slots", r, -3, -1)
+  elseif op.k == "level_all_apps" then
+    only_fields(op, { k=true, amount=true, level_cap=true }, path, r)
+    required_integer(op.amount, path .. ".amount", r, 1, 5)
+    required_integer(op.level_cap, path .. ".level_cap", r, 2, 99)
+  end
+  return target
+end
+
+local function validate_moonshots(list, r)
+  local count, ordinary_count, special_count, authored_seen = 0, 0, 0, {}
+  for i, center in ipairs(list or {}) do
+    if type(center) == "table" and center.kind == "Moonshot" then
+      count = count + 1
+      local path = "consumables[" .. i .. "]"
+      only_fields(center, { key=true, set=true, kind=true, name=true, rarity=true,
+        special=true, chance=true, desc=true, target=true, ops=true }, path, r)
+      if not text(center.key) or not center.key:match("^ms_[a-z0-9_]+$") then
+        add(r, path .. ".key", "must be a stable ms_ key")
+      end
+      local authored = MOONSHOT_AUTHORED[center.key]
+      if not authored then
+        add(r, path .. ".key", "is not one of the 16 authored Moonshot keys")
+      else
+        authored_seen[center.key] = true
+        if center.rarity ~= authored.rarity or center.special ~= authored.special
+            or center.chance ~= authored.chance then
+          add(r, path, "rarity/chase metadata does not match authored key " .. center.key)
+        end
+        if not same_plain(center.target, authored.target) then
+          add(r, path .. ".target", "does not match authored key " .. center.key)
+        end
+        if not same_plain(center.ops, authored.ops) then
+          add(r, path .. ".ops", "does not match authored key " .. center.key)
+        end
+      end
+      if center.set ~= "Consumable" then add(r, path .. ".set", "must be Consumable") end
+      if not text(center.name) then add(r, path .. ".name", "is required") end
+      if not MOONSHOT_RARITIES[center.rarity] then
+        add(r, path .. ".rarity", "must be ordinary or special")
+      end
+      if not text(center.desc) then add(r, path .. ".desc", "is required") end
+
+      if center.rarity == "special" then
+        special_count = special_count + 1
+        if center.special ~= true then add(r, path .. ".special", "must be true for special Moonshots") end
+        if center.chance ~= 0.003 then add(r, path .. ".chance", "must be the independent 0.003 chase chance") end
+      else
+        if center.rarity == "ordinary" then ordinary_count = ordinary_count + 1 end
+        if center.special ~= nil then add(r, path .. ".special", "is only valid on special Moonshots") end
+        if center.chance ~= nil then add(r, path .. ".chance", "is only valid on special Moonshots") end
+      end
+
+      local actual_target
+      if center.target ~= nil then
+        if type(center.target) ~= "table" then add(r, path .. ".target", "must be a table")
+        else
+          only_fields(center.target, { area=true, n=true }, path .. ".target", r)
+          if not ({ hand=true, founders=true })[center.target.area] then
+            add(r, path .. ".target.area", "must be hand or founders")
+          end
+          required_integer(center.target.n, path .. ".target.n", r, 1, 5)
+          actual_target = center.target
+        end
+      end
+
+      local required_target
+      if not dense_array(center.ops) or #center.ops == 0 then
+        add(r, path .. ".ops", "must be a non-empty array")
+      else
+        for j, op in ipairs(center.ops) do
+          local op_target = validate_moonshot_op(op, path .. ".ops[" .. j .. "]", r)
+          if op_target then
+            if required_target and (required_target.area ~= op_target.area or required_target.n ~= op_target.n) then
+              add(r, path .. ".ops[" .. j .. "]", "conflicts with another target operation")
+            else
+              required_target = op_target
+            end
+          end
+        end
+      end
+      if required_target then
+        if not actual_target then add(r, path .. ".target", "is required by its operations")
+        elseif actual_target.area ~= required_target.area or actual_target.n ~= required_target.n then
+          add(r, path .. ".target", "must target exactly " .. required_target.n .. " " .. required_target.area)
+        end
+      elseif actual_target then
+        add(r, path .. ".target", "is not used by its operations")
+      end
+    end
+  end
+  r.counts.moonshots = count
+  if count > 0 then
+    if count ~= 16 then add(r, "moonshots", "must define exactly 16 entries") end
+    if ordinary_count ~= 14 then add(r, "moonshots.ordinary", "must define exactly 14 ordinary outcomes") end
+    if special_count ~= 2 then add(r, "moonshots.special", "must define exactly two chase outcomes") end
+    for key in pairs(MOONSHOT_AUTHORED) do
+      if not authored_seen[key] then add(r, "moonshots." .. key, "authored Moonshot key is missing") end
+    end
+  end
 end
 
 local function gate_kind(g, path, r)
@@ -632,9 +921,49 @@ local function validate_gameplay(gameplay, catalog, r)
     if boss.showdown then showdown_bosses = showdown_bosses + 1 else normal_bosses = normal_bosses + 1 end
   end
   if #(gameplay.stakes or {}) ~= 8 then add(r, "gameplay.stakes", "must define exactly eight tiers") end
+  local pack_orders, moonshot_pack_count = {}, 0
+  local pack_families = {
+    hiring=true, playbook=true, tech_law=true, moonshot=true, tech_evaluation=true,
+  }
+  local pack_sizes = { normal=true, jumbo=true, mega=true }
+  local moonshot_topology = {
+    moonshot = { size="normal", variant=1, options=2, picks=1, weight=0.30 },
+    moonshot_normal_2 = { size="normal", variant=2, options=2, picks=1, weight=0.30 },
+    moonshot_jumbo = { size="jumbo", variant=1, options=4, picks=1, weight=0.30 },
+    moonshot_mega = { size="mega", variant=1, options=4, picks=2, weight=0.075 },
+  }
   for key, pack in pairs(gameplay.packs or {}) do
     if type(pack) ~= "table" then add(r, "gameplay.packs."..tostring(key), "must be a table")
     else
+      local path = "gameplay.packs." .. tostring(key)
+      only_fields(pack, { key=true, family=true, name=true, size=true, variant=true,
+        options=true, picks=true, weight=true, order=true, art_key=true,
+        legendary_chance=true, edition_chance=true, fallback_art=true,
+        price_override=true }, path, r)
+      if pack.key ~= key then add(r, path .. ".key", "must match its catalog key") end
+      if not pack_families[pack.family] then add(r, path .. ".family", "unknown pack family") end
+      if not text(pack.name) then add(r, path .. ".name", "must be non-empty text") end
+      if not pack_sizes[pack.size] then add(r, path .. ".size", "must be normal, jumbo, or mega") end
+      required_integer(pack.variant, path .. ".variant", r, 1, 8)
+      local options_ok = required_integer(pack.options, path .. ".options", r, 1, 8)
+      local picks_ok = required_integer(pack.picks, path .. ".picks", r, 1, 8)
+      if options_ok and picks_ok and pack.picks > pack.options then
+        add(r, path .. ".picks", "must not exceed options")
+      end
+      if required_number(pack.weight, path .. ".weight", r, 0) and pack.weight <= 0 then
+        add(r, path .. ".weight", "must be positive")
+      end
+      if required_integer(pack.order, path .. ".order", r, 1) then
+        if pack_orders[pack.order] then add(r, path .. ".order", "duplicates " .. pack_orders[pack.order])
+        else pack_orders[pack.order] = key end
+      end
+      if not text(pack.art_key) then add(r, path .. ".art_key", "must be non-empty text")
+      elseif pack.art_key ~= key then add(r, path .. ".art_key", "must match its catalog key") end
+      if pack.fallback_art ~= nil and not text(pack.fallback_art) then
+        add(r, path .. ".fallback_art", "must be non-empty text")
+      end
+      if pack.price_override ~= nil then required_number(pack.price_override, path .. ".price_override", r, 0) end
+
       if pack.legendary_chance ~= nil then
         if not number(pack.legendary_chance) then add(r, "gameplay.packs."..key..".legendary_chance", "must be a probability")
         elseif pack.legendary_chance < 0 or pack.legendary_chance > 0.02 then add(r, "gameplay.packs."..key..".legendary_chance", "outside prototype band") end
@@ -643,6 +972,27 @@ local function validate_gameplay(gameplay, catalog, r)
         if not number(pack.edition_chance) then add(r, "gameplay.packs."..key..".edition_chance", "must be a probability")
         elseif pack.edition_chance < 0.04 or pack.edition_chance > 0.06 then add(r, "gameplay.packs."..key..".edition_chance", "outside prototype band") end
       end
+      if pack.family == "moonshot" then
+        moonshot_pack_count = moonshot_pack_count + 1
+        local expected = moonshot_topology[key]
+        if not expected then add(r, path, "is not one of the four Skunkworks definitions")
+        else
+          for _, field in ipairs({ "size", "variant", "options", "picks", "weight" }) do
+            if pack[field] ~= expected[field] then
+              add(r, path .. "." .. field, "must be " .. tostring(expected[field]))
+            end
+          end
+          if pack.fallback_art ~= "tech_law" then
+            add(r, path .. ".fallback_art", "must use the Tech Law fallback until dedicated art lands")
+          end
+        end
+      end
+    end
+  end
+  if moonshot_pack_count > 0 then
+    if moonshot_pack_count ~= 4 then add(r, "gameplay.packs.moonshot", "must define exactly four Skunkworks packs") end
+    for key in pairs(moonshot_topology) do
+      if not gameplay.packs[key] then add(r, "gameplay.packs." .. key, "required Skunkworks definition is missing") end
     end
   end
 end
@@ -658,6 +1008,7 @@ function Validate.catalog(catalog, options)
   validate_centers(catalog.vouchers or {}, "vouchers", r, keys)
   validate_centers(catalog.consumables or {}, "consumables", r, keys)
   validate_tech_laws(catalog.consumables or {}, r)
+  validate_moonshots(catalog.consumables or {}, r)
   validate_compat(catalog.compat, tech_keys, r)
   validate_markets(catalog.markets, tech_keys, r)
   if catalog.gameplay then validate_gameplay(catalog.gameplay, catalog, r) end

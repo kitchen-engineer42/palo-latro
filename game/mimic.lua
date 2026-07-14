@@ -20,6 +20,11 @@ local Markets = require("game.markets")
 local CardModel = require("game.card")
 local Leads = require("game.leads")
 local Consumables = require("game.consumables")
+local Moonshots = require("game.moonshots")
+
+local function roadmap_pack(kind)
+  return kind == "tech_law" or kind == "moonshot"
+end
 
 local function finite(v)
   return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
@@ -103,7 +108,16 @@ end
 local function card_id(card, area, index)
   if card.uid then return area .. ":" .. tostring(card.uid) end
   local key = card.center_key or (card.center and card.center.key) or "card"
-  if area == "founder" then return area .. ":" .. key end
+  if area == "founder" then
+    local cfg = card.ability and card.ability.config or {}
+    local id = cfg._founder_id
+    if type(id) == "number" and id % 1 == 0 and id >= 1 then
+      return area .. ":" .. key .. ":" .. tostring(id)
+    end
+    -- Headless fixtures and legacy live cards may predate lifecycle acquire;
+    -- row position is deterministic and collision-free within an observation.
+    return area .. ":" .. key .. ":row" .. tostring(index)
+  end
   return area .. ":" .. tostring(index) .. ":" .. key
 end
 
@@ -158,6 +172,11 @@ local function card_view(card, area, index)
     out.description = center.desc
     out.target = copy_plain(center.target)
     out.price_units = center.price_units
+    out.moonshot_payload = copy_plain(card.moonshot_payload
+      or (card.ability and card.ability.config and card.ability.config._moonshot_payload))
+    if center.kind == "Moonshot" then
+      out.payload_preview = copy_plain(Moonshots.payload_preview(card, nil, G.GAME))
+    end
     out.usable = usable == true
     out.unavailable_reason = usable and nil or reason
   end
@@ -266,9 +285,15 @@ local function shop_view()
         if sh.pack_open.kind == "tech_evaluation" then
           options[#options + 1] = tech_option_view(option, i)
         else
-          options[#options + 1] = { index = i, key = option.key, name = option.name,
+          local option_view = { index = i, key = option.key, name = option.name,
             edition = option.edition, rarity = option.rarity, description = option.desc,
-            target = copy_plain(option.target), price_units = option.price_units }
+            target = copy_plain(option.target), price_units = option.price_units,
+            moonshot_payload = copy_plain(option.moonshot_payload) }
+          if option.kind == "Moonshot" then
+            option_view.payload_preview = copy_plain(Moonshots.payload_preview(
+              option, option.moonshot_payload, G.GAME))
+          end
+          options[#options + 1] = option_view
         end
       end
     end
@@ -335,13 +360,15 @@ local function add_consumable_actions(out, g)
     if c.center and c.center.target then
       local count = c.center.target.n or 1
       local choices = {}
-      for j, target in ipairs((G.hand and G.hand.cards) or {}) do
-        if Consumables.can_target(c, target, g) then
-          choices[#choices + 1] = card_id(target, "hand", j)
+      local targets, area_name, area = Consumables.target_candidates(c, g)
+      for _, target in ipairs(targets) do
+        for j, candidate in ipairs((area and area.cards) or {}) do
+          if candidate == target then choices[#choices + 1] = card_id(target, area_name, j); break end
         end
       end
       usable = usable and #choices >= count
       action.target_ids = { type = "array", count = count, choices = choices }
+      action.target_area = area_name
       if c.center.target.layer then action.layer = { "Frontend", "Backend", "Data", "Infra", "AI" } end
     end
     if usable then add_action(out, "use_consumable", action) end
@@ -424,9 +451,11 @@ function Mimic.legal_actions()
     elseif pending then
       local picked, choices = {}, {}
       for _, card in ipairs(pending.picks or {}) do picked[card] = true end
-      for i, card in ipairs((G.hand and G.hand.cards) or {}) do
+      local area = pending.target_area or select(1, Consumables.target_area(pending.card))
+      local area_name = pending.target_area_name or select(2, Consumables.target_area(pending.card))
+      for i, card in ipairs((area and area.cards) or {}) do
         if not picked[card] and Consumables.can_target(pending.card, card, g) then
-          choices[#choices + 1] = card_id(card, "hand", i)
+          choices[#choices + 1] = card_id(card, area_name, i)
         end
       end
       if #choices > 0 then add_action(out, "pick_target", { card_id = "string" }, choices) end
@@ -473,7 +502,7 @@ function Mimic.legal_actions()
       else
         local choices = {}
         local can_pick = sh.pack_open.kind == "playbook"
-          or (sh.pack_open.kind == "tech_law" and #(g.consumables or {}) < (g.consumable_slots or 2))
+          or (roadmap_pack(sh.pack_open.kind) and #(g.consumables or {}) < (g.consumable_slots or 2))
           or (sh.pack_open.kind == "hiring" and #((G.jokers and G.jokers.cards) or {}) < Shop.founder_cap())
         if can_pick then
           for i, option in ipairs(sh.pack_open.options or {}) do if option then choices[#choices + 1] = i end end
@@ -518,9 +547,11 @@ local function targeting_view()
   local pending = G.PENDING_CONSUMABLE
   if not pending then return nil end
   local picks = {}
+  local area = pending.target_area or select(1, Consumables.target_area(pending.card))
+  local area_name = pending.target_area_name or select(2, Consumables.target_area(pending.card))
   for _, picked in ipairs(pending.picks or {}) do
-    for i, card in ipairs((G.hand and G.hand.cards) or {}) do
-      if card == picked then picks[#picks + 1] = card_id(card, "hand", i); break end
+    for i, card in ipairs((area and area.cards) or {}) do
+      if card == picked then picks[#picks + 1] = card_id(card, area_name, i); break end
     end
   end
   local consumable_id
@@ -532,6 +563,7 @@ local function targeting_view()
     key = pending.center and pending.center.key,
     picks = picks,
     picks_required = (pending.center and pending.center.target and pending.center.target.n) or 1,
+    target_area = area_name,
     need_layer = pending.need_layer == true,
   }
 end
@@ -570,6 +602,7 @@ local function public_state()
       last_ai_maturity = copy_plain(g.last_ai_maturity), product_identity = g.product_identity,
       consumable_slots = g.consumable_slots, founder_slots = g.founder_slots,
       tech_law_state = copy_plain(g.tech_law_state),
+      moonshot_state = copy_plain(g.moonshot_state),
       last_ship_app_key = g.last_ship_app_key,
       last_ship_coverage = g.last_ship_coverage,
       market_best_fit = g.market_best_fit, last_market_reward = g.last_market_reward,
@@ -704,11 +737,13 @@ local function dispatch(action)
         local valid = { Frontend = true, Backend = true, Data = true, Infra = true, AI = true }
         if not valid[action.layer] then return nil, "invalid target layer" end
       end
-      local targets, target_err = select_cards(G.hand.cards, "hand", action.target_ids, target_count, target_count)
+      local target_area, target_area_name = Consumables.target_area(card)
+      local targets, target_err = select_cards((target_area and target_area.cards) or {},
+        target_area_name, action.target_ids, target_count, target_count)
       if not targets then return nil, target_err end
       for _, target in ipairs(targets) do
         local target_ok, target_reason = Consumables.can_target(card, target, g)
-        if not target_ok then return nil, target_reason or "invalid Tech Law target" end
+        if not target_ok then return nil, target_reason or "invalid consumable target" end
       end
       select_one(G.consumables.cards, "consumable", action.consumable_id)
       G.FUNCS.use_consumable()
@@ -726,13 +761,15 @@ local function dispatch(action)
   elseif id == "pick_target" then
     local pending = G.PENDING_CONSUMABLE
     if not pending or pending.need_layer then return nil, "target card is not expected" end
-    local card, target_err = find_one(G.hand.cards, "hand", action.card_id)
+    local target_area = pending.target_area or select(1, Consumables.target_area(pending.card))
+    local target_area_name = pending.target_area_name or select(2, Consumables.target_area(pending.card))
+    local card, target_err = find_one((target_area and target_area.cards) or {}, target_area_name, action.card_id)
     if not card then return nil, target_err end
     for _, picked in ipairs(pending.picks or {}) do
       if picked == card then return nil, "target card was already picked" end
     end
     local target_ok, target_reason = Consumables.can_target(pending.card, card, g)
-    if not target_ok then return nil, target_reason or "invalid Tech Law target" end
+    if not target_ok then return nil, target_reason or "invalid consumable target" end
     G.CONSUMABLE_TARGET_PICK(card)
     return true
   elseif id == "choose_target_layer" then

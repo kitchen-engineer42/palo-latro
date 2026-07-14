@@ -698,10 +698,21 @@ function Card:draw_body(t)
     local active = self.states.hover.is or (self.states.focus and self.states.focus.is)
     local bcol = self.selected and G.C.lose or (active and G.C.hover or (ed and ed.col) or G.C.border)
     Card.draw_founder_face(t, self.center, { card = self, border = bcol, line_w = self.selected and 3 or (ed and 3 or 2) })
+    if G.STATE == G.STATES.TARGET_SELECT and G.PENDING_CONSUMABLE
+        and G.PENDING_CONSUMABLE.target_area_name == "founder" then
+      local eligible = require("game.consumables").can_target(
+        G.PENDING_CONSUMABLE.card, self, G.GAME)
+      if not eligible then
+        lg.setColor(0.04, 0.05, 0.08, 0.62)
+        lg.rectangle("fill", t.x, t.y, t.w, t.h, 6, 6)
+        lg.setColor((G.C.lose or { 0.9, 0.25, 0.25, 1 }))
+        lg.setLineWidth(2); lg.rectangle("line", t.x, t.y, t.w, t.h, 6, 6); lg.setLineWidth(1)
+      end
+    end
     return
   end
 
-  if self.center and self.center.set == "Consumable" then     -- Tech Law (Tarot) face → the art IS the card
+  if self.center and self.center.set == "Consumable" then     -- Roadmap consumable face → the art IS the card
     local active = self.states.hover.is or (self.states.focus and self.states.focus.is)
     local bcol = self.selected and G.C.select or (active and G.C.hover or G.C.border)
     Card.draw_consumable_face(t, self.center, { card = self, border = bcol, line_w = self.selected and 3 or 2 })
@@ -719,7 +730,8 @@ function Card:draw_body(t)
     bcol, bw = G.C.lose, 3
   end
   Card.draw_tech_face(t, self.center, { card = self, border = bcol, line_w = bw })
-  if G.STATE == G.STATES.TARGET_SELECT and G.PENDING_CONSUMABLE then
+  if G.STATE == G.STATES.TARGET_SELECT and G.PENDING_CONSUMABLE
+      and G.PENDING_CONSUMABLE.target_area_name == "hand" then
     local eligible = require("game.consumables").can_target(
       G.PENDING_CONSUMABLE.card, self, G.GAME)
     if not eligible then
