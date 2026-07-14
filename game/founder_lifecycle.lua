@@ -26,6 +26,7 @@ function Lifecycle.acquire(card, opts)
     if opts.stake_mod.kind == "rental" then cfg._rental_salary_mult = opts.stake_mod.salary_mult or 1.5 end
   end
   G.GAME.founders_hired_run = (G.GAME.founders_hired_run or 0) + 1
+  require("game.leads").on_founder_acquired(G.GAME, card)
   Interp.apply_passive(card)
   if card.center_key == "f_kitchen-engineer42" and G.GENERATE then
     G.GENERATE("specific_tech_card", { key = "t_joharness-burg", amount = 1 })

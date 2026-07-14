@@ -197,6 +197,7 @@ function Shop.enter()
     local pack = Packs.roll_shop(pack_shop_random, seen)
     if pack then seen[pack.key] = true; G.GAME.shop.packs[i] = pack end
   end
+  require("game.leads").on_shop_enter(G.GAME, G.GAME.shop)
   local discovered = {}
   for _, offer in ipairs(G.GAME.shop.founders) do
     if offer then discovered[#discovered + 1] = (offer.center or offer).key end
@@ -246,7 +247,7 @@ function Shop.buy(idx)
     return false
   end
   local cost = Shop.price(offer)
-  if (G.GAME.cash or 0) < cost then return false end
+  if cost > 0 and (G.GAME.cash or 0) < cost then return false end
   G.GAME.cash = G.GAME.cash - cost
   local c = offer.center or offer
   local jk = Card({ center = c, T = { x = G.jokers.T.x, y = G.jokers.T.y } })
@@ -271,6 +272,7 @@ function Shop.pack_price(definition)
     definition = Packs.get(definition)
   end
   definition = definition or PACK
+  if definition.price_override ~= nil then return math.max(0, definition.price_override) end
   local price = Pricing.pack(G.GAME, RunState.ANTE_BASE, definition.size)
   local economy = MarketRules.for_market(G.GAME and G.GAME.market).economy or {}
   if definition.family == "tech_evaluation" then price = price * (economy.tech_eval_pack_discount or 1) end
@@ -302,7 +304,7 @@ function Shop.open_pack(idx)
   if not sh or not sh.packs[idx] then return false end
   local definition = sh.packs[idx]
   local cost = Shop.pack_price(definition)
-  if (G.GAME.cash or 0) < cost then return false end
+  if cost > 0 and (G.GAME.cash or 0) < cost then return false end
   local tech_options
   if definition.family == "tech_evaluation" then
     if TechEvaluation.available_count(G.GAME) < definition.options then return false end

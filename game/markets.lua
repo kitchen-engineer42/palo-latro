@@ -79,6 +79,12 @@ function Markets.high_fit_reward(g, ante_base)
   return (economy.high_fit_reward_units or 0) * Economy.unit(g, ante_base)
 end
 
+function Markets.earns_high_fit_lead(g)
+  local economy = Rules.for_market(g and g.market).economy or {}
+  return economy.high_fit_lead == true
+    and (g.market_best_fit or 0) >= (economy.high_fit_floor or math.huge)
+end
+
 function Markets.can_free_distill(g)
   local count = (Rules.for_market(g and g.market).economy or {}).free_distill_per_ante or 0
   return count > 0 and g.market_distill_used_ante ~= g.ante
@@ -94,6 +100,7 @@ function Markets.active_state(g)
     best_fit_this_blind = g.market_best_fit or 0,
     pending_market_id = g.pending_market and g.pending_market.id or nil,
     last_reward = g.last_market_reward or 0,
+    last_lead = g.last_market_lead and g.last_market_lead.key or nil,
   }
 end
 

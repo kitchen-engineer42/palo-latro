@@ -18,6 +18,7 @@ local Deck = require("game.deck")
 local TechEvaluation = require("game.tech_evaluation")
 local Markets = require("game.markets")
 local CardModel = require("game.card")
+local Leads = require("game.leads")
 
 local function finite(v)
   return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
@@ -310,6 +311,21 @@ local function add_raise_action(out, g)
   end
 end
 
+local function lead_action_effect(lead)
+  if not lead then return "claim Lead" end
+  local name = tostring(lead.name or lead.key or "Lead")
+  if lead.key == "warm_intro" then return name .. ": first Founder in next shop costs $0" end
+  if lead.amount_cash ~= nil or lead.amount ~= nil then
+    return name .. ": +$" .. tostring(lead.amount_cash or lead.amount) .. " on next played blind clear"
+  end
+  if lead.pack_key then return name .. ": free Hiring Round in next shop" end
+  if lead.edition then
+    local edition = CardModel.EDITIONS and CardModel.EDITIONS[lead.edition]
+    return name .. ": next Founder gains " .. tostring((edition and edition.label) or lead.edition)
+  end
+  return name .. ": " .. tostring(lead.description or lead.trigger or "queued reward")
+end
+
 function Mimic.legal_actions()
   local out, state = {}, G.STATE
   local g = G.GAME or {}
@@ -319,7 +335,11 @@ function Mimic.legal_actions()
     add_action(out, "choose_market", { index = "integer" }, choices)
   elseif state == G.STATES.BLIND_SELECT then
     add_action(out, "play_blind")
-    if (g.blind_idx or 3) < 3 then add_action(out, "skip_blind") end
+    if Leads.can_skip(g) then
+      local lead = Leads.current_offer(g)
+      add_action(out, "skip_blind", {}, nil,
+        lead_action_effect(lead) .. "; forgo this blind's income, close reward, and shop")
+    end
   elseif state == G.STATES.SELECTING_HAND then
     local hand_ids = ids(G.hand and G.hand.cards, "hand")
     if (g.ships_left or 0) > 0 and #hand_ids > 0 then
@@ -440,15 +460,17 @@ function Mimic.legal_actions()
       add_action(out, "skip_pack")
     else
       for i, offer in ipairs((sh and sh.founders) or {}) do
+        local price = offer and Shop.price(offer)
         if offer and #((G.jokers and G.jokers.cards) or {}) < Shop.founder_cap()
-            and (g.cash or 0) >= Shop.price(offer) then add_action(out, "buy_founder", { index = i }) end
+            and (price == 0 or (g.cash or 0) >= price) then add_action(out, "buy_founder", { index = i }) end
       end
       if sh and (g.cash or 0) >= (sh.reroll_cost or math.huge) then add_action(out, "reroll_shop") end
       if sh and sh.voucher and (g.cash or 0) >= Shop.voucher_price(sh.voucher) then add_action(out, "buy_voucher") end
       if sh and sh.consumable and #((g and g.consumables) or {}) < (g.consumable_slots or 2)
           and (g.cash or 0) >= Shop.consumable_price(sh.consumable) then add_action(out, "buy_consumable") end
       for i, pack in ipairs((sh and sh.packs) or {}) do
-        if pack and (g.cash or 0) >= Shop.pack_price(pack) then add_action(out, "open_pack", { index = i }) end
+        local price = pack and Shop.pack_price(pack)
+        if pack and (price == 0 or (g.cash or 0) >= price) then add_action(out, "open_pack", { index = i }) end
       end
       add_raise_action(out, g)
       if not g.founders_locked then
@@ -528,6 +550,8 @@ local function public_state()
       last_ai_maturity = copy_plain(g.last_ai_maturity), product_identity = g.product_identity,
       consumable_slots = g.consumable_slots, founder_slots = g.founder_slots,
       market_best_fit = g.market_best_fit, last_market_reward = g.last_market_reward,
+      skips_run = g.skips_run or 0,
+      leads = copy_plain(Leads.view(g)),
       settlement = {
         income = g.last_income or 0,
         efficiency = g.last_efficiency or 0,
@@ -608,7 +632,11 @@ local function dispatch(action)
     local i, err = index_arg(action, g.market_choices); if not i then return nil, err end
     return Round.select_market(g.market_choices[i]) and true or nil, "market selection failed"
   elseif id == "play_blind" then G.FUNCS.play_blind(); return true
-  elseif id == "skip_blind" then G.FUNCS.skip_blind(); return true
+  elseif id == "skip_blind" then
+    local before_idx, before_skips = g.blind_idx, g.skips_run or 0
+    G.FUNCS.skip_blind()
+    return ((g.skips_run or 0) == before_skips + 1 and g.blind_idx ~= before_idx)
+      and true or nil, "blind skip failed"
   elseif id == "ship" or id == "pivot" then
     local max_count = id == "ship" and math.min(g.select_max or 5, #(G.hand.cards or {})) or #(G.hand.cards or {})
     local _, err = select_cards(G.hand.cards, "hand", action.card_ids, 1, max_count)

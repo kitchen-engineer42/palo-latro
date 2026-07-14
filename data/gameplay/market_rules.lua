@@ -180,12 +180,12 @@ local RULES = {
   ["healthtech-clinical"] = {
     start_era = 3, era_path = { 3, 3, 3, 4, 5 }, scenario_id = "rag-healthcare",
     fit_label = "RAG x healthcare",
-    perk = { name = "Compliance Gate", effect = "-1 Ship each blind; a high-Fit Ship (x1.06+) earns 2 funding units when the blind clears." },
+    perk = { name = "Compliance Gate", effect = "-1 Ship each blind; clearing with high Fit (x1.06+) grants a Lead." },
     starter_recipe = STARTERS.health_e3,
     starter_witness = { app_type = "apt_webapp", cards = { "t_react", "t_java", "t_postgresql" } },
     anchors = { "t_java", "t_postgresql", "t_oauth2", "t_tensorflow" },
     perk_ops = { { op = "ships_per_blind", amount = -1 } },
-    economy = { high_fit_floor = 1.06, high_fit_reward_units = 2 },
+    economy = { high_fit_floor = 1.06, high_fit_lead = true },
     founder_tags = { "healthcare", "enterprise", "reliability" },
   },
   ["legaltech-workspace"] = {

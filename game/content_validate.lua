@@ -15,7 +15,7 @@ local HOOKS = {
   joker_main=true, before=true, individual=true, after=true, held=true, repetition=true,
   setting_blind=true, first_hand_drawn=true, pre_cash_out=true, end_of_round=true,
   blind_won=true, blind_lost=true, discard=true, selling_self=true, selling_card=true,
-  sell_consumable=true, use_consumable=true,
+  sell_consumable=true, use_consumable=true, skip_blind=true,
 }
 local RESET_HOOKS = { selling_self=true, selling_card=true, blind_lost=true, discard=true }
 local OPS = {
@@ -337,7 +337,7 @@ local function validate_gameplay(gameplay, catalog, r)
       end
       local economy_allowed = { target_mult="number", salary_mult="number", raise_cash_mult="number",
         no_interest="boolean", interest_cap="number", ship_reward_mult="number", pivot_reward_units="number",
-        high_fit_floor="number", high_fit_reward_units="number", boss_income_mult="number",
+        high_fit_floor="number", high_fit_reward_units="number", high_fit_lead="boolean", boss_income_mult="number",
         income_mult="number", ai_margin_bonus="number", free_distill_per_ante="number",
         tech_eval_pack_discount="number", margin_cap="number" }
       for key, value in pairs(rule.economy or {}) do

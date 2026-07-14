@@ -11,6 +11,7 @@ local Stakes = require("game.stakes")
 local Economy = require("game.economy")
 local Bosses = require("game.bosses")
 local RNG = require("game.rng")
+local Leads = require("game.leads")
 
 local RunState = {}
 
@@ -71,6 +72,12 @@ function RunState.set_blind(ante, blind_idx)
     target = RunState.blind_target(ante, blind_idx),
     is_boss = (blind_idx == 3), modifier = nil,          -- boss modifier (E5)
   }
+  Leads.ensure_ante(g, ante)
+  local lead = Leads.offer_for(g, blind_idx, ante)
+  if lead then
+    g.blind.lead_key = lead.key
+    g.blind.lead_offer = lead
+  end
   if blind_idx == 3 then                                  -- telegraphed market-event boss
     local ev = { "ai_winter", "platform_shift", "dotcom_bust" }
     g.blind.event = (g.boss_sequence and g.boss_sequence[ante]) or ev[((ante - 1) % #ev) + 1]
@@ -165,6 +172,7 @@ function RunState.new(opts)
     market_assets_granted = {}, market_best_fit = 0, initial_era_path = nil,
     ships_bonus = 0, pivots_bonus = 0, reroll_discount = 0, shop_discount = 0,
     vouchers_owned = {},
+    lead_offers = {}, lead_queue = {}, lead_history = {}, lead_next_id = 0,
     -- Funding Stakes ladder ---------------------------------------
     stake = opts.stake or 1, target_mult = 1.0, salary_div_override = nil,
   }
@@ -200,6 +208,17 @@ end
 
 function RunState.deserialize(t)
   G.GAME = t
+  G.GAME.lead_offers = G.GAME.lead_offers or {}
+  G.GAME.lead_queue = G.GAME.lead_queue or {}
+  G.GAME.lead_history = G.GAME.lead_history or {}
+  G.GAME.lead_next_id = G.GAME.lead_next_id or 0
+  Leads.normalize(G.GAME)
+  Leads.ensure_ante(G.GAME, G.GAME.ante)
+  if G.GAME.blind and (G.GAME.blind_idx == 1 or G.GAME.blind_idx == 2) then
+    local lead = Leads.offer_for(G.GAME, G.GAME.blind_idx, G.GAME.ante)
+    G.GAME.blind.lead_key = lead and lead.key or nil
+    G.GAME.blind.lead_offer = lead
+  end
   G.GAME.score = { chips = 0, mult = 0, arr = 0 }
 end
 

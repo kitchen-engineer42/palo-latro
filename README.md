@@ -23,7 +23,7 @@ open -n -a /Applications/love.app --args "$(pwd)"
 
 Palo Latro includes the complete blind loop, persistent deckbuilding, twelve app types, 262 founders
 and 17 evolved forms, 16 markets, bosses, shops, normal/jumbo/mega packs, consumables, eight funding
-stakes, economy and payroll systems, profile progression, deterministic seeded runs, and original
+stakes, visible blind-skip Leads, economy and payroll systems, profile progression, deterministic seeded runs, and original
 card artwork throughout the playable game.
 
 ## Deterministic gameplay protocol

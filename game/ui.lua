@@ -21,6 +21,60 @@ local AIMaturity = require("game.ai_maturity")
 local Economy = require("game.economy")
 local Pricing = require("game.pricing")
 local Markets = require("game.markets")
+local Leads = require("game.leads")
+
+local function lead_state(game)
+  local view = Leads.view(game)
+  return type(view) == "table" and view or { offers = {}, pending = {}, history = {}, can_skip = false }
+end
+
+local function lead_status(row)
+  if not row then return "" end
+  if row.key == "warm_intro" then return "next shop: first Founder $0" end
+  if row.amount_cash ~= nil then
+    return "+$" .. format_number(row.amount_cash) .. " on next blind clear"
+  end
+  if row.amount ~= nil then
+    return "+$" .. format_number(row.amount) .. " on next blind clear"
+  end
+  if row.pack_key then return "next shop: free Hiring Round" end
+  if row.edition then
+    local edition = Card and Card.EDITIONS and Card.EDITIONS[row.edition]
+    return "next Founder: " .. tostring((edition and edition.label) or row.edition)
+  end
+  return row.description or row.trigger or row.status or "queued"
+end
+
+local function lead_detail(row)
+  if not row then return "" end
+  if row.key == "warm_intro" then return "The first Founder in the next shop costs $0." end
+  if row.amount_cash ~= nil or row.amount ~= nil then
+    return "Clear the next played blind: +$"
+      .. format_number(row.amount_cash or row.amount) .. " Cash."
+  end
+  if row.pack_key then return "The next shop adds a free Hiring Round." end
+  if row.edition then
+    local edition = Card and Card.EDITIONS and Card.EDITIONS[row.edition]
+    return "The next Founder acquired gains "
+      .. tostring((edition and edition.label) or row.edition) .. "."
+  end
+  return row.description or lead_status(row)
+end
+
+local function lead_line(row)
+  if not row then return "" end
+  local status = lead_status(row)
+  return tostring(row.name or row.key or "Lead") .. (status ~= "" and (" · " .. status) or "")
+end
+
+local function skipped_with_lead(state, ante, blind_idx)
+  for _, row in ipairs((state and state.history) or {}) do
+    local source_ante = row.source_ante or row.ante
+    local source_blind = row.source_blind_idx or row.blind_idx
+    if source_ante == ante and source_blind == blind_idx then return true end
+  end
+  return false
+end
 
 local function tech_offer_center(option)
   if type(option) == "string" then return Centers.get(option) end
@@ -256,11 +310,11 @@ function UI.prepare()
     local controls = capital_controls(GAME, G.STATE)
     add("raise", { x = W / 2 - 120, y = H - 68, w = 240, h = 42 }, controls.raise.enabled)
   elseif G.STATE == G.STATES.BLIND_SELECT and GAME then
-    local y0, ch = 168, 248
+    local y0, ch = 168, 285
     local play = { x = W / 2 - 130, y = y0 + ch + 62, w = 260, h = 60 }
     add("play_blind", play, true)
-    if ((GAME.blind and GAME.blind.idx) or 1) < 3 then
-      add("skip_blind", { x = W / 2 - 120, y = play.y + 74, w = 240, h = 34 }, true)
+    if Leads.can_skip(GAME) then
+      add("skip_blind", { x = W / 2 - 140, y = play.y + 74, w = 280, h = 48 }, true)
     end
   elseif G.STATE == G.STATES.GAME_OVER and GAME then
     -- Input owns one full-screen restart target. Do not prepare obscured HUD controls above it.
@@ -309,9 +363,12 @@ function UI.prepare()
       local x0 = (W - (Shop.slots() * cw + (Shop.slots() - 1) * gap)) / 2
       for i = 1, slots do
         local offer = sh.founders and sh.founders[i]
-        if offer then add("shop_buy_" .. i, { x = x0 + (i - 1) * (cw + gap) + 10,
+        if offer then
+          local price = Shop.price(offer)
+          add("shop_buy_" .. i, { x = x0 + (i - 1) * (cw + gap) + 10,
           y = y0 + ch + 8, w = cw - 20, h = 32 },
-          (GAME.cash or 0) >= Shop.price(offer) and #G.jokers.cards < Shop.founder_cap()) end
+          (price == 0 or (GAME.cash or 0) >= price) and #G.jokers.cards < Shop.founder_cap())
+        end
       end
       if sh.consumable then
         local x = x0 + slots * (cw + gap)
@@ -333,8 +390,9 @@ function UI.prepare()
       local px0, py = (W - (#packs * pw + (#packs - 1) * 24)) / 2, y0 + ch + 174
       for i = 1, #packs do
         local pack = packs[i]
+        local price = pack and Shop.pack_price(pack) or math.huge
         add("shop_open_pack_" .. i, { x = px0 + (i - 1) * (pw + 24), y = py, w = pw, h = 44 },
-          pack and (GAME.cash or 0) >= Shop.pack_price(pack))
+          pack and (price == 0 or (GAME.cash or 0) >= price))
       end
     end
   elseif GAME then
@@ -579,6 +637,20 @@ function UI.left_panel(GAME, shop_mode)
   UI.text(G.FONTS.tiny, ("Runway %s \194\183 Rung %d \194\183 Eq %d%% \194\183 Debt %d"):format(
     (GAME.runway or 99) >= 99 and "long" or tostring(GAME.runway), GAME.maturity_rung or 1, GAME.equity_pct or 100,
     math.floor(require("game.meters").get("tech_debt") or 0)), ix, py + 660, G.C.text_dim, iw, "center")
+
+  local pending = Leads.pending(GAME)
+  if #pending > 0 then
+    UI.text(G.FONTS.tiny, "ACTIVE LEADS", ix, py + 685, G.C.win, iw, "center")
+    local shown = math.min(2, #pending)
+    for i = 1, shown do
+      local suffix = (i == shown and #pending > shown) and ("  +" .. (#pending - shown) .. " more") or ""
+      local y = py + 685 + (i - 1) * 36 + 18
+      UI.text(G.FONTS.tiny, tostring(pending[i].name or pending[i].key or "Lead") .. suffix,
+        ix + 4, y, G.C.text, iw - 8, "left")
+      UI.text(G.FONTS.tiny, lead_status(pending[i]),
+        ix + 4, y + 15, G.C.text_dim, iw - 8, "left")
+    end
+  end
 end
 
 function UI.render()
@@ -1024,63 +1096,93 @@ function UI.render_collection(W, H)
     point_in_rect(mx, my, geometry.next.x, geometry.next.y, geometry.next.w, geometry.next.h))
 end
 
--- the BLIND-SELECT page (P2): preview the upcoming blind before committing. Shows the ante's three blinds
--- (Small/Big/Boss) with ARR targets, the current one highlighted, the boss event telegraphed, the economy
--- readout, a Play button, and a disabled Skip seam (Leads/Tags come later).
+-- the BLIND-SELECT page (P2): preview the upcoming blind before committing. Small/Big show their
+-- deterministic Leads before the player chooses; skipping claims that Lead while explicitly forfeiting
+-- the blind's income, close reward, and shop. Boss blinds are never skippable.
 function UI.render_blind_select(W, H, GAME)
   local mx, my = cursor()
   local bl = GAME.blind or {}
+  local leads = lead_state(GAME)
   UI.text(G.FONTS.big, ("ANTE %d / 8"):format(GAME.ante or 1), 0, 40, G.C.arr, W, "center")
   lg.setFont(G.FONTS.small); lg.setColor(G.C.text_dim)
   lg.printf((bl.stage or "?") .. "  \194\183  choose your next blind", 0, 88, W, "center")
+
+  if #leads.pending > 0 then
+    local queued = {}
+    for i = 1, math.min(3, #leads.pending) do queued[#queued + 1] = lead_line(leads.pending[i]) end
+    if #leads.pending > 3 then queued[#queued + 1] = "+" .. (#leads.pending - 3) .. " more" end
+    UI.text(G.FONTS.tiny, "QUEUED LEADS  \194\183  " .. table.concat(queued, "   |   "),
+      50, 128, G.C.win, W - 100, "center")
+  end
 
   local kinds = { "Small", "Big", "Boss" }
   local EV = { "ai_winter", "platform_shift", "dotcom_bust" }     -- mirrors set_blind's cyclic boss telegraph
   local boss_event = bl.event or (GAME.boss_sequence and GAME.boss_sequence[GAME.ante or 1])
     or EV[(((GAME.ante or 1) - 1) % #EV) + 1]
-  local n, cw, ch, gap, y0 = 3, 300, 248, 40, 168
+  local n, cw, ch, gap, y0 = 3, 300, 285, 40, 168
   local x0 = (W - (n * cw + (n - 1) * gap)) / 2
   for i = 1, n do
     local x = x0 + (i - 1) * (cw + gap)
     local current = (bl.idx or 1) == i
+    local past = i < (bl.idx or 1)
+    local skipped = past and skipped_with_lead(leads, GAME.ante or 1, i)
     local target = RunState.blind_target(GAME.ante or 1, i)
     local kindcol = (i == 3 and G.C.lose) or (i == 2 and G.C.mult) or G.C.users
     local fill = current and { 0.18, 0.20, 0.26, 1 } or { 0.11, 0.12, 0.15, 1 }
-    pixel_rect(x, y0, cw, ch, fill, { chamfer = 6, border = current and G.C.arr or G.C.border, line_w = current and 3 or 2 })
+    pixel_rect(x, y0, cw, ch, fill,
+      { chamfer = 6, border = current and G.C.arr or G.C.border, line_w = current and 3 or 2 })
     lg.setColor(kindcol); lg.rectangle("fill", x + 4, y0 + 4, cw - 8, 40)
     UI.text(G.FONTS.normal, kinds[i], x, y0 + 10, { 0, 0, 0, 1 }, cw, "center")
     UI.text(G.FONTS.small, "Reach", x, y0 + 72, G.C.text_dim, cw, "center")
     UI.text(G.FONTS.big, "$" .. format_number(target), x, y0 + 94, G.C.arr, cw, "center")
     UI.text(G.FONTS.tiny, "ARR", x, y0 + 138, G.C.text_dim, cw, "center")
-    local reward = (RunState.BLIND_REWARD_UNITS[i] or 0) * require("game.economy").unit(GAME, RunState.ANTE_BASE)
-    UI.text(G.FONTS.tiny, "Close reward +$" .. format_number(reward),
-      x, y0 + 200, G.C.win, cw, "center")
+    local reward = (RunState.BLIND_REWARD_UNITS[i] or 0)
+      * require("game.economy").unit(GAME, RunState.ANTE_BASE)
     if i == 3 then
       lg.setFont(G.FONTS.tiny); lg.setColor(G.C.lose)
       local boss = Bosses.rule(boss_event)
       local desc = boss and (boss.name .. " · " .. Bosses.describe(boss_event)) or "market event"
       lg.printf("! " .. desc, x + 12, y0 + 160, cw - 24, "center")
+      UI.text(G.FONTS.tiny, skipped and "Close reward forfeited"
+          or ("Close reward +$" .. format_number(reward)),
+        x, y0 + 237, skipped and G.C.lose or G.C.win, cw, "center")
     else
-      lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text_dim)
-      lg.printf("standard blind", x + 12, y0 + 172, cw - 24, "center")
+      local offer = Leads.offer_for(GAME, i)
+      if offer then
+        UI.text(G.FONTS.tiny, "LEAD  \194\183  " .. tostring(offer.name or offer.key),
+          x + 12, y0 + 156, G.C.win, cw - 24, "center")
+        lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text)
+        lg.printf(lead_detail(offer), x + 18, y0 + 177, cw - 36, "center")
+      else
+        UI.text(G.FONTS.tiny, "standard blind", x + 12, y0 + 172, G.C.text_dim, cw - 24, "center")
+      end
+      UI.text(G.FONTS.tiny, skipped and "Close reward forfeited"
+          or ("Close reward +$" .. format_number(reward)),
+        x, y0 + 237, skipped and G.C.lose or G.C.win, cw, "center")
     end
-    local label = ((i < (bl.idx or 1)) and "cleared") or (current and "NOW PLAYING" or "upcoming")
+    local label = (skipped and "SKIPPED \194\183 LEAD CLAIMED")
+      or (past and "cleared") or (current and "NOW PLAYING" or "upcoming")
     UI.text(G.FONTS.tiny, label, x, y0 + ch - 26, current and G.C.arr or G.C.text_dim, cw, "center")
   end
 
   local payroll = RunState.payroll_due()
   lg.setFont(G.FONTS.small); lg.setColor((GAME.cash or 0) < 0 and G.C.lose or G.C.text_dim)
   lg.printf(("Cash $%s   \194\183   payroll due $%s   \194\183   founders %d"):format(
-    format_number(GAME.cash or 0), payroll, #((G.jokers and G.jokers.cards) or {})), 0, y0 + ch + 26, W, "center")
+    format_number(GAME.cash or 0), payroll, #((G.jokers and G.jokers.cards) or {})),
+    0, y0 + ch + 26, W, "center")
 
   local pb = { x = W / 2 - 130, y = y0 + ch + 62, w = 260, h = 60 }
   UI.rects.play_blind = pb
-  draw_button(pb, "Play " .. (bl.kind or "Blind") .. " \194\187", true, point_in_rect(mx, my, pb.x, pb.y, pb.w, pb.h))
-  if (bl.idx or 1) < 3 then
-    local sk = { x = W / 2 - 120, y = pb.y + 74, w = 240, h = 34 }
+  draw_button(pb, "Play " .. (bl.kind or "Blind") .. " \194\187",
+    true, point_in_rect(mx, my, pb.x, pb.y, pb.w, pb.h))
+  if Leads.can_skip(GAME) then
+    local offer = Leads.current_offer(GAME)
+    local sk = { x = W / 2 - 140, y = pb.y + 74, w = 280, h = 48 }
     UI.rects.skip_blind = sk
-    local reward = (bl.idx or 1) == 1 and "Angel check" or "Expanded Tech draft"
-    draw_button(sk, "Skip for " .. reward, true, point_in_rect(mx, my, sk.x, sk.y, sk.w, sk.h))
+    draw_button(sk, "Skip \194\183 Claim " .. tostring((offer and offer.name) or "Lead"), true,
+      point_in_rect(mx, my, sk.x, sk.y, sk.w, sk.h), G.FONTS.small)
+    UI.text(G.FONTS.tiny, "Forgo this blind's income, close reward, and shop.",
+      0, sk.y + sk.h + 10, G.C.lose, W, "center")
   end
 end
 
@@ -1322,7 +1424,7 @@ function UI.render_shop(W, H, GAME)
       if c.stake_mod then UI.text(G.FONTS.tiny, tostring(c.stake_mod.kind), x, y0 + ch - 24, G.C.lose, cw, "center") end
       local price, r = Shop.price(c), { x = x + 10, y = y0 + ch + 8, w = cw - 20, h = 32 }
       UI.rects["shop_buy_" .. i] = r
-      local can = (GAME.cash or 0) >= price and #G.jokers.cards < Shop.founder_cap()
+      local can = (price == 0 or (GAME.cash or 0) >= price) and #G.jokers.cards < Shop.founder_cap()
       draw_button(r, "Buy $" .. price, can, point_in_rect(mx, my, r.x, r.y, r.w, r.h))
       if hov then hovc, hovx, hovy = c, x + cw + 10, y0 end
     else
@@ -1382,10 +1484,11 @@ function UI.render_shop(W, H, GAME)
       UI.rects["shop_open_pack_" .. i] = r
       local pp = packs[i] and Shop.pack_price(packs[i]) or 0
       local lbl = packs[i] and ((packs[i].name or "Pack") .. " $" .. pp) or "(opened)"
-      draw_button(r, lbl, packs[i] and (GAME.cash or 0) >= pp, point_in_rect(mx, my, r.x, r.y, r.w, r.h))
+      draw_button(r, lbl, packs[i] and (pp == 0 or (GAME.cash or 0) >= pp),
+        point_in_rect(mx, my, r.x, r.y, r.w, r.h), np >= 3 and G.FONTS.tiny or nil)
       local cvr = packs[i] and G.PACK_ART and (G.PACK_ART[packs[i].art_key]
         or G.PACK_ART[packs[i].fallback_art] or G.PACK_ART.hiring_round)
-      if cvr then   -- cover thumbnail (right edge, clear of the label)
+      if cvr and np <= 2 then   -- three-pack Lead rows need the full button width for readable names
         local cs = (r.h - 4) / cvr:getHeight()
         lg.setColor(1, 1, 1, 1); lg.draw(cvr, r.x + r.w - cvr:getWidth() * cs - 3, r.y + 2, 0, cs, cs)
       end
@@ -1626,10 +1729,23 @@ function UI.draw_overlays()
     for key, value in pairs(g) do close_projection[key] = value end
     close_projection.ships_left = math.max(0, (g.ships_left or 0) - 1)
     local early_reward = Economy.early_close_reward(close_projection, RS.ANTE_BASE)
-    local market_reward = Markets.high_fit_reward(g, RS.ANTE_BASE)
-    fact("CLOSE \194\183 BLIND + EARLY + MARKET/HEALTH",
+    fact("CLOSE \194\183 BLIND + EARLY",
       ("+$%s \194\183 operating income separate"):format(
-        format_number(fixed_reward + early_reward + market_reward)), G.C.win)
+        format_number(fixed_reward + early_reward)), G.C.win)
+    if market_view and (market_view.economy or {}).high_fit_lead then
+      local floor = market_view.economy.high_fit_floor or 0
+      local best = market_state.best_fit_this_blind or 0
+      local last = market_state.last_lead and Leads.get(market_state.last_lead)
+      local health_status, health_col
+      if last then
+        health_status, health_col = "Last clear granted " .. last.name, G.C.win
+      elseif Markets.earns_high_fit_lead(g) then
+        health_status, health_col = ("Ready on clear \194\183 Fit ×%.2f"):format(best), G.C.win
+      else
+        health_status, health_col = ("Need Fit ×%.2f+ \194\183 best ×%.2f"):format(floor, best), G.C.text_dim
+      end
+      fact("HEALTHTECH HIGH-FIT LEAD", health_status, health_col)
+    end
     local vlist = {}
     for k in pairs(g.vouchers_owned or {}) do vlist[#vlist + 1] = (k:gsub("^v_", "")) end
     fact("INVESTMENTS", #vlist > 0 and table.concat(vlist, ", ") or "(none)")

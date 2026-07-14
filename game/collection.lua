@@ -15,6 +15,7 @@ Collection.CATEGORIES = {
   { id = "playbooks", label = "Playbooks" },
   { id = "tech_laws", label = "Tech Laws" },
   { id = "tech_modifiers", label = "Tech Mods" },
+  { id = "leads", label = "Leads" },
 }
 
 local CATEGORY_BY_ID = {}
@@ -92,6 +93,12 @@ local function all_tech_modifiers()
   return out
 end
 
+local function all_leads()
+  local definitions = require("game.leads").all()
+  for _, definition in ipairs(definitions) do definition.kind = "lead" end
+  return wrap(definitions, "key")
+end
+
 local function value_filter(field, value)
   return function(entry) return tostring(entry.source[field] or ""):lower() == value:lower() end
 end
@@ -142,6 +149,7 @@ local FILTERS = {
     { id = "enhancement", label = "Enhancements", matches = value_filter("kind", "enhancement") },
     { id = "seal", label = "Seals", matches = value_filter("kind", "seal") },
   },
+  leads = { { id = "all", label = "All" } },
 }
 
 local CATALOGS = {
@@ -152,6 +160,7 @@ local CATALOGS = {
   playbooks = all_playbooks,
   tech_laws = all_tech_laws,
   tech_modifiers = all_tech_modifiers,
+  leads = all_leads,
 }
 local CATALOG_CACHE = {}
 
@@ -169,7 +178,8 @@ local function profile_or_default(profile)
 end
 
 local function discovered(entry, profile)
-  if entry.source.kind == "enhancement" or entry.source.kind == "seal" then return true end
+  if entry.source.kind == "enhancement" or entry.source.kind == "seal"
+      or entry.source.kind == "lead" then return true end
   if profile.discovered[entry.id] == true then return true end
   -- Founders may be discovered during the current run before the profile is persisted.
   return entry.source.set == "Founder" and entry.source.discovered == true
@@ -194,6 +204,9 @@ local function summary(category, source)
     return (source.rarity or "common"):gsub("^%l", string.upper), source.desc or ""
   elseif category == "tech_modifiers" then
     return source.kind:gsub("^%l", string.upper) .. " · persistent Tech modifier", source.desc or ""
+  elseif category == "leads" then
+    return "Blind-skip opportunity · " .. tostring(source.trigger or "deferred reward"),
+      source.description or ""
   end
   return "", ""
 end

@@ -259,6 +259,7 @@ G.FUNCS.shop_reroll = function() if G.STATE == S.SHOP then Shop.reroll() end end
 G.FUNCS.shop_redeem = function() if G.STATE == S.SHOP then Shop.redeem() end end
 G.FUNCS.shop_open_pack_1 = function() if G.STATE == S.SHOP then Shop.open_pack(1) end end
 G.FUNCS.shop_open_pack_2 = function() if G.STATE == S.SHOP then Shop.open_pack(2) end end
+G.FUNCS.shop_open_pack_3 = function() if G.STATE == S.SHOP then Shop.open_pack(3) end end
 G.FUNCS.pack_pick_1 = function() if G.STATE == S.SHOP then Shop.pack_pick(1) end end
 G.FUNCS.pack_pick_2 = function() if G.STATE == S.SHOP then Shop.pack_pick(2) end end
 G.FUNCS.pack_pick_3 = function() if G.STATE == S.SHOP then Shop.pack_pick(3) end end
@@ -294,21 +295,18 @@ G.FUNCS.play_blind = function()
 end
 
 G.FUNCS.skip_blind = function()
-  if G.STATE ~= S.BLIND_SELECT or (G.GAME.blind_idx or 3) >= 3 then return end
-  local skipped = G.GAME.blind_idx
-  if skipped == 1 then
-    G.GAME.cash = (G.GAME.cash or 0) + 2 * Economy.unit(G.GAME, require("game.runstate").ANTE_BASE)
-    G.GAME.last_lead = "Angel check"
-  else
-    G.GAME.draft_choice_bonus = (G.GAME.draft_choice_bonus or 0) + 1
-    G.GAME.last_lead = "Expanded Tech draft"
-  end
+  local Leads = require("game.leads")
+  if G.STATE ~= S.BLIND_SELECT or not Leads.can_skip(G.GAME) then return false end
+  local skipped, lead = G.GAME.blind_idx, Leads.claim_current(G.GAME)
+  if not lead then return false end
   G.GAME.skips_run = (G.GAME.skips_run or 0) + 1
+  Scoring.fire_hook("skip_blind", { lead = lead, skipped_blind_idx = skipped })
   require("game.runstate").advance()
   if G.GAME.blind_idx == 3 then
     Guidance.emit("boss_previewed", { boss = G.GAME.blind and G.GAME.blind.event })
   end
   StateMachine.set_state(S.BLIND_SELECT)
+  return true
 end
 
 -- ── Track C B2/B4/B5: consumable (Tech Law) use / target-select / sell ────────────────────────────

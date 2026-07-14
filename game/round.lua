@@ -17,6 +17,7 @@ local Profile = require("game.profile")
 local Guidance = require("game.guidance")
 local TechLifecycle = require("game.tech_lifecycle")
 local TechModifiers = require("game.tech_modifiers")
+local Leads = require("game.leads")
 
 local Round = {}
 
@@ -381,9 +382,14 @@ function Round.cash_out_ship()
     local cleared_boss = g.blind_idx == 3
     g.last_tech_modifier_rewards = TechModifiers.on_blind_won(G.hand.cards)
     Scoring.fire_hook("blind_won")
+    g.last_lead_rewards = Leads.on_blind_won(g)
     g.last_income = Economy.operating_income(g, g.best_ship_arr, g.best_ship_margin)
     g.last_efficiency = Economy.early_close_reward(g, RunState.ANTE_BASE)
     g.last_market_reward = require("game.markets").high_fit_reward(g, RunState.ANTE_BASE)
+    g.last_market_lead = nil
+    if require("game.markets").earns_high_fit_lead(g) then
+      g.last_market_lead = Leads.grant_random(g, "healthtech_high_fit")
+    end
     g.last_blind_reward = (RunState.BLIND_REWARD_UNITS[g.blind_idx] or 0) * Economy.unit(g, RunState.ANTE_BASE)
     g.cash = g.cash + g.last_income + g.last_efficiency + g.last_market_reward + g.last_blind_reward
     g.best_ship_arr, g.best_ship_margin = 0, nil
