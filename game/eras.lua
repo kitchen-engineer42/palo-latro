@@ -16,22 +16,37 @@ end
 function Eras.number(v) return era_number(v) end
 function Eras.label(v) return "E" .. tostring(era_number(v) or 1) end
 
-function Eras.available(center, era)
-  if not center or center.signature then return false end
+-- Normalized, chronological support windows. Untagged legacy centers belong to E1.
+-- Keeping this independent from `available` matters for already-owned signature
+-- Tech: signature cards cannot enter random pools, but can still be supported.
+function Eras.supported_eras(center)
+  local out, seen = {}, {}
+  for _, e in ipairs((center and center.eras) or {}) do
+    local n = era_number(e)
+    if n and not seen[n] then out[#out + 1], seen[n] = n, true end
+  end
+  if #out == 0 then out[1] = 1 end
+  table.sort(out)
+  return out
+end
+
+function Eras.supports(center, era)
+  if not center then return false end
   local wanted = era_number(era) or 1
-  local eras = center.eras
-  if not eras or #eras == 0 then return wanted == 1 end
-  for _, e in ipairs(eras) do if era_number(e) == wanted then return true end end
+  for _, n in ipairs(Eras.supported_eras(center)) do
+    if n == wanted then return true end
+  end
   return false
 end
 
+function Eras.available(center, era)
+  if not center or center.signature then return false end
+  local wanted = era_number(era) or 1
+  return Eras.supports(center, wanted)
+end
+
 function Eras.first(center)
-  local best
-  for _, e in ipairs((center and center.eras) or {}) do
-    local n = era_number(e)
-    if n and (not best or n < best) then best = n end
-  end
-  return best or 1
+  return Eras.supported_eras(center)[1]
 end
 
 function Eras.for_ante(market_rule, ante)

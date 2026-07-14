@@ -124,7 +124,7 @@ FX.f_dorsey  = function(_, ctx) if ctx.after then return { mult = 15, dollars = 
 
 -- Signature founder: kitchen-engineer42 starts a ×0.9 drag; the ×Mult INCREMENT doubles each ante
 -- survived → 0.9, 1.0, 1.2, 1.6, 2.4, 4.0, 7.2, 13.6, ×26.4 by IPO. Closed form: x = 0.8 + 0.1·2^k,
--- k = antes survived since hire. Firing her removes the card (curve auto-resets) + deletes John.
+-- k = antes survived since hire. Firing her removes the card (curve auto-resets) + deletes the signature Tech.
 FX["f_kitchen-engineer42"] = function(card, ctx)
   if not ctx.joker_main then return end
   local c = cfg(card)

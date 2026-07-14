@@ -5,6 +5,7 @@
 
 local layers = require("data.layers")
 local Coverage = require("game.coverage")
+local TechLifecycle = require("game.tech_lifecycle")
 
 Card = Moveable:extend()
 
@@ -42,7 +43,7 @@ Card.SEALS = {
 }
 Card.SEAL_KEYS = { "reusable", "monetized" }
 
--- layer "suit" abbreviations for the readable top-left corner (until tech-logo art lands, ADR/parking-lot #4)
+-- Layer "suit" abbreviations for the readable top-left corner when logo art is unavailable.
 Card.LAYER_ABBR = { Frontend = "FE", Backend = "BE", Data = "DA", Infra = "IN", AI = "AI", Knowledge = "KN" }
 
 -- a concise, game-facing effect line derived from the compiled DSL (P2): "+15 Users" / "×2 Rev" /
@@ -260,6 +261,9 @@ function Card:init(args)
   self.center = args.center
   self.center_key = args.center and args.center.key
   self.uid = args.uid                                 -- back-ref to the master_deck entry (Track C A); nil for non-deck cards
+  self.source = args.source                           -- per-instance Tech acquisition provenance
+  self.acquired_ante = args.acquired_ante
+  self.migrated_from = args.migrated_from
   self.layer = args.center and args.center.layer
   self.base_users = (args.center and args.center.base_users) or 0
   self.ability = {
@@ -276,19 +280,14 @@ end
 
 -- the "build" contribution of this card (contextual seam for the compatibility graph)
 function Card:get_users(context)
-  local u = self.base_users or 0
-  if self.stickers then                                   -- Track C: card_stat_sticker(field=users) — adds first, then muls
-    local add, mul = 0, 1
-    for _, s in ipairs(self.stickers) do
-      if s.field == "users" then
-        if s.mode == "add" then add = add + (s.amount or 0)
-        elseif s.mode == "mul" then mul = mul * (s.amount or 1)
-        elseif s.mode == "override" then u = s.amount or u; add, mul = 0, 1 end
-      end
-    end
-    u = (u + add) * mul
-  end
-  return math.floor(u + 0.5)
+  local era = type(context) == "table" and context.era or context
+  local users = TechLifecycle.effective_users(self, self.center, era)
+  return users
+end
+
+function Card:tech_status(context)
+  local era = type(context) == "table" and context.era or context
+  return TechLifecycle.status(self.center, era)
 end
 
 -- Track C: per-card Rev stickers (card_stat_sticker field=rev) — the consumable engine folds these into the
@@ -321,6 +320,103 @@ function Card:rev_sticker_label()
   if rs.add and rs.add ~= 0 then parts[#parts + 1] = (rs.add > 0 and "+" or "") .. fmt1(rs.add) end
   if rs.mul and rs.mul ~= 1 then parts[#parts + 1] = "×" .. fmt1(rs.mul) end
   return "Rev" .. table.concat(parts)
+end
+
+-- Compact acquisition history shared by card tooltips and the deck-of-record
+-- overlay. Provenance is deliberately instance data: two copies of the same
+-- Tech may have entered the run through different decisions.
+function Card.provenance_label(subject)
+  subject = subject or {}
+  local source = tostring(subject.source or "unknown"):gsub("_", " ")
+  source = source:gsub("(%a)([%w']*)", function(first, rest)
+    return first:upper() .. rest
+  end)
+  local out = source
+  if subject.acquired_ante then out = out .. " · Ante " .. tostring(subject.acquired_ante) end
+  if subject.migrated_from then out = out .. " · migrated from " .. tostring(subject.migrated_from) end
+  return out
+end
+
+-- Shared Tech face used by live cards, Tech Evaluation offers, and any future
+-- read-only preview. `subject` may be a live Card or a plain master_deck entry.
+-- The center stays immutable; lifecycle/provenance remain per instance.
+function Card.draw_tech_face(t, center, opts)
+  opts = opts or {}
+  local lg = love.graphics
+  local subject = opts.card or opts.entry or {}
+  local display = {
+    center = center,
+    layer = (subject.layer ~= nil and subject.layer) or (center and center.layer),
+    layer_override = subject.layer_override,
+  }
+  local L = Coverage.display_layer(display)
+  local col = (L and layers[L] and layers[L].color) or G.C.panel
+  local pip = (G.TECH_ART and center and G.TECH_ART[center.key]) or (G.SUIT_ART and L and G.SUIT_ART[L])
+  local has_tech_mark = G.TECH_ART and center and G.TECH_ART[center.key]
+  local effective_users, status, before_decay = TechLifecycle.effective_users(subject, center, opts.era)
+
+  -- Warm-white poker stock replaces the old full layer-colour placeholder. Layer colour remains a
+  -- restrained trim cue; the individual parody mark now carries the card's visual identity.
+  pixel_rect(t.x, t.y, t.w, t.h, { 0.94, 0.92, 0.84, 1 }, { chamfer = 5 })
+  lg.setColor(col[1], col[2], col[3], 0.85)
+  lg.rectangle("fill", t.x + 4, t.y + 4, 4, t.h - 8)
+  lg.rectangle("fill", t.x + t.w - 8, t.y + 4, 4, t.h - 8)
+
+  if pip then
+    local iw, ih = pip:getDimensions()
+    local s = math.min((t.w * (has_tech_mark and 0.62 or 0.52)) / iw, (t.h * 0.42) / ih)
+    lg.setColor(1, 1, 1, has_tech_mark and 0.96 or 0.36)
+    lg.draw(pip, t.x + (t.w - iw * s) / 2, t.y + t.h * 0.12, 0, s, s)
+  end
+
+  lg.setColor(0.08, 0.09, 0.12, 0.88)
+  lg.rectangle("fill", t.x + 8, t.y + t.h * 0.54, t.w - 16, t.h * 0.25, 4, 4)
+  draw_text(G.FONTS.small, (center and center.name) or "?", t.x + 10, t.y + t.h * 0.565,
+    G.C.text, t.w - 20, "center")
+
+  local base_users = subject.base_users
+  if base_users == nil then base_users = (center and center.base_users) or 0 end
+  local users_col = status.state == "deprecated" and G.C.lose
+    or (before_decay ~= base_users and G.C.win or G.C.users)
+  draw_text(G.FONTS.normal, tostring(effective_users), t.x + 8, t.y + 6, users_col)
+  local rev_label = subject.rev_sticker_label and subject:rev_sticker_label()
+  if rev_label then
+    local rw, rh = 58, 24
+    pixel_rect(t.x + t.w - rw - 6, t.y + 6, rw, rh, { 0.08, 0.10, 0.15, 0.90 },
+      { chamfer = 4, shadow = false, emboss = false })
+    draw_text(G.FONTS.tiny, rev_label, t.x + t.w - rw - 4, t.y + 8, G.C.mult, rw - 4, "center")
+  end
+  if pip then
+    local ps = 22 / pip:getWidth()
+    lg.setColor(1, 1, 1, has_tech_mark and 0.98 or 0.75)
+    lg.draw(pip, t.x + 9, t.y + 40, 0, ps, ps)
+    lg.draw(pip, t.x + t.w - 9, t.y + t.h - 40, math.pi, ps, ps)
+  else
+    draw_text(G.FONTS.tiny, Card.LAYER_ABBR[L] or (L or ""):sub(1, 2):upper(),
+      t.x + 9, t.y + 42, G.C.black)
+  end
+
+  -- A deprecated card must read as a gameplay state, not merely as a lower
+  -- number. It owns the footer instead of colliding with the Layer label.
+  if status.state == "deprecated" then
+    local label = ("DEPRECATED -%d%%"):format(math.floor(status.penalty * 100 + 0.5))
+    local badge_h = math.max(22, text_h(G.FONTS.tiny) + 7)
+    local badge_y = t.y + t.h - badge_h - 4
+    lg.setColor(0.56, 0.16, 0.14, 0.96)
+    lg.rectangle("fill", t.x + 8, badge_y, t.w - 16, badge_h, 3, 3)
+    draw_text(G.FONTS.tiny, label, t.x + 10,
+      badge_y + (badge_h - text_h(G.FONTS.tiny)) / 2, G.C.text, t.w - 20, "center")
+  else
+    lg.setFont(G.FONTS.normal)
+    lg.setColor(col)
+    lg.printf((L or ""):upper(), t.x + 8,
+      t.y + t.h - text_h(G.FONTS.normal) - 5, t.w - 16, "center")
+  end
+
+  local border = opts.border or (status.state == "deprecated" and G.C.lose or G.C.border)
+  pixel_rect(t.x, t.y, t.w, t.h, nil,
+    { chamfer = 6, border = border, line_w = opts.line_w or (status.state == "deprecated" and 3 or 2) })
+  return { effective_users = effective_users, before_decay = before_decay, status = status, layer = L }
 end
 
 -- the joker/center behavior seam: returns an effect table or nil. Tech cards do nothing;
@@ -402,58 +498,17 @@ function Card:draw_body(t)
     return
   end
 
-  -- TECH CARD: poker-style face (parking-lot "logos-as-suits") — corner Users + suit pip (mirrored
-  -- bottom-right, upside down like a real deck), a BIG central suit watermark, and a name plate.
-  local L = Coverage.display_layer(self)
-  local col = (L and layers[L] and layers[L].color) or G.C.panel
-  local pip = (G.TECH_ART and self.center and G.TECH_ART[self.center.key]) or (G.SUIT_ART and L and G.SUIT_ART[L])
-  local has_tech_mark = G.TECH_ART and self.center and G.TECH_ART[self.center.key]
-
-  -- Warm-white poker stock replaces the old full layer-colour placeholder. Layer colour remains a
-  -- restrained trim cue; the individual parody mark now carries the card's visual identity.
-  pixel_rect(t.x, t.y, t.w, t.h, { 0.94, 0.92, 0.84, 1 }, { chamfer = 5 })
-  lg.setColor(col[1], col[2], col[3], 0.85)
-  lg.rectangle("fill", t.x + 4, t.y + 4, 4, t.h - 8)
-  lg.rectangle("fill", t.x + t.w - 8, t.y + 4, 4, t.h - 8)
-
-  if pip then                                                   -- individual mark; layer pip remains the fallback
-    local iw, ih = pip:getDimensions()
-    local s = math.min((t.w * (has_tech_mark and 0.62 or 0.52)) / iw, (t.h * 0.42) / ih)
-    lg.setColor(1, 1, 1, has_tech_mark and 0.96 or 0.36)
-    lg.draw(pip, t.x + (t.w - iw * s) / 2, t.y + t.h * 0.12, 0, s, s)
-  end
-  -- name plate
-  lg.setColor(0.08, 0.09, 0.12, 0.88); lg.rectangle("fill", t.x + 8, t.y + t.h * 0.54, t.w - 16, t.h * 0.25, 4, 4)
-  draw_text(G.FONTS.small, self.ability.name or "?", t.x + 10, t.y + t.h * 0.565, G.C.text, t.w - 20, "center")
-  -- corners (visible when cards overlap, Balatro rank+suit): Users + pip top-left, mirrored pip bottom-right
-  local effective_users = self:get_users()
-  local users_col = effective_users ~= (self.base_users or 0) and G.C.win or G.C.users
-  draw_text(G.FONTS.normal, tostring(effective_users), t.x + 8, t.y + 6, users_col)
-  local rev_label = self:rev_sticker_label()
-  if rev_label then
-    local rw, rh = 58, 24
-    pixel_rect(t.x + t.w - rw - 6, t.y + 6, rw, rh, { 0.08, 0.10, 0.15, 0.90 },
-      { chamfer = 4, shadow = false, emboss = false })
-    draw_text(G.FONTS.tiny, rev_label, t.x + t.w - rw - 4, t.y + 8, G.C.mult, rw - 4, "center")
-  end
-  if pip then
-    local ps = 22 / pip:getWidth()
-    lg.setColor(1, 1, 1, has_tech_mark and 0.98 or 0.75)
-    lg.draw(pip, t.x + 9, t.y + 40, 0, ps, ps)
-    lg.draw(pip, t.x + t.w - 9, t.y + t.h - 40, math.pi, ps, ps)
-  else
-    draw_text(G.FONTS.tiny, Card.LAYER_ABBR[L] or (L or ""):sub(1, 2):upper(), t.x + 9, t.y + 42, G.C.black)
-  end
-  -- Large, clean footer: draw directly so the global drop shadow cannot crowd the glyphs at card size.
-  lg.setFont(G.FONTS.normal)
-  lg.setColor(col)
-  lg.printf((L or ""):upper(), t.x + 8, t.y + t.h - text_h(G.FONTS.normal) - 5, t.w - 16, "center")
-
-  -- selection / hover border
+  -- TECH CARD: shared preview/live renderer. Lifecycle loss is visible on the
+  -- face and uses the same calculation as scoring.
   local bcol, bw = G.C.border, 2
   if self.selected then bcol, bw = G.C.select, 3
   elseif self.states.hover.is or (self.states.focus and self.states.focus.is) then bcol, bw = G.C.hover, 2 end
-  pixel_rect(t.x, t.y, t.w, t.h, nil, { chamfer = 6, border = bcol, line_w = bw })
+  local status = self:tech_status()
+  if status.state == "deprecated" and not self.selected
+      and not (self.states.hover.is or (self.states.focus and self.states.focus.is)) then
+    bcol, bw = G.C.lose, 3
+  end
+  Card.draw_tech_face(t, self.center, { card = self, border = bcol, line_w = bw })
 end
 
 return Card

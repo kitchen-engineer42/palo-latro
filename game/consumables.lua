@@ -92,7 +92,7 @@ function Consumables.apply(center, targets, opts)
     elseif op.k == "mint" then
       local seed = (op.source == "max_users" or op.source == "min_users") and pick_extremum(op.source) or targets[1]
       local key = seed and (seed.center_key or (seed.center and seed.center.key))
-      if key then Round.master_add(key, {}) end   -- fresh copy, no editions/seals/stickers
+      if key then Round.master_add(key, { source = "tech_law" }) end -- fresh copy, no editions/seals/stickers
     end
   end
 end

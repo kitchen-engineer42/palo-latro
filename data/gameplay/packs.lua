@@ -27,18 +27,33 @@ add("hiring_mega",     "hiring", "Mega Hiring Round",  "mega",   1, 4, 2, 0.15,
 
 -- App-Type/Planet analogue: 4 normal covers, 2 jumbo, 2 mega (8 total).
 for i = 1, 4 do add(i == 1 and "playbook" or ("playbook_normal_" .. i), "playbook",
-  "Playbook Workshop", "normal", i, 3, 1, 1.00, { fallback_art = "playbook_workshop" }) end
+  "Playbook Workshop", "normal", i, 3, 1, 1.00, { fallback_art = "playbook" }) end
 for i = 1, 2 do add("playbook_jumbo_" .. i, "playbook", "Jumbo Playbook Workshop",
-  "jumbo", i, 5, 1, 1.00, { fallback_art = "playbook_workshop" }) end
+  "jumbo", i, 5, 1, 1.00, { fallback_art = "playbook" }) end
 for i = 1, 2 do add("playbook_mega_" .. i, "playbook", "Mega Playbook Workshop",
-  "mega", i, 5, 2, 0.25, { fallback_art = "playbook_workshop" }) end
+  "mega", i, 5, 2, 0.25, { fallback_art = "playbook" }) end
 
 -- Tech-Law/Tarot analogue: 4 normal covers, 2 jumbo, 2 mega (8 total).
 for i = 1, 4 do add(i == 1 and "tech_law" or ("tech_law_normal_" .. i), "tech_law",
-  "Tech Law Pack", "normal", i, 3, 1, 1.00, { fallback_art = "tech_law_pack" }) end
+  "Tech Law Pack", "normal", i, 3, 1, 1.00, { fallback_art = "tech_law" }) end
 for i = 1, 2 do add("tech_law_jumbo_" .. i, "tech_law", "Jumbo Tech Law Pack",
-  "jumbo", i, 5, 1, 1.00, { fallback_art = "tech_law_pack" }) end
+  "jumbo", i, 5, 1, 1.00, { fallback_art = "tech_law" }) end
 for i = 1, 2 do add("tech_law_mega_" .. i, "tech_law", "Mega Tech Law Pack",
-  "mega", i, 5, 2, 0.25, { fallback_art = "tech_law_pack" }) end
+  "mega", i, 5, 2, 0.25, { fallback_art = "tech_law" }) end
+
+-- Tech Evaluation is a supplemental adoption lane, not a replacement for the
+-- guaranteed post-Boss Tech draft. Its 0.30/0.075 weights mirror a rare booster
+-- family: visible often enough to build around, but materially below the two
+-- 1.00-weight progression families above. Four normal, two jumbo, two mega
+-- covers keep the same 3/1, 5/1, 5/2 choice bands as those families.
+for i = 1, 4 do add(i == 1 and "tech_evaluation" or ("tech_evaluation_normal_" .. i),
+  "tech_evaluation", "Tech Evaluation", "normal", i, 3, 1, 0.30,
+  { fallback_art = "playbook" }) end
+for i = 1, 2 do add("tech_evaluation_jumbo_" .. i, "tech_evaluation",
+  "Jumbo Tech Evaluation", "jumbo", i, 5, 1, 0.30,
+  { fallback_art = "playbook" }) end
+for i = 1, 2 do add("tech_evaluation_mega_" .. i, "tech_evaluation",
+  "Mega Tech Evaluation", "mega", i, 5, 2, 0.075,
+  { fallback_art = "playbook" }) end
 
 return packs

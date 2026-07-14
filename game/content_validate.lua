@@ -6,6 +6,7 @@
 -- hook, gate, operation, counter source, or cross-reference is accepted.
 
 local Validate = {}
+local Deck = require("game.deck")
 
 local LAYERS = { Frontend=true, Backend=true, Data=true, Infra=true, AI=true, Knowledge=true }
 local ERAS = { E1=true, E2=true, E3=true, E4=true, E5=true }
@@ -292,7 +293,8 @@ end
 
 local function validate_gameplay(gameplay, catalog, r)
   if type(gameplay) ~= "table" then add(r, "gameplay", "must be a table"); return end
-  local rules = gameplay.market_rules and gameplay.market_rules.raw or {}
+  local market_rules = gameplay.market_rules
+  local rules = market_rules and market_rules.raw or {}
   local scenarios, roles = {}, {}
   for _, fits in pairs((catalog.markets and catalog.markets.scenario_fit) or {}) do
     for scenario in pairs(fits) do scenarios[scenario] = true end
@@ -307,6 +309,11 @@ local function validate_gameplay(gameplay, catalog, r)
     local rule, path = rules[market.id], "gameplay.market_rules." .. tostring(market.id)
     if type(rule) ~= "table" then add(r, path, "missing authored rule")
     else
+      local resolved = type(market_rules.for_market) == "function" and market_rules.for_market(market) or rule
+      local starter_ok, starter_error = Deck.validate_starter_recipe(
+        catalog.techcards or {}, market, resolved.start_era, resolved
+      )
+      if not starter_ok then r.errors[#r.errors + 1] = starter_error end
       if not scenarios[rule.scenario_id] then add(r, path .. ".scenario_id", "does not exist in scenario_fit") end
       for i, op in ipairs(rule.perk_ops or {}) do
         if not allowed_perks[op.op] then add(r, path .. ".perk_ops[" .. i .. "].op", "unknown perk operation") end

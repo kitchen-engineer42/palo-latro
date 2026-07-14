@@ -12,6 +12,7 @@ local Interp = require("game.effect_interp")   -- 1.5b: passive run-modifiers ap
 local Pricing = require("game.pricing")
 local Lifecycle = require("game.founder_lifecycle")
 local Packs = require("game.packs")
+local TechEvaluation = require("game.tech_evaluation")
 local PackPresentation = require("game.pack_presentation")
 local Stakes = require("game.stakes")
 local MarketRules = require("data.gameplay.market_rules")
@@ -298,7 +299,27 @@ function Shop.open_pack(idx)
   local definition = sh.packs[idx]
   local cost = Shop.pack_price(definition)
   if (G.GAME.cash or 0) < cost then return false end
+  local tech_options
+  if definition.family == "tech_evaluation" then
+    if TechEvaluation.available_count(G.GAME) < definition.options then return false end
+    tech_options = TechEvaluation.generate(G.GAME, definition.options, pack_random)
+    if #tech_options < definition.options then return false end -- no charge for an exhausted evaluation
+  end
   G.GAME.cash = G.GAME.cash - cost
+  if definition.family == "tech_evaluation" then
+    sh.packs[idx] = false
+    local targets = TechEvaluation.deprecated_targets(G.GAME)
+    sh.pack_open = { kind = "tech_evaluation", name = definition.name, pack_key = definition.key,
+      art_key = definition.art_key, fallback_art = definition.fallback_art,
+      options = tech_options, picks_left = definition.picks,
+      migration_target_uid = targets[1] and targets[1].uid or nil }
+    local keys = {}; for _, option in ipairs(tech_options) do keys[#keys + 1] = option.key end
+    Profile.discover_many(keys)
+    PackPresentation.begin(sh.pack_open, idx, definition)
+    Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
+    Audio.play("select", nil, 0.6)
+    return true
+  end
   if definition.family == "playbook" then
     local apps = require("game.apptypes").list
     local opts, seen = {}, {}
@@ -308,7 +329,8 @@ function Shop.open_pack(idx)
     end
     sh.packs[idx] = false
     sh.pack_open = { kind = "playbook", name = definition.name, pack_key = definition.key,
-      art_key = definition.art_key, options = opts, picks_left = definition.picks }
+      art_key = definition.art_key, fallback_art = definition.fallback_art,
+      options = opts, picks_left = definition.picks }
     local keys = {}; for _, option in ipairs(opts) do keys[#keys + 1] = option.key end
     Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
@@ -325,7 +347,8 @@ function Shop.open_pack(idx)
     end
     sh.packs[idx] = false
     sh.pack_open = { kind = "tech_law", name = definition.name, pack_key = definition.key,
-      art_key = definition.art_key, options = opts, picks_left = definition.picks }
+      art_key = definition.art_key, fallback_art = definition.fallback_art,
+      options = opts, picks_left = definition.picks }
     local keys = {}; for _, option in ipairs(opts) do keys[#keys + 1] = option.key end
     Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
@@ -354,7 +377,8 @@ function Shop.open_pack(idx)
   end
   sh.packs[idx] = false
   sh.pack_open = { kind = "hiring", name = definition.name, pack_key = definition.key,
-    art_key = definition.art_key, options = opts, picks_left = definition.picks }
+    art_key = definition.art_key, fallback_art = definition.fallback_art,
+    options = opts, picks_left = definition.picks }
   local keys = {}; for _, option in ipairs(opts) do keys[#keys + 1] = (option.center or option).key end
   Profile.discover_many(keys)
   PackPresentation.begin(sh.pack_open, idx, definition)
@@ -363,11 +387,76 @@ function Shop.open_pack(idx)
   return true
 end
 
+local function consume_pack_option(sh, po, index, option, mode)
+  po.options[index] = false
+  po.picks_left = po.picks_left - 1
+  Profile.discover(option.key)
+  Audio.play("hire")
+  Guidance.emit("pack_picked", { family = po.kind, key = option.key, mode = mode })
+  if po.picks_left <= 0 then sh.pack_open = nil end
+end
+
+function Shop.tech_migration_targets()
+  return TechEvaluation.deprecated_targets(G.GAME)
+end
+
+function Shop.pack_set_migration_target(uid)
+  local po = G.GAME and G.GAME.shop and G.GAME.shop.pack_open
+  if not (po and po.kind == "tech_evaluation" and uid ~= nil) then return false end
+  for _, entry in ipairs(TechEvaluation.deprecated_targets(G.GAME)) do
+    if entry.uid == uid then po.migration_target_uid = uid; po.error = nil; return true end
+  end
+  return false
+end
+
+function Shop.pack_cycle_migration_target(delta)
+  local po = G.GAME and G.GAME.shop and G.GAME.shop.pack_open
+  if not (po and po.kind == "tech_evaluation") then return false end
+  local targets = TechEvaluation.deprecated_targets(G.GAME)
+  if #targets == 0 then po.migration_target_uid = nil; return false end
+  local current = 1
+  for i, entry in ipairs(targets) do if entry.uid == po.migration_target_uid then current = i; break end end
+  current = ((current - 1 + (delta or 1)) % #targets) + 1
+  po.migration_target_uid = targets[current].uid
+  Audio.play("select", nil, 0.4)
+  return targets[current]
+end
+
+function Shop.pack_adopt(i)
+  local sh = G.GAME and G.GAME.shop
+  local po = sh and sh.pack_open
+  local option = po and po.kind == "tech_evaluation" and po.options[i]
+  if not option then return false end
+  local entry, reason = TechEvaluation.adopt(option.key, G.GAME)
+  if not entry then po.error = reason; return false, reason end
+  po.error = nil
+  consume_pack_option(sh, po, i, option, "adopt")
+  return true
+end
+
+function Shop.pack_migrate(i, target_uid)
+  local sh = G.GAME and G.GAME.shop
+  local po = sh and sh.pack_open
+  local option = po and po.kind == "tech_evaluation" and po.options[i]
+  if not option then return false end
+  target_uid = target_uid or po.migration_target_uid
+  local entry, reason = TechEvaluation.migrate(option.key, target_uid, G.GAME)
+  if not entry then po.error = reason; return false, reason end  -- failed validation consumes nothing
+  po.error = nil
+  consume_pack_option(sh, po, i, option, "migrate")
+  if sh.pack_open then
+    local targets = TechEvaluation.deprecated_targets(G.GAME)
+    po.migration_target_uid = targets[1] and targets[1].uid or nil
+  end
+  return true
+end
+
 function Shop.pack_pick(i)
   local sh = G.GAME.shop
   local po = sh and sh.pack_open
   local c = po and po.options[i]
   if not c then return false end
+  if po.kind == "tech_evaluation" then return Shop.pack_adopt(i) end
   if po.kind == "playbook" then
     require("game.playbooks").upgrade(c.key, 1)
     Profile.discover(c.key)

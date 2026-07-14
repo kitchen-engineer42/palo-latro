@@ -255,7 +255,12 @@ function Interp.run(card, ctx)
         and math.floor((rt.base or 0) + (rt.coef or 1) * help(rt.per, ctx, card, rt)) or rt
       if dsl.retrigger_target == "highest" and ctx.other_card then              -- 1.5a: only the top-Users played card
         local best = ctx.other_card
-        for _, oc in ipairs(ctx.scoring_hand or {}) do if (oc.base_users or 0) > (best.base_users or 0) then best = oc end end
+        local function effective_users(subject)
+          return (subject.get_users and subject:get_users()) or subject.base_users or 0
+        end
+        for _, oc in ipairs(ctx.scoring_hand or {}) do
+          if effective_users(oc) > effective_users(best) then best = oc end
+        end
         if ctx.other_card ~= best then return nil end
       end
       if reps and reps >= 1 then return { jokers = { repetitions = math.min(2, reps) } } end

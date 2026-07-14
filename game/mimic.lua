@@ -13,6 +13,10 @@ local Coverage = require("game.coverage")
 local Economy = require("game.economy")
 local Pricing = require("game.pricing")
 local RunState = require("game.runstate")
+local Centers = require("game.centers")
+local Deck = require("game.deck")
+local TechLifecycle = require("game.tech_lifecycle")
+local TechEvaluation = require("game.tech_evaluation")
 
 local function finite(v)
   return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
@@ -130,9 +134,32 @@ end
 local function master_deck_view()
   local out = {}
   for _, entry in ipairs((G.GAME and G.GAME.master_deck) or {}) do
+    local center = Centers.get(entry.center_key)
+    local effective, status, before_deprecation
+    if center then
+      effective, status, before_deprecation = TechLifecycle.effective_users(
+        entry, center, G.GAME and G.GAME.era)
+    end
     out[#out + 1] = {
       uid = entry.uid,
       key = entry.center_key,
+      name = center and center.name,
+      layer = entry.layer_override or (center and center.layer),
+      base_users = entry.base_users or (center and center.base_users),
+      users_before_deprecation = before_deprecation,
+      effective_users = effective,
+      deprecated = status and status.state == "deprecated" or false,
+      deprecation = status and {
+        state = status.state,
+        eras_behind = status.eras_behind,
+        penalty = status.penalty,
+        factor = status.factor,
+        latest_supported = status.latest_supported,
+        next_supported = status.next_supported,
+      } or nil,
+      source = entry.source,
+      acquired_ante = entry.acquired_ante,
+      migrated_from = entry.migrated_from,
       edition = entry.edition,
       seal = entry.seal,
       layer_override = entry.layer_override,
@@ -144,6 +171,28 @@ local function master_deck_view()
     return tostring(a.key) < tostring(b.key)
   end)
   return out
+end
+
+local function tech_option_view(option, index)
+  local center = option and (option.center or option)
+  if not center then return nil end
+  local effective, status = TechLifecycle.effective_users({}, center, G.GAME and G.GAME.era)
+  return {
+    index = index,
+    key = center.key,
+    name = center.name,
+    layer = center.layer,
+    base_users = center.base_users,
+    effective_users = effective,
+    deprecation = {
+      state = status.state,
+      eras_behind = status.eras_behind,
+      penalty = status.penalty,
+      factor = status.factor,
+      latest_supported = status.latest_supported,
+      next_supported = status.next_supported,
+    },
+  }
 end
 
 local function shop_view()
@@ -164,11 +213,28 @@ local function shop_view()
   if sh.pack_open then
     local options = {}
     for i, option in ipairs(sh.pack_open.options or {}) do
-      if option then options[#options + 1] = { index = i, key = option.key, name = option.name,
-        edition = option.edition } end
+      if option then
+        if sh.pack_open.kind == "tech_evaluation" then
+          options[#options + 1] = tech_option_view(option, i)
+        else
+          options[#options + 1] = { index = i, key = option.key, name = option.name,
+            edition = option.edition }
+        end
+      end
     end
     open = { key = sh.pack_open.pack_key, name = sh.pack_open.name, kind = sh.pack_open.kind,
       picks_left = sh.pack_open.picks_left, options = options }
+    if sh.pack_open.kind == "tech_evaluation" then
+      local by_uid = {}
+      for _, entry in ipairs(master_deck_view()) do by_uid[entry.uid] = entry end
+      local targets = {}
+      for _, entry in ipairs(Shop.tech_migration_targets()) do
+        if by_uid[entry.uid] then targets[#targets + 1] = by_uid[entry.uid] end
+      end
+      open.migration_target_uid = sh.pack_open.migration_target_uid
+      open.migration_targets = targets
+      open.error = sh.pack_open.error
+    end
   end
   return {
     founders = founders,
@@ -274,14 +340,42 @@ function Mimic.legal_actions()
   elseif state == G.STATES.SHOP then
     local sh = g.shop
     if sh and sh.pack_open then
-      local choices = {}
-      local can_pick = sh.pack_open.kind == "playbook"
-        or (sh.pack_open.kind == "tech_law" and #(g.consumables or {}) < (g.consumable_slots or 2))
-        or (sh.pack_open.kind == "hiring" and #((G.jokers and G.jokers.cards) or {}) < Shop.founder_cap())
-      if can_pick then
-        for i, option in ipairs(sh.pack_open.options or {}) do if option then choices[#choices + 1] = i end end
+      if sh.pack_open.kind == "tech_evaluation" then
+        local adopt_choices, migrate_choices = {}, {}
+        local targets = Shop.tech_migration_targets()
+        for i, option in ipairs(sh.pack_open.options or {}) do
+          if option then
+            if Deck.can_add(g.master_deck, option, g.market) then adopt_choices[#adopt_choices + 1] = i end
+            for _, target in ipairs(targets) do
+              if TechEvaluation.count(g, option.key, target.uid)
+                  < TechEvaluation.copy_cap(option, g) then
+                migrate_choices[#migrate_choices + 1] = {
+                  index = i, target_uid = target.uid,
+                  option_key = option.key, target_key = target.center_key,
+                }
+              end
+            end
+          end
+        end
+        if #adopt_choices > 0 then
+          add_action(out, "adopt_pack_option", { index = "integer" }, adopt_choices)
+          add_action(out, "pick_pack_option", { index = "integer" }, adopt_choices,
+            "legacy alias for Adopt")
+        end
+        if #migrate_choices > 0 then
+          add_action(out, "migrate_pack_option",
+            { index = "integer", target_uid = "integer" }, migrate_choices)
+        end
+      else
+        local choices = {}
+        local can_pick = sh.pack_open.kind == "playbook"
+          or (sh.pack_open.kind == "tech_law" and #(g.consumables or {}) < (g.consumable_slots or 2))
+          or (sh.pack_open.kind == "hiring" and #((G.jokers and G.jokers.cards) or {}) < Shop.founder_cap())
+        if can_pick then
+          for i, option in ipairs(sh.pack_open.options or {}) do if option then choices[#choices + 1] = i end end
+        end
+        if #choices > 0 then add_action(out, "pick_pack_option", { index = "integer" }, choices) end
       end
-      if #choices > 0 then add_action(out, "pick_pack_option", { index = "integer" }, choices) end
       add_action(out, "skip_pack")
     else
       for i, offer in ipairs((sh and sh.founders) or {}) do
@@ -524,6 +618,21 @@ local function dispatch(action)
   elseif id == "pick_pack_option" then
     local i, err = index_arg(action, g.shop and g.shop.pack_open and g.shop.pack_open.options); if not i then return nil, err end
     return Shop.pack_pick(i) and true or nil, "pack pick failed"
+  elseif id == "adopt_pack_option" then
+    local po = g.shop and g.shop.pack_open
+    if not (po and po.kind == "tech_evaluation") then return nil, "Tech Evaluation is not open" end
+    local i, err = index_arg(action, po.options); if not i then return nil, err end
+    local accepted, reason = Shop.pack_adopt(i)
+    return accepted and true or nil, reason or "Tech adoption failed"
+  elseif id == "migrate_pack_option" then
+    local po = g.shop and g.shop.pack_open
+    if not (po and po.kind == "tech_evaluation") then return nil, "Tech Evaluation is not open" end
+    local i, err = index_arg(action, po.options); if not i then return nil, err end
+    if type(action.target_uid) ~= "number" or action.target_uid % 1 ~= 0 then
+      return nil, "invalid migration target uid"
+    end
+    local accepted, reason = Shop.pack_migrate(i, action.target_uid)
+    return accepted and true or nil, reason or "Tech migration failed"
   elseif id == "skip_pack" then Shop.pack_skip(); return true
   elseif id == "leave_shop" then G.FUNCS.shop_continue(); return true end
   return nil, "unknown action"

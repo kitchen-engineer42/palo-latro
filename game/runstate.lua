@@ -119,7 +119,7 @@ function RunState.new(opts)
   opts = opts or {}
   G.GAME = {
     -- RUN scope ----------------------------------------------------------------
-    seed = opts.seed or tostring(os.time()), rng_streams = {}, ruleset_version = 2,
+    seed = opts.seed or tostring(os.time()), rng_streams = {}, ruleset_version = MarketRules.ruleset_version,
     ante = 1, era = 1, _bid = 0, _aid = 0,
     round_num = 0, ships_this_run = 0,
     cash = opts.cash or 4,
@@ -167,7 +167,10 @@ function RunState.new(opts)
   G.GAME.market_choices = Markets.offers(3, RNG.fn("market"))
   if opts.market_id then
     local market = Markets.by_id(opts.market_id)
-    if market then Markets.select(G.GAME, market, { initial = true }) end
+    if market then
+      Markets.select(G.GAME, market, { initial = true })
+      G.GAME.era = Eras.for_ante(MarketRules.for_market(market), G.GAME.ante)
+    end
   end
 end
 

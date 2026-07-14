@@ -1,5 +1,5 @@
 // background.glsl — Palo Latro animated backdrop (P4 shine).
-// CLEAN-ROOM (ADR-0006): our OWN swirl field — NOT a copy of Balatro's background.fs. A slow painterly
+// CLEAN-ROOM: our OWN swirl field — NOT a copy of Balatro's background.fs. A slow painterly
 // vortex that lerps between three muted market tints, drawn as one fullscreen quad in WINDOW space
 // (before the virtual scale transform) so it fills the whole window including the letterbox surround.
 extern number time;        // wall-clock seconds (G.TIMERS.BACKGROUND)

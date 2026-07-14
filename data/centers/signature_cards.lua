@@ -29,6 +29,6 @@ return {
     hamster_mult = 8,           -- Hamster: flat +rev/user (+mult)
     signature = true,           -- excluded from the normal deck build; only present while she's employed
     eras = { "E1", "E2", "E3", "E4", "E5" },
-    desc = "John writes the JIT schema: clears all clashes, fills 2 layers, grows with kitchen-engineer42.",
+    desc = "The harness writes the JIT schema: clears all clashes, fills 2 layers, grows with its paired Founder.",
   },
 }

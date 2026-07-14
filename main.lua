@@ -88,11 +88,15 @@ function love.load()
   elseif os.getenv("PL_AUTORUN") then                         -- dev: skip the menu, jump into a run at stake N
     Round.start_run({ stake = tonumber(os.getenv("PL_AUTORUN")) or 1,
       market_id = os.getenv("PL_MARKET") or "indie-saas" })
+    if os.getenv("PL_ERA") then G.GAME.era = tonumber(os.getenv("PL_ERA")) or G.GAME.era end
     if os.getenv("PL_PLAY") and G.FUNCS.play_blind then G.FUNCS.play_blind() end   -- + deal into the play screen
     if os.getenv("PL_SHOP") then
       local PreviewShop = require("game.shop")
       PreviewShop.enter(); StateMachine.set_state(G.STATES.SHOP)
       if os.getenv("PL_PACK_PREVIEW") then
+        local preview_key = os.getenv("PL_PACK_PREVIEW")
+        local preview_pack = require("game.packs").get(preview_key)
+        if preview_pack then G.GAME.shop.packs[1] = preview_pack end
         G.GAME.cash = math.max(G.GAME.cash or 0, PreviewShop.pack_price(1))
         PreviewShop.open_pack(1)
       end

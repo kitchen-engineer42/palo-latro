@@ -186,7 +186,7 @@ function Scoring.evaluate_ship(played)
 
   -- compatibility (E3): count clashes (utility founders clear them in the `before` pass) + accrue tech-debt
   G.GAME._clashes_active = #Compat.clashes(played)
-  for _, c in ipairs(played) do                                  -- John's JIT schema clears ALL clashes
+  for _, c in ipairs(played) do                                  -- the signature JIT schema clears ALL clashes
     if c.center and c.center.clears_clash then G.GAME._clashes_active = 0; break end
   end
   local subs = #Compat.substitutes(played)
@@ -282,13 +282,13 @@ function Scoring.evaluate_ship(played)
   ScoreTrace.capture(G.GAME.score_trace, "founders", { chips = S.chips, mult = S.mult })
   if S.mult ~= G.GAME.score.mult then juice("mult", S.mult, 0.14) end
 
-  -- Jo-harness-burg (John) — when in the built hand he grows WITH kitchen-engineer42, but
+  -- Jo-harness-burg — when in the built hand it grows with its paired Founder, but
   -- ADDITIVELY (never a 2nd ×engine), plus Hamster flat +rev/user. Polynomial, not exponential.
-  local john
-  for _, c in ipairs(played) do if c.center_key == "t_joharness-burg" then john = c; break end end
-  if john then
-    local john_before = score_snap(S)
-    local add = john.center.hamster_mult or 0                  -- Hamster flat +mult
+  local signature_tech
+  for _, c in ipairs(played) do if c.center_key == "t_joharness-burg" then signature_tech = c; break end end
+  if signature_tech then
+    local signature_before = score_snap(S)
+    local add = signature_tech.center.hamster_mult or 0        -- Hamster flat +mult
     for _, jk in ipairs(G.jokers.cards) do
       if jk.center_key == "f_kitchen-engineer42" then
         local k = math.max(0, (G.GAME.ante or 1) - ((jk.ability.config or {})._hire_ante or G.GAME.ante or 1))
@@ -297,7 +297,7 @@ function Scoring.evaluate_ship(played)
       end
     end
     if add > 0 then
-      S.mult = S.mult + add; queue_score_feedback(john, "Jo-harness-burg", john_before, score_snap(S), "score_system", G.C.arr)
+      S.mult = S.mult + add; queue_score_feedback(signature_tech, "Jo-harness-burg", signature_before, score_snap(S), "score_system", G.C.arr)
       juice("mult", S.mult, 0.12)
     end
   end

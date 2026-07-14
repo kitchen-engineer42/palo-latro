@@ -15,6 +15,7 @@ local Eras = require("game.eras")
 local RNG = require("game.rng")
 local Profile = require("game.profile")
 local Guidance = require("game.guidance")
+local TechLifecycle = require("game.tech_lifecycle")
 
 local Round = {}
 
@@ -94,16 +95,20 @@ function G.GENERATE(kind, opts)
     end
     if #cands > 0 then
       local c = cands[RNG.int("generation", #cands)]
-      local e = Round.master_add(c.key)                                  -- A3: persist into master_deck
-      G.deck:emplace(Card({ center = c, face_down = true, uid = e and e.uid, T = { x = G.deck.T.x, y = G.deck.T.y } }))
+      local e = Round.master_add(c.key, { source = "generated" })         -- A3: persist into master_deck
+      G.deck:emplace(Card({ center = c, face_down = true, uid = e and e.uid,
+        source = e and e.source, acquired_ante = e and e.acquired_ante,
+        migrated_from = e and e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
     end
-  elseif kind == "specific_tech_card" and opts.key and G.deck then       -- inject John on hire
+  elseif kind == "specific_tech_card" and opts.key and G.deck then       -- inject a signature Tech on hire
     local ce = Centers.get(opts.key)
     if ce then
-      local e = Round.master_add(opts.key)                               -- A3: John now persists across blinds while hired
-      G.deck:emplace(Card({ center = ce, face_down = true, uid = e and e.uid, T = { x = G.deck.T.x, y = G.deck.T.y } }))
+      local e = Round.master_add(opts.key, { source = "generated" })      -- A3: signature Tech persists while hired
+      G.deck:emplace(Card({ center = ce, face_down = true, uid = e and e.uid,
+        source = e and e.source, acquired_ante = e and e.acquired_ante,
+        migrated_from = e and e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
     end
-  elseif kind == "remove_tech_card" and opts.key then                    -- delete John on fire
+  elseif kind == "remove_tech_card" and opts.key then                    -- delete the signature Tech on fire
     Round.master_remove_key(opts.key)                                    -- A3: drop from the deck-of-record too
     for _, area in ipairs({ G.deck, G.hand, G.play }) do
       if area and area.cards then
@@ -118,29 +123,32 @@ function G.GENERATE(kind, opts)
     local t
     for _, c in ipairs(G.deck.cards) do
       if not t then t = c
-      elseif opts.which == "highest" and (c.base_users or 0) > (t.base_users or 0) then t = c
-      elseif opts.which ~= "highest" and (c.base_users or 0) < (t.base_users or 0) then t = c end  -- default: lowest
+      elseif opts.which == "highest" and c:get_users() > t:get_users() then t = c
+      elseif opts.which ~= "highest" and c:get_users() < t:get_users() then t = c end -- default: lowest effective Users
     end
     if t then Round.master_remove_uid(t.uid); G.deck:remove_card(t, true); if t.remove then t:remove() end end
   elseif kind == "copy_card" and G.deck then                             -- 1.5c: duplicate one DECK card (by `which`)
     local src
     for _, c in ipairs(G.deck.cards) do
       if not src then src = c
-      elseif opts.which == "highest" and (c.base_users or 0) > (src.base_users or 0) then src = c
-      elseif opts.which ~= "highest" and (c.base_users or 0) < (src.base_users or 0) then src = c end  -- default: cheapest
+      elseif opts.which == "highest" and c:get_users() > src:get_users() then src = c
+      elseif opts.which == "cheapest" and (c.base_users or 0) < (src.base_users or 0) then src = c
+      elseif opts.which ~= "highest" and opts.which ~= "cheapest" and c:get_users() < src:get_users() then src = c end
     end
     if src and src.center then
-      local e = Round.master_add(src.center_key or src.center.key)       -- A3: the copy persists too
-      G.deck:emplace(Card({ center = src.center, face_down = true, uid = e and e.uid, T = { x = G.deck.T.x, y = G.deck.T.y } }))
+      local e = Round.master_add(src.center_key or src.center.key, { source = "copied" }) -- A3: the copy persists too
+      G.deck:emplace(Card({ center = src.center, face_down = true, uid = e and e.uid,
+        source = e and e.source, acquired_ante = e and e.acquired_ante,
+        migrated_from = e and e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
     end
   end
   -- founder_shop: the shop module is a later seam
 end
 
 -- Track C A1: the run owns a persistent deck-of-record (master_deck). Seed it once from the TechCard pool
--- (skip `signature` — John is injected on hire), assigning a stable uid per entry. Plain data → serializable.
-function Round.next_uid()
-  local g = G.GAME
+-- (signature Tech is injected by its owning effect), assigning a stable uid per entry. Plain data → serializable.
+function Round.next_uid(game)
+  local g = game or G.GAME
   g._deck_uid = (g._deck_uid or 0) + 1
   return g._deck_uid
 end
@@ -152,14 +160,18 @@ function Round.seed_master_deck()
   local starters = Deck.starter_centers(Centers.pool("TechCard"), g.market, g.era, RNG.fn("deck_build"))
   for _, center in ipairs(starters) do
     if not center.signature then
-      g.master_deck[#g.master_deck + 1] = {
+      local entry = {
         uid = Round.next_uid(), center_key = center.key,
         edition = nil, seal = nil, enh = nil, config = {},
       }
+      TechLifecycle.acquire(entry, { source = "starter", acquired_ante = g.ante })
+      g.master_deck[#g.master_deck + 1] = entry
     end
   end
   g._deck_seeded = true
-  assert(Deck.validate(g.master_deck, 40))
+  local rules = require("data.gameplay.market_rules").for_market(g.market)
+  local valid, reason = Deck.validate(g.master_deck, rules.starter_size)
+  assert(valid, reason)
   local discovered = {}
   for _, entry in ipairs(g.master_deck) do discovered[#discovered + 1] = entry.center_key end
   Profile.discover_many(discovered)
@@ -196,7 +208,7 @@ function Round.choose_tech(index)
   if not key then return false end
   local seal
   if RNG.value("modifier") < 0.03 then seal = (RNG.value("modifier") < 0.5) and "reusable" or "monetized" end
-  Round.master_add(key, { seal = seal })
+  Round.master_add(key, { seal = seal, source = "boss_draft" })
   Profile.discover(key)
   G.GAME.tech_drafts_taken = (G.GAME.tech_drafts_taken or 0) + 1
   G.GAME.tech_draft = nil
@@ -207,14 +219,19 @@ end
 
 -- Track C A3: the SINGLE mutation path into master_deck (so deck changes persist across blinds). All deck
 -- adds/removes funnel through these; no direct table.insert into master_deck elsewhere. No-op headless.
-function Round.master_add(center_key, props)
-  local g = G.GAME
+function Round.master_add(center_key, props, game)
+  local g = game or G.GAME
   if not (g and g.master_deck) then return nil end
   props = props or {}
-  local e = { uid = Round.next_uid(), center_key = center_key,
+  local e = { uid = Round.next_uid(g), center_key = center_key,
               edition = props.edition, seal = props.seal, enh = props.enh,
               stickers = props.stickers, layer_override = props.layer_override,
               config = props.config or {} }
+  TechLifecycle.acquire(e, {
+    source = props.source or "generated",
+    acquired_ante = props.acquired_ante or g.ante,
+    migrated_from = props.migrated_from,
+  })
   g.master_deck[#g.master_deck + 1] = e
   return e
 end
@@ -227,7 +244,7 @@ function Round.master_remove_uid(uid)
   end
 end
 
-function Round.master_remove_key(key)            -- remove ALL entries of a center (e.g. John on fire)
+function Round.master_remove_key(key)            -- remove ALL entries of a center (e.g. a fired signature Tech)
   local g = G.GAME
   if not (g and g.master_deck) then return end
   for i = #g.master_deck, 1, -1 do
@@ -245,7 +262,9 @@ function Round.build_deck()
   for _, entry in ipairs((G.GAME and G.GAME.master_deck) or {}) do
     local center = Centers.get(entry.center_key)
     if center then
-      local c = Card({ center = center, face_down = true, uid = entry.uid, T = { x = G.deck.T.x, y = G.deck.T.y } })
+      local c = Card({ center = center, face_down = true, uid = entry.uid,
+        source = entry.source, acquired_ante = entry.acquired_ante, migrated_from = entry.migrated_from,
+        T = { x = G.deck.T.x, y = G.deck.T.y } })
       c.edition, c.seal, c.enh = entry.edition, entry.seal, entry.enh
       c.stickers = entry.stickers and deep_copy(entry.stickers) or nil   -- Track C: consumable card-stat stickers
       c.layer_override = entry.layer_override                            -- Track C: set_layer override

@@ -241,6 +241,18 @@ G.FUNCS.pack_pick_2 = function() if G.STATE == S.SHOP then Shop.pack_pick(2) end
 G.FUNCS.pack_pick_3 = function() if G.STATE == S.SHOP then Shop.pack_pick(3) end end
 G.FUNCS.pack_pick_4 = function() if G.STATE == S.SHOP then Shop.pack_pick(4) end end
 G.FUNCS.pack_pick_5 = function() if G.STATE == S.SHOP then Shop.pack_pick(5) end end
+G.FUNCS.pack_adopt_1 = function() if G.STATE == S.SHOP then Shop.pack_adopt(1) end end
+G.FUNCS.pack_adopt_2 = function() if G.STATE == S.SHOP then Shop.pack_adopt(2) end end
+G.FUNCS.pack_adopt_3 = function() if G.STATE == S.SHOP then Shop.pack_adopt(3) end end
+G.FUNCS.pack_adopt_4 = function() if G.STATE == S.SHOP then Shop.pack_adopt(4) end end
+G.FUNCS.pack_adopt_5 = function() if G.STATE == S.SHOP then Shop.pack_adopt(5) end end
+G.FUNCS.pack_migrate_1 = function() if G.STATE == S.SHOP then Shop.pack_migrate(1) end end
+G.FUNCS.pack_migrate_2 = function() if G.STATE == S.SHOP then Shop.pack_migrate(2) end end
+G.FUNCS.pack_migrate_3 = function() if G.STATE == S.SHOP then Shop.pack_migrate(3) end end
+G.FUNCS.pack_migrate_4 = function() if G.STATE == S.SHOP then Shop.pack_migrate(4) end end
+G.FUNCS.pack_migrate_5 = function() if G.STATE == S.SHOP then Shop.pack_migrate(5) end end
+G.FUNCS.pack_target_prev = function() if G.STATE == S.SHOP then Shop.pack_cycle_migration_target(-1) end end
+G.FUNCS.pack_target_next = function() if G.STATE == S.SHOP then Shop.pack_cycle_migration_target(1) end end
 G.FUNCS.pack_skip = function() if G.STATE == S.SHOP then Shop.pack_skip() end end
 G.FUNCS.pack_locked = function() end -- modal ceremony consumes clicks until the last card is revealed
 G.FUNCS.shop_continue = function()
