@@ -29,6 +29,32 @@ local function roadmap_pack(kind)
   return kind == "tech_law" or kind == "moonshot"
 end
 
+-- One geometry projection feeds retained input targets and the immediate-mode
+-- term sheet. The modal deliberately starts to the right of the 332px run rail.
+local function founder_negotiation_geometry(W, H, view)
+  local play_x, pad = 332, 28
+  local panel = { x = play_x + pad, y = 86, w = W - play_x - pad * 2, h = H - 132 }
+  local content_x = panel.x + 238
+  local content_w = panel.w - 266
+  local geometry = {
+    panel = panel,
+    portrait = { x = panel.x + 30, y = panel.y + 116, w = 178, h = 228 },
+    prompt = { x = content_x, y = panel.y + 116, w = content_w, h = 92 },
+    standard = { x = content_x, y = panel.y + panel.h - 62, w = 260, h = 40 },
+    walk = { x = content_x + content_w - 184, y = panel.y + panel.h - 62, w = 184, h = 40 },
+    choices = {},
+  }
+  if view and view.phase == "question" then
+    for i = 1, 3 do
+      geometry.choices[i] = { x = content_x, y = panel.y + 226 + (i - 1) * 70,
+        w = content_w, h = 56 }
+    end
+  else
+    geometry.continue = { x = content_x, y = panel.y + 486, w = content_w, h = 48 }
+  end
+  return geometry
+end
+
 local function lead_state(game)
   local view = Leads.view(game)
   return type(view) == "table" and view or { offers = {}, pending = {}, history = {}, can_skip = false }
@@ -328,6 +354,19 @@ function UI.prepare()
   elseif G.STATE == G.STATES.SHOP and GAME then
     add_left_rail()
     local sh = GAME.shop or { founders = {} }
+    local negotiation = Shop.negotiation_view()
+    if negotiation then
+      local ng = founder_negotiation_geometry(W, H, negotiation)
+      if negotiation.phase == "question" then
+        for i = 1, #(negotiation.question and negotiation.question.choices or {}) do
+          add("founder_negotiation_answer_" .. i, ng.choices[i], true, "negotiation", 60)
+        end
+      elseif negotiation.phase == "feedback" then
+        add("founder_negotiation_continue", ng.continue, true, "negotiation", 60)
+      end
+      add("founder_negotiation_standard_terms", ng.standard, true, "negotiation", 60)
+      add("founder_negotiation_walk_away", ng.walk, true, "negotiation", 60)
+    else
     local founder = selected(G.jokers)
     if founder and founder.center then
       add("fire", { x = founder.VT.x + (founder.VT.w - 100) / 2,
@@ -411,6 +450,7 @@ function UI.prepare()
         add("shop_open_pack_" .. i, { x = px0 + (i - 1) * (pw + 24), y = py, w = pw, h = 44 },
           pack and (price == 0 or (GAME.cash or 0) >= price))
       end
+    end
     end
   elseif GAME then
     add_left_rail()
@@ -1234,6 +1274,81 @@ end
 
 -- the between-blinds SHOP screen: founder offers + reroll + continue. Immediate-mode;
 -- offer panels are drawn from center data (no Card objects to manage). Buttons → G.FUNCS.shop_*.
+local function draw_founder_negotiation(W, H, view, mx, my)
+  local ng = founder_negotiation_geometry(W, H, view)
+  local p = ng.panel
+  lg.setColor(0, 0, 0, 0.68)
+  lg.rectangle("fill", 332, 0, W - 332, H)
+  pixel_rect(p.x, p.y, p.w, p.h, { 0.055, 0.075, 0.11, 0.99 },
+    { chamfer = 8, border = G.C.arr, line_w = 3, shadow = true, soy = 6 })
+
+  local center = Centers.get(view.center_key)
+  local founder_name = (view.founder and view.founder.name)
+    or (center and center.name) or "Legendary Founder"
+  UI.text(G.FONTS.tiny, "LEGENDARY FOUNDER · TERM SHEET", p.x + 24, p.y + 18,
+    G.C.arr, p.w - 48, "center")
+  UI.text(G.FONTS.big, founder_name, p.x + 24, p.y + 44, G.C.text, p.w - 48, "center")
+  UI.text(G.FONTS.small, ("ROUND %d/%d   ·   RAPPORT %d/6   ·   SALARY $%d  (BASE $%d)"):format(
+      view.round or 1, view.rounds or 3, view.rapport or 0,
+      view.projected_salary or view.base_salary or 0, view.base_salary or 0),
+    p.x + 24, p.y + 82, G.C.win, p.w - 48, "center")
+  UI.text(G.FONTS.tiny, "PITCH LOCKED  ·  WALK AWAY FORFEITS THE OPEN PACK",
+    p.x + 24, p.y + 104, G.C.text_dim, p.w - 48, "center")
+
+  if center then
+    local preview = { ability = { config = { _salary = view.projected_salary } } }
+    Card.draw_founder_face(ng.portrait, center,
+      { card = preview, border = G.C.arr, line_w = 3 })
+  end
+  UI.text(G.FONTS.tiny, "YOUR NOTES", ng.portrait.x, ng.portrait.y + ng.portrait.h + 18,
+    G.C.text_dim, ng.portrait.w, "center")
+  local notes_y = ng.portrait.y + ng.portrait.h + 42
+  for i, answer in ipairs(view.answers or {}) do
+    local note = ("R%d  +%d rapport  ·  %s"):format(i, answer.rapport_delta or 0,
+      tostring(answer.text or ""))
+    UI.text(G.FONTS.tiny, note, ng.portrait.x, notes_y + (i - 1) * 48,
+      G.C.text_dim, ng.portrait.w, "left")
+  end
+
+  local question = view.question or {}
+  UI.text(G.FONTS.small, question.prompt or "", ng.prompt.x, ng.prompt.y,
+    G.C.text, ng.prompt.w, "left")
+  if view.phase == "question" then
+    for i, choice in ipairs(question.choices or {}) do
+      local r = ng.choices[i]
+      UI.rects["founder_negotiation_answer_" .. i] = r
+      draw_button(r, choice.text or ("Answer " .. i), true,
+        point_in_rect(mx, my, r.x, r.y, r.w, r.h), G.FONTS.small)
+    end
+  elseif view.phase == "feedback" and view.feedback then
+    local feedback = view.feedback
+    local answer = view.answers and view.answers[#view.answers]
+    UI.text(G.FONTS.tiny, "YOU PITCHED", ng.prompt.x, p.y + 224, G.C.text_dim, ng.prompt.w, "left")
+    UI.text(G.FONTS.small, answer and answer.text or "", ng.prompt.x, p.y + 248,
+      G.C.text, ng.prompt.w, "left")
+    UI.text(G.FONTS.tiny, ("RAPPORT +%d  ·  PROJECTED SALARY $%d"):format(
+        feedback.rapport_delta or 0, view.projected_salary or view.base_salary or 0),
+      ng.prompt.x, p.y + 310, G.C.win, ng.prompt.w, "left")
+    UI.text(G.FONTS.small, feedback.reply or "", ng.prompt.x, p.y + 344,
+      G.C.arr, ng.prompt.w, "left")
+    pixel_rect(ng.prompt.x, p.y + 402, ng.prompt.w, 88, { 0.08, 0.10, 0.14, 0.98 },
+      { chamfer = 4, border = G.C.border, line_w = 1, shadow = false })
+    UI.text(G.FONTS.tiny, "CONTEXT  ·  " .. tostring(feedback.fact or ""),
+      ng.prompt.x + 12, p.y + 416, G.C.text_dim, ng.prompt.w - 24, "left")
+    UI.rects.founder_negotiation_continue = ng.continue
+    draw_button(ng.continue,
+      (view.round or 1) >= (view.rounds or 3) and "Sign negotiated terms" or "Continue the pitch",
+      true, point_in_rect(mx, my, ng.continue.x, ng.continue.y, ng.continue.w, ng.continue.h))
+  end
+
+  UI.rects.founder_negotiation_standard_terms = ng.standard
+  UI.rects.founder_negotiation_walk_away = ng.walk
+  draw_button(ng.standard, "Accept standard terms  ·  $" .. tostring(view.base_salary or 0), true,
+    point_in_rect(mx, my, ng.standard.x, ng.standard.y, ng.standard.w, ng.standard.h), G.FONTS.tiny)
+  draw_button(ng.walk, "Walk away", true,
+    point_in_rect(mx, my, ng.walk.x, ng.walk.y, ng.walk.w, ng.walk.h), G.FONTS.tiny)
+end
+
 function UI.render_shop(W, H, GAME)
   local mx, my = cursor()
   UI.left_panel(GAME, true)                              -- same left counter rail as play, with a SHOP badge
@@ -1243,6 +1358,11 @@ function UI.render_shop(W, H, GAME)
     G.jokers and G.jokers.T.x or 352, (G.jokers and G.jokers.T.y or 24) - 24, G.C.text_dim)
 
   local sh = GAME.shop or { founders = {} }
+  local negotiation = Shop.negotiation_view()
+  if negotiation then
+    draw_founder_negotiation(W, H, negotiation, mx, my)
+    return
+  end
 
   local selC
   for _, c in ipairs((G.consumables and G.consumables.cards) or {}) do if c.selected then selC = c; break end end
@@ -1398,7 +1518,10 @@ function UI.render_shop(W, H, GAME)
             local can_pick = po.kind == "playbook" or
               (roadmap_pack(po.kind) and #(GAME.consumables or {}) < (GAME.consumable_slots or 2)) or
               (po.kind == "hiring" and #G.jokers.cards < Shop.founder_cap())
-            draw_button(r, "Pick", can_pick,
+            local pick_label = po.kind == "hiring"
+              and (c.center or c).rarity == "Legendary" and not (c.center or c).signature
+              and "Pitch" or "Pick"
+            draw_button(r, pick_label, can_pick,
               point_in_rect(mx, my, r.x, r.y, r.w, r.h))
           end
           if hov then hc, hx, hy = c, x + cw + 10, y0 end

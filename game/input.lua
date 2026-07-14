@@ -79,6 +79,12 @@ local function pack_open()
     and g.GAME and g.GAME.shop and g.GAME.shop.pack_open or nil
 end
 
+local function founder_negotiation_open()
+  local g = game()
+  return g and g.STATES and g.STATE == g.STATES.SHOP
+    and g.GAME and g.GAME.shop and g.GAME.shop.founder_negotiation ~= nil
+end
+
 local function pulse(card, amount)
   if card and card.juice_up then card:juice_up(amount or 0.3) end
   Audio.play("select", nil, 0.5)
@@ -118,6 +124,7 @@ end
 function Input:_modal_scope()
   if overlay_open() then return "overlay" end
   if state_is("TARGET_SELECT") then return "target" end
+  if founder_negotiation_open() then return "negotiation" end
   if pack_open() then return "pack" end
   return nil
 end
@@ -132,6 +139,7 @@ function Input:_scope_for_action(action, supplied)
   if supplied ~= nil then return supplied end
   if action and action:match("^opt_") then return "overlay" end
   if action and action:match("^pick_layer_") then return "target" end
+  if action and action:match("^founder_negotiation_") then return "negotiation" end
   if pack_open() and (action == "fire" or action:match("^pack_")) then return "pack" end
   return nil
 end

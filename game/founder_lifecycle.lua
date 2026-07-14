@@ -4,6 +4,13 @@ local Interp = require("game.effect_interp")
 
 local Lifecycle = {}
 
+local function copy(value)
+  if type(value) ~= "table" then return value end
+  local out = {}
+  for key, item in pairs(value) do out[key] = copy(item) end
+  return out
+end
+
 local function config(card)
   card.ability.config = card.ability.config or {}
   return card.ability.config
@@ -70,6 +77,8 @@ function Lifecycle.acquire(card, opts)
   cfg._hire_ante = (G.GAME and G.GAME.ante) or 1
   cfg._sell_basis = opts.sell_basis or 0
   cfg._source = opts.source or "unknown"
+  if opts.salary ~= nil then cfg._salary = math.max(1, math.floor(opts.salary + 0.5)) end
+  if opts.negotiation then cfg._negotiation = copy(opts.negotiation) end
   if opts.stake_mod then
     cfg._stake_mod = opts.stake_mod.kind
     if opts.stake_mod.kind == "unsellable" then cfg._unsellable = true end
@@ -89,8 +98,10 @@ end
 function Lifecycle.distill(card)
   local cfg = card and config(card)
   if not cfg or cfg._distilled then return false end
+  local current_salary = cfg._salary
+  if current_salary == nil then current_salary = (card.center and card.center.salary) or 2 end
   cfg._distilled = true
-  cfg._salary = math.max(1, math.floor(((card.center and card.center.salary) or 2) / 2))
+  cfg._salary = math.max(1, math.floor(current_salary / 2))
   cfg._effect_scale = 0.5
   return true
 end

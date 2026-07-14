@@ -293,7 +293,7 @@ local function merge(base, extra)
   return out
 end
 
-local M = { raw = RULES, ruleset_version = 5 }
+local M = { raw = RULES, ruleset_version = 6 }
 
 function M.for_market(market)
   local id = type(market) == "table" and market.id or market

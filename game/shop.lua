@@ -22,6 +22,8 @@ local Guidance = require("game.guidance")
 local Economy = require("game.economy")
 local TechLaws = require("game.tech_laws")
 local Moonshots = require("game.moonshots")
+local FounderNegotiation = require("game.founder_negotiation")
+local Markets = require("game.markets")
 local random = RNG.fn("shop")
 local pack_random = RNG.fn("packs")
 local pack_shop_random = RNG.fn("pack_shop")
@@ -32,6 +34,41 @@ local moonshot_special_random = RNG.fn("moonshot_special")
 local moonshot_payload_random = RNG.fn("moonshot_payload")
 
 local Shop = {}
+
+local function negotiation_pending()
+  return G.GAME and FounderNegotiation.normalize(G.GAME) ~= nil
+end
+
+local function mutation_blocked()
+  if negotiation_pending() then return true, "Founder negotiation pending" end
+  return false
+end
+
+local function effective_founder_cap(game)
+  local cap = game.founder_slots or 5
+  if game.pending_market then
+    cap = math.min(cap, Markets.destination_founder_cap(game, game.pending_market) or cap)
+  end
+  return cap
+end
+
+local function valid_remaining_picks(po)
+  if not (po and type(po.options) == "table") then return false end
+  local maximum = 0
+  for key in pairs(po.options) do
+    if type(key) ~= "number" or key ~= key or key == math.huge or key == -math.huge
+        or key % 1 ~= 0 or key < 1 then return false end
+    maximum = math.max(maximum, key)
+  end
+  local remaining = 0
+  for index = 1, maximum do
+    if po.options[index] == nil then return false end
+    if po.options[index] then remaining = remaining + 1 end
+  end
+  local picks = po.picks_left
+  return type(picks) == "number" and picks == picks and picks ~= math.huge
+    and picks ~= -math.huge and picks % 1 == 0 and picks >= 1 and picks <= remaining
+end
 
 -- cumulative rarity poll (Balatro 70/25/5); Legendary is excluded (spawn-only, via packs in P3).
 local POLL = { { r = "Common", c = 0.70 }, { r = "Uncommon", c = 0.95 }, { r = "Rare", c = 1.00 } }
@@ -105,6 +142,7 @@ local function roll_consumable()
 end
 
 function Shop.buy_consumable()
+  local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
   local c = sh and sh.consumable
   if not c then return false end
@@ -141,6 +179,7 @@ local function eligible(rarity, excluded)
       if in_era then out[#out + 1] = c end
     end
   end
+  table.sort(out, function(a, b) return a.key < b.key end)
   return out
 end
 
@@ -169,7 +208,7 @@ local function roll_one(excluded, rng)
 end
 
 function Shop.slots() return G.GAME.shop_founder_slots or 2 end
-function Shop.founder_cap() return G.GAME.founder_slots or 5 end
+function Shop.founder_cap() return effective_founder_cap(G.GAME) end
 
 -- (re)roll the whole founder offer row.
 local function roll_offers()
@@ -220,6 +259,7 @@ end
 
 -- redeem the offered voucher: pay, apply its run-modifier generically, mark owned (one-time).
 function Shop.redeem()
+  local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
   local v = sh and sh.voucher
   if not v then return false end
@@ -235,6 +275,7 @@ function Shop.redeem()
 end
 
 function Shop.reroll()
+  local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
   if not sh or (G.GAME.cash or 0) < sh.reroll_cost then return false end
   G.GAME.cash = G.GAME.cash - sh.reroll_cost
@@ -246,6 +287,7 @@ function Shop.reroll()
 end
 
 function Shop.buy(idx)
+  local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
   local offer = sh and sh.founders[idx]
   if not offer then return false end
@@ -287,7 +329,7 @@ function Shop.pack_price(definition)
 end
 function Shop.pack_slots() return G.GAME.shop_pack_slots or 2 end
 
-local function emplace_founder(c, sell_basis, edition, source_i, source_count)
+local function emplace_founder(c, sell_basis, edition, source_i, source_count, acquire_opts)
   local sx, sy = G.jokers.T.x, G.jokers.T.y
   if not G.SETTINGS.reduced_motion and source_i and source_count then
     local pick_w, gap = 160, 30
@@ -303,10 +345,15 @@ local function emplace_founder(c, sell_basis, edition, source_i, source_count)
   end
   if jk.juice_up then jk:juice_up(0.5) end                     -- the new hire pops as it joins the row
   maybe_edition(jk, edition)
-  Lifecycle.acquire(jk, { source = "pack", sell_basis = sell_basis or 0 })
+  acquire_opts = acquire_opts or {}
+  acquire_opts.source = acquire_opts.source or "pack"
+  acquire_opts.sell_basis = sell_basis or 0
+  Lifecycle.acquire(jk, acquire_opts)
+  return jk
 end
 
 function Shop.open_pack(idx)
+  local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
   if not sh or not sh.packs[idx] then return false end
   local definition = sh.packs[idx]
@@ -454,6 +501,7 @@ function Shop.tech_migration_targets()
 end
 
 function Shop.pack_set_migration_target(uid)
+  local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local po = G.GAME and G.GAME.shop and G.GAME.shop.pack_open
   if not (po and po.kind == "tech_evaluation" and uid ~= nil) then return false end
   for _, entry in ipairs(TechEvaluation.deprecated_targets(G.GAME)) do
@@ -463,6 +511,7 @@ function Shop.pack_set_migration_target(uid)
 end
 
 function Shop.pack_cycle_migration_target(delta)
+  local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local po = G.GAME and G.GAME.shop and G.GAME.shop.pack_open
   if not (po and po.kind == "tech_evaluation") then return false end
   local targets = TechEvaluation.deprecated_targets(G.GAME)
@@ -476,6 +525,7 @@ function Shop.pack_cycle_migration_target(delta)
 end
 
 function Shop.pack_adopt(i)
+  local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME and G.GAME.shop
   local po = sh and sh.pack_open
   local option = po and po.kind == "tech_evaluation" and po.options[i]
@@ -488,6 +538,7 @@ function Shop.pack_adopt(i)
 end
 
 function Shop.pack_migrate(i, target_uid)
+  local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME and G.GAME.shop
   local po = sh and sh.pack_open
   local option = po and po.kind == "tech_evaluation" and po.options[i]
@@ -504,7 +555,73 @@ function Shop.pack_migrate(i, target_uid)
   return true
 end
 
+local function validate_legendary_pick(game, pending)
+  local sh = game and game.shop
+  local po = sh and sh.pack_open
+  if not (po and po.kind == "hiring" and valid_remaining_picks(po)) then
+    return nil, nil, "The Hiring Round is no longer available"
+  end
+  if pending and po.pack_key ~= pending.pack_key then
+    return nil, nil, "The selected Hiring Round is no longer available"
+  end
+  local index = pending and pending.option_index
+  local option = index and po.options[index]
+  if not option then return nil, nil, "The selected Founder option is no longer available" end
+  local offered = option.center or option
+  if type(offered) ~= "table" or type(offered.key) ~= "string"
+      or (option.key ~= nil and option.key ~= offered.key)
+      or (pending and pending.center_key ~= offered.key) then
+    return nil, nil, "The selected Founder option is malformed"
+  end
+  local center = Centers.get(offered.key)
+  if not (center and center.set == "Founder" and center.key == offered.key
+      and center.rarity == "Legendary" and center.unlocked ~= false and not center.signature) then
+    return nil, nil, "The selected Legendary Founder is unavailable"
+  end
+  if center.is_form and center.era_gate then
+    local ante = game.ante or 1
+    if ante < (center.era_gate.min or 1) or ante > (center.era_gate.max or 8) then
+      return nil, nil, "That Founder form is unavailable in this Era"
+    end
+  end
+  local script, resolved_key = FounderNegotiation.script_for(center)
+  if not script or (pending and pending.base_key ~= resolved_key) then
+    return nil, nil, "That Legendary Founder has no valid negotiation"
+  end
+  for _, owned in ipairs((G.jokers and G.jokers.cards) or {}) do
+    if owned.center_key == center.key then return nil, nil, "That Founder is already hired" end
+  end
+  if #((G.jokers and G.jokers.cards) or {}) >= effective_founder_cap(game) then
+    return nil, nil, "Founder slots are full"
+  end
+  return option, center
+end
+
+local function commit_legendary_pick()
+  local game, sh = G.GAME, G.GAME and G.GAME.shop
+  local pending = FounderNegotiation.normalize(game)
+  if not pending or pending.phase ~= "complete" then return false, "Negotiation is not complete" end
+  local option, center, reason = validate_legendary_pick(game, pending)
+  if not option then return false, reason end
+
+  local multiplier = pending.standard_terms and 1.0
+    or FounderNegotiation.salary_multiplier(pending.rapport)
+  local salary = math.max(1, math.floor(((center.salary or 1) * multiplier) + 0.5))
+  local audit = FounderNegotiation.audit(pending, salary, multiplier)
+  local po, index = sh.pack_open, pending.option_index
+  emplace_founder(center, 0, option.edition, index, #po.options, {
+    source = "pack",
+    salary = salary,
+    negotiation = audit,
+    stake_mod = option.stake_mod,
+  })
+  sh.founder_negotiation = nil
+  consume_pack_option(sh, po, index, option, "negotiate")
+  return true
+end
+
 function Shop.pack_pick(i)
+  local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
   local po = sh and sh.pack_open
   local c = po and po.options[i]
@@ -543,6 +660,22 @@ function Shop.pack_pick(i)
     Guidance.emit("pack_picked", { family = po.kind, key = c.key })
     return true
   end
+  local offered = c.center or c
+  local canonical_offer = type(offered) == "table" and Centers.get(offered.key) or nil
+  if po.kind == "hiring" and canonical_offer and canonical_offer.rarity == "Legendary"
+      and not canonical_offer.signature then
+    local option, center, pick_reason = validate_legendary_pick(G.GAME, {
+      option_index = i,
+      pack_key = po.pack_key,
+      center_key = canonical_offer.key,
+      base_key = canonical_offer.base_form or canonical_offer.key,
+    })
+    if not option then return false, pick_reason end
+    local pending, begin_reason = FounderNegotiation.begin(G.GAME, center, i)
+    if not pending then return false, begin_reason end
+    Audio.play("select", nil, 0.6)
+    return true, FounderNegotiation.view(G.GAME)
+  end
   if #G.jokers.cards >= Shop.founder_cap() then
     Guidance.emit("founder_slots_full", { slots = Shop.founder_cap() })
     return false
@@ -557,7 +690,56 @@ function Shop.pack_pick(i)
 end
 
 function Shop.pack_skip()
-  if G.GAME.shop then G.GAME.shop.pack_open = nil end           -- leave remaining picks (Balatro "Skip")
+  local blocked, reason = mutation_blocked(); if blocked then return false, reason end
+  if G.GAME.shop then G.GAME.shop.pack_open = nil; return true end -- leave remaining picks (Balatro "Skip")
+  return false
+end
+
+function Shop.negotiation_view()
+  return FounderNegotiation.view(G.GAME)
+end
+
+function Shop.negotiation_answer(choice)
+  return FounderNegotiation.answer(G.GAME, choice)
+end
+
+function Shop.negotiation_continue()
+  local pending = FounderNegotiation.normalize(G.GAME)
+  local previous_phase = pending and pending.phase
+  local ok, result = FounderNegotiation.continue(G.GAME)
+  if not ok then return false, result end
+  if result == "complete" then
+    local committed, reason = commit_legendary_pick()
+    if not committed and pending then pending.phase = previous_phase end
+    return committed, reason
+  end
+  Audio.play("select", nil, 0.5)
+  return true, result
+end
+
+function Shop.negotiation_standard_terms()
+  local pending = FounderNegotiation.normalize(G.GAME)
+  local previous_phase = pending and pending.phase
+  local ok, result = FounderNegotiation.accept_standard(G.GAME)
+  if not ok then return false, result end
+  local committed, reason = commit_legendary_pick()
+  if not committed and pending then
+    pending.phase, pending.standard_terms = previous_phase, nil
+  end
+  return committed, reason
+end
+
+function Shop.negotiation_walk_away()
+  local sh = G.GAME and G.GAME.shop
+  if not (sh and FounderNegotiation.normalize(G.GAME)) then return false, "No Founder negotiation is pending" end
+  sh.founder_negotiation = nil
+  sh.pack_open = nil -- walking away forfeits the whole paid pack, including Mega's remaining pick
+  Audio.play("fire", nil, 0.5)
+  return true
+end
+
+function Shop.negotiation_pending()
+  return negotiation_pending()
 end
 
 return Shop

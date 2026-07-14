@@ -323,6 +323,7 @@ local function shop_view()
       price = Shop.consumable_price(sh.consumable) } or nil,
     packs = packs,
     pack_open = open,
+    founder_negotiation = copy_plain(Shop.negotiation_view()),
   }
 end
 
@@ -471,8 +472,23 @@ function Mimic.legal_actions()
     add_raise_action(out, g)
   elseif state == G.STATES.SHOP then
     local sh = g.shop
-    add_consumable_actions(out, g)
-    if sh and sh.pack_open then
+    local negotiation = Shop.negotiation_view()
+    if negotiation then
+      if negotiation.phase == "question" then
+        local choices = {}
+        for _, choice in ipairs((negotiation.question and negotiation.question.choices) or {}) do
+          choices[#choices + 1] = { id = choice.id, text = choice.text }
+        end
+        add_action(out, "answer_founder_negotiation", { choice_id = "string" }, choices)
+      elseif negotiation.phase == "feedback" then
+        add_action(out, "continue_founder_negotiation")
+      end
+      add_action(out, "accept_standard_terms", {}, nil,
+        "hire now at base Salary $" .. tostring(negotiation.base_salary or 0))
+      add_action(out, "walk_away_from_negotiation", {}, nil,
+        "forfeit the entire open Hiring Round")
+    elseif sh and sh.pack_open then
+      add_consumable_actions(out, g)
       if sh.pack_open.kind == "tech_evaluation" then
         local adopt_choices, migrate_choices = {}, {}
         local targets = Shop.tech_migration_targets()
@@ -511,6 +527,7 @@ function Mimic.legal_actions()
       end
       add_action(out, "skip_pack")
     else
+      add_consumable_actions(out, g)
       for i, offer in ipairs((sh and sh.founders) or {}) do
         local price = offer and Shop.price(offer)
         if offer and #((G.jokers and G.jokers.cards) or {}) < Shop.founder_cap()
@@ -798,6 +815,19 @@ local function dispatch(action)
   elseif id == "pick_pack_option" then
     local i, err = index_arg(action, g.shop and g.shop.pack_open and g.shop.pack_open.options); if not i then return nil, err end
     return Shop.pack_pick(i) and true or nil, "pack pick failed"
+  elseif id == "answer_founder_negotiation" then
+    if type(action.choice_id) ~= "string" then return nil, "choice_id must be a string" end
+    local accepted, reason = Shop.negotiation_answer(action.choice_id)
+    return accepted and true or nil, reason or "Founder negotiation answer failed"
+  elseif id == "continue_founder_negotiation" then
+    local accepted, reason = Shop.negotiation_continue()
+    return accepted and true or nil, reason or "Founder negotiation continuation failed"
+  elseif id == "accept_standard_terms" then
+    local accepted, reason = Shop.negotiation_standard_terms()
+    return accepted and true or nil, reason or "Standard terms failed"
+  elseif id == "walk_away_from_negotiation" then
+    local accepted, reason = Shop.negotiation_walk_away()
+    return accepted and true or nil, reason or "Walk away failed"
   elseif id == "adopt_pack_option" then
     local po = g.shop and g.shop.pack_open
     if not (po and po.kind == "tech_evaluation") then return nil, "Tech Evaluation is not open" end
@@ -813,7 +843,9 @@ local function dispatch(action)
     end
     local accepted, reason = Shop.pack_migrate(i, action.target_uid)
     return accepted and true or nil, reason or "Tech migration failed"
-  elseif id == "skip_pack" then Shop.pack_skip(); return true
+  elseif id == "skip_pack" then
+    local skipped, reason = Shop.pack_skip()
+    return skipped and true or nil, reason or "pack skip failed"
   elseif id == "leave_shop" then G.FUNCS.shop_continue(); return true end
   return nil, "unknown action"
 end

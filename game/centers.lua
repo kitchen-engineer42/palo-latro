@@ -27,11 +27,13 @@ function Centers.load_all()
     signature_cards = require("data.centers.signature_cards"),
     vouchers = require("data.centers.vouchers"),
     consumables = require("data.gameplay.consumables"),
+    legendary_negotiations = require("data.gameplay.legendary_negotiations"),
     compat = require("data.centers.compat_gen"),
     markets = require("data.centers.markets_gen"),
   }
   Centers.content_report = ContentValidate.assert_catalog(content, {
-    minimums = { techcards = 226, founders = 262, forms = 17, tech_laws = 22, moonshots = 16 },
+    minimums = { techcards = 226, founders = 262, forms = 17, tech_laws = 22,
+      moonshots = 16, legendary_negotiations = 18 },
   })
 
   for _, c in ipairs(content.techcards) do Centers.register(c) end   -- 226 (bridge B1)

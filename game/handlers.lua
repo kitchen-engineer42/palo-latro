@@ -192,6 +192,7 @@ end
 G.FUNCS.raise = function()     -- a priced round — Cash now for equity dilution
   if (G.STATE ~= S.SELECTING_HAND and G.STATE ~= S.SHOP and G.STATE ~= S.TECH_DRAFT)
     or not G.GAME.raise_available then return end
+  if G.STATE == S.SHOP and Shop.negotiation_pending() then return end
   local equity_cost, cash_fraction = Economy.raise_terms(G.GAME)
   if (G.GAME.equity_pct or 0) <= equity_cost then return end
   G.GAME.valuation = G.GAME.run_best_arr or 0
@@ -238,6 +239,7 @@ end
 -- fire (sell/remove) the SELECTED founder — Balatro-style two-step (select -> Fire button -> confirm)
 G.FUNCS.fire = function()
   if G.STATE ~= S.SELECTING_HAND and G.STATE ~= S.SHOP then return end   -- sell mid-run OR in the shop (Balatro)
+  if G.STATE == S.SHOP and Shop.negotiation_pending() then return end
   if G.GAME.founders_locked then return end                  -- stake 4: Vesting Cliff (founders can't be fired)
   for i = #G.jokers.cards, 1, -1 do
     local c = G.jokers.cards[i]
@@ -279,8 +281,15 @@ G.FUNCS.pack_target_prev = function() if G.STATE == S.SHOP then Shop.pack_cycle_
 G.FUNCS.pack_target_next = function() if G.STATE == S.SHOP then Shop.pack_cycle_migration_target(1) end end
 G.FUNCS.pack_skip = function() if G.STATE == S.SHOP then Shop.pack_skip() end end
 G.FUNCS.pack_locked = function() end -- modal ceremony consumes clicks until the last card is revealed
+G.FUNCS.founder_negotiation_answer_1 = function() if G.STATE == S.SHOP then Shop.negotiation_answer(1) end end
+G.FUNCS.founder_negotiation_answer_2 = function() if G.STATE == S.SHOP then Shop.negotiation_answer(2) end end
+G.FUNCS.founder_negotiation_answer_3 = function() if G.STATE == S.SHOP then Shop.negotiation_answer(3) end end
+G.FUNCS.founder_negotiation_continue = function() if G.STATE == S.SHOP then Shop.negotiation_continue() end end
+G.FUNCS.founder_negotiation_standard_terms = function() if G.STATE == S.SHOP then Shop.negotiation_standard_terms() end end
+G.FUNCS.founder_negotiation_walk_away = function() if G.STATE == S.SHOP then Shop.negotiation_walk_away() end end
 G.FUNCS.shop_continue = function()
   if G.STATE ~= S.SHOP then return end
+  if Shop.negotiation_pending() then return end
   G.GAME.shop = nil
   StateMachine.set_state(S.BLIND_SELECT)                       -- preview the upcoming blind (P2); Play → play_blind
 end
@@ -334,6 +343,7 @@ end
 
 G.FUNCS.use_consumable = function()
   if G.STATE ~= S.SELECTING_HAND and G.STATE ~= S.SHOP then return end
+  if G.STATE == S.SHOP and Shop.negotiation_pending() then return end
   local return_state = G.STATE
   local c = selected_consumable(); if not c then return end
   local usable, reason = Consumables.can_use(c, G.GAME)
@@ -361,6 +371,7 @@ end
 
 G.FUNCS.sell_consumable = function()
   if G.STATE ~= S.SELECTING_HAND and G.STATE ~= S.SHOP then return end
+  if G.STATE == S.SHOP and Shop.negotiation_pending() then return end
   local c = selected_consumable(); if not c then return end
   Scoring.fire_hook("sell_consumable", { consumable = c.center })
   G.GAME.cash = (G.GAME.cash or 0) + Shop.consumable_sell_value(c)

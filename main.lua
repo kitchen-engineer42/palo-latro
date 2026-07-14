@@ -100,6 +100,18 @@ function love.load()
         G.GAME.cash = math.max(G.GAME.cash or 0, PreviewShop.pack_price(1))
         PreviewShop.open_pack(1)
       end
+      local negotiation_preview = os.getenv("PL_NEGOTIATION_PREVIEW")
+      if negotiation_preview then
+        local founder = Centers.get(negotiation_preview)
+        if founder and founder.set == "Founder" and founder.rarity == "Legendary"
+            and not founder.signature then
+          G.GAME.shop.pack_open = { kind = "hiring", name = "Legendary Hiring Round",
+            pack_key = "preview_legendary", options = { founder }, picks_left = 1 }
+          PreviewShop.pack_pick(1)
+          local preview_answer = tonumber(os.getenv("PL_NEGOTIATION_ANSWER"))
+          if preview_answer then PreviewShop.negotiation_answer(preview_answer) end
+        end
+      end
     end  -- jump to shop; optionally start its pack ceremony for screenshot review
     local law_preview = os.getenv("PL_LAWS")
     if law_preview and G.consumables then                          -- dev: grant comma-separated Laws for GUI review

@@ -174,6 +174,7 @@ function RunState.new(opts)
     maturity_rung = 1, leverage_mult = 1,
     equity_pct = 100, valuation = 0, ipo_value = 0, automated_founders = {}, raises_taken = 0, last_raise_ante = 0,
     founder_next_id = 0,
+    founder_negotiation_seen = {}, founder_negotiation_next_id = 0,
     app_levels = {}, tech_drafts_taken = 0,
     -- BLIND / ROUND scope (filled by set_blind / scoring) --------------------
     blind = nil, blind_idx = 1,
@@ -222,6 +223,7 @@ end
 function RunState.serialize()
   local g, out = G.GAME, {}
   require("game.founder_lifecycle").normalize_ids(g)
+  require("game.founder_negotiation").normalize(g)
   TechLaws.normalize(g)
   normalize_moonshot_state(g)
   Consumables.normalize(g)
@@ -252,6 +254,7 @@ function RunState.deserialize(t)
   TechLaws.normalize(G.GAME)
   normalize_moonshot_state(G.GAME)
   Consumables.normalize(G.GAME)
+  require("game.founder_negotiation").normalize(G.GAME)
   require("game.founder_lifecycle").normalize_ids(G.GAME)
   if G.consumables then Consumables.rehydrate(G.GAME) end
 end

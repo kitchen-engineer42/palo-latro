@@ -596,6 +596,122 @@ local function validate_moonshots(list, r)
   end
 end
 
+local function bounded_text(value, path, r, maximum)
+  if not text(value) then add(r, path, "must be non-empty text"); return false end
+  if #value > maximum then
+    add(r, path, "must be at most " .. tostring(maximum) .. " bytes")
+    return false
+  end
+  return true
+end
+
+-- Legendary negotiations are authored gameplay content, not generated Founder
+-- prose. Lock the exact join and compact UI schema before the runtime can offer
+-- one: every non-signature base Legendary owns one six-question story bank,
+-- while second forms deliberately resolve through their base Founder.
+local function validate_legendary_negotiations(list, founders, forms, r)
+  local expected, expected_count = {}, 0
+  for _, center in ipairs(founders or {}) do
+    if center.rarity == "Legendary" and not center.signature then
+      expected[center.key], expected_count = true, expected_count + 1
+    end
+  end
+
+  if list == nil and expected_count == 0 then
+    r.counts.legendary_negotiations = 0
+    return
+  end
+  if not dense_array(list) then
+    add(r, "legendary_negotiations", "must be a dense array")
+    r.counts.legendary_negotiations = 0
+    return
+  end
+
+  local seen, count = {}, 0
+  for i, record in ipairs(list) do
+    local path = "legendary_negotiations[" .. i .. "]"
+    if type(record) ~= "table" then add(r, path, "must be a table")
+    else
+      count = count + 1
+      only_fields(record, { key=true, questions=true }, path, r)
+      if not text(record.key) then add(r, path .. ".key", "is required")
+      elseif not expected[record.key] then
+        add(r, path .. ".key", "must reference a non-signature base Legendary Founder")
+      elseif seen[record.key] then add(r, path .. ".key", "duplicates " .. record.key)
+      else seen[record.key] = true end
+
+      if not dense_array(record.questions) or #record.questions ~= 6 then
+        add(r, path .. ".questions", "must contain exactly six dense questions")
+      else
+        local question_ids, prompts = {}, {}
+        for qn, question in ipairs(record.questions) do
+          local qpath = path .. ".questions[" .. qn .. "]"
+          if type(question) ~= "table" then add(r, qpath, "must be a table")
+          else
+            only_fields(question, { id=true, prompt=true, choices=true }, qpath, r)
+            if not text(question.id) or not question.id:match("^[a-z0-9][a-z0-9_-]*$") then
+              add(r, qpath .. ".id", "must be a stable lowercase slug")
+            elseif question_ids[question.id] then add(r, qpath .. ".id", "must be unique in its story bank")
+            else question_ids[question.id] = true end
+            if bounded_text(question.prompt, qpath .. ".prompt", r, 150) then
+              if prompts[question.prompt] then add(r, qpath .. ".prompt", "must be unique in its story bank") end
+              prompts[question.prompt] = true
+            end
+            if not dense_array(question.choices) or #question.choices ~= 3 then
+              add(r, qpath .. ".choices", "must contain exactly three dense choices")
+            else
+              local choice_ids, choice_texts, rapport = {}, {}, { [0]=0, [1]=0, [2]=0 }
+              for cn, choice in ipairs(question.choices) do
+                local cpath = qpath .. ".choices[" .. cn .. "]"
+                if type(choice) ~= "table" then add(r, cpath, "must be a table")
+                else
+                  only_fields(choice, { id=true, text=true, reply=true, fact=true, rapport=true }, cpath, r)
+                  if not text(choice.id) or not choice.id:match("^[a-z0-9][a-z0-9_-]*$") then
+                    add(r, cpath .. ".id", "must be a stable lowercase slug")
+                  elseif choice_ids[choice.id] then add(r, cpath .. ".id", "must be unique in its question")
+                  else choice_ids[choice.id] = true end
+                  if bounded_text(choice.text, cpath .. ".text", r, 96) then
+                    if choice_texts[choice.text] then add(r, cpath .. ".text", "must be unique in its question") end
+                    choice_texts[choice.text] = true
+                  end
+                  bounded_text(choice.reply, cpath .. ".reply", r, 140)
+                  bounded_text(choice.fact, cpath .. ".fact", r, 180)
+                  if required_integer(choice.rapport, cpath .. ".rapport", r, 0, 2) then
+                    rapport[choice.rapport] = rapport[choice.rapport] + 1
+                  end
+                end
+              end
+              for score = 0, 2 do
+                if rapport[score] ~= 1 then
+                  add(r, qpath .. ".choices", "must contain rapport scores {0,1,2} exactly once")
+                  break
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  r.counts.legendary_negotiations = count
+  if count ~= expected_count then
+    add(r, "legendary_negotiations", "must define exactly " .. tostring(expected_count) .. " base-Founder banks")
+  end
+  for key in pairs(expected) do
+    if not seen[key] then add(r, "legendary_negotiations." .. key, "story bank is missing") end
+  end
+  for i, form in ipairs(forms or {}) do
+    if form.rarity == "Legendary" then
+      if not expected[form.base_form] then
+        add(r, "forms[" .. i .. "].base_form", "Legendary form must resolve to a negotiable base Founder")
+      elseif not seen[form.base_form] then
+        add(r, "forms[" .. i .. "].base_form", "has no negotiation story bank")
+      end
+    end
+  end
+end
+
 local function gate_kind(g, path, r)
   if text(g.g) then
     if (g.k and g.k ~= g.g) or (g.kind and g.kind ~= g.g) then add(r, path, "conflicting gate kind fields") end
@@ -1009,6 +1125,8 @@ function Validate.catalog(catalog, options)
   validate_centers(catalog.consumables or {}, "consumables", r, keys)
   validate_tech_laws(catalog.consumables or {}, r)
   validate_moonshots(catalog.consumables or {}, r)
+  validate_legendary_negotiations(catalog.legendary_negotiations,
+    catalog.founders or {}, catalog.forms or {}, r)
   validate_compat(catalog.compat, tech_keys, r)
   validate_markets(catalog.markets, tech_keys, r)
   if catalog.gameplay then validate_gameplay(catalog.gameplay, catalog, r) end
