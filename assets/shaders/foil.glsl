@@ -1,4 +1,4 @@
-// foil.glsl — Palo Latro "Open-Source" edition shimmer. CLEAN-ROOM: our own dual-sweep field,
+// foil.glsl — Palo Latro "Open-Source" edition shimmer (P4 shine). CLEAN-ROOM: our own dual-sweep field,
 // not Balatro's foil.fs. Cool metallic streaks that sweep across the founder portrait over time; each card
 // offset by `phase` so a row doesn't shimmer in lockstep. Drawn THROUGH the card art image.
 extern number time;     // wall-clock seconds (G.TIMERS.BACKGROUND)

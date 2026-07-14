@@ -1,4 +1,4 @@
-// crt.glsl — Palo Latro gentle optional CRT post-effect. CLEAN-ROOM: our own pass, not
+// crt.glsl — Palo Latro gentle CRT post-fx (P4 shine, optional/toggle). CLEAN-ROOM: our own pass, not
 // Balatro's CRT.fs. Deliberately NO geometric warp/bulge — only colour overlays (scanlines + a touch of
 // chromatic aberration + vignette). Keeping pixels in place means the mouse→virtual mapping stays exact.
 // Applied once when blitting the full-scene canvas to the screen.

@@ -1,4 +1,4 @@
--- market_tint.lua —  background tint per Market. Decoupled from the GENERATED markets data (no bridge
+-- market_tint.lua — P4 background tint per Market. Decoupled from the GENERATED markets data (no bridge
 -- re-run): keyed by the market's `industry`. Deliberately MUTED + dark — the animated backdrop must never
 -- overpower the cards. Each palette = { base, mid, highlight } (the background shader's tint1/2/3).
 -- Boss market-events can later darken/desaturate by scaling these down through the same uniforms.

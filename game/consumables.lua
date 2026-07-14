@@ -1,4 +1,4 @@
--- game/consumables.lua — the Tech Law (Tarot) consumable engine. Applies a Consumable center's
+-- game/consumables.lua — the Tech Law (Tarot) consumable engine (Track C B). Applies a Consumable center's
 -- declarative `ops` against the persistent master_deck + economy. The 5 MVP ops:
 --   sticker  — append a persistent card-stat modifier (field=users|rev, mode=add|mul|override) to a target
 --   cash     — grant Cash (clamped to floor/cap)
@@ -6,8 +6,8 @@
 --   mint     — append a fresh copy of a seed card (extremum/player) to the deck
 --   set_layer— override a target card's Layer for the run
 -- Targeted ops resolve against the LIVE card (by uid) AND write the master_deck entry, so the change both
--- takes effect this blind and persists across blinds. The interactive USE_CARD/TARGET_SELECT flow handles
--- targeting, inventory consumption, shop acquisition, and resale around this module.
+-- takes effect this blind and persists across blinds. NOTE: the interactive USE_CARD/TARGET_SELECT input flow,
+-- shop acquisition, and sell are NOT here yet (they need a GUI playtest) — see the runtime contract
 local Centers = require("game.centers")
 local Coverage = require("game.coverage")
 
@@ -97,7 +97,7 @@ function Consumables.apply(center, targets, opts)
   end
 end
 
--- inventory: plain-data mirror in G.GAME.consumables + a live Card in the G.consumables area
+-- inventory: plain-data mirror in G.GAME.consumables + a live Card in the G.consumables area (Track C B1)
 function Consumables.grant(key)
   local center = Centers.get(key)
   if not (center and G.GAME) then return nil end
@@ -127,7 +127,7 @@ function Consumables.remove(card)                       -- drop from the invento
   if card.remove then card:remove() end
 end
 
--- The full use path fires the founder hook, applies the effect, then consumes the card.
+-- the full USE path (B2/B4): fire the founder hook, apply, consume. `targets`/`opts` as in apply().
 function Consumables.use(card, targets, opts)
   if not (card and card.center) then return false end
   local Scoring = require("game.scoring")

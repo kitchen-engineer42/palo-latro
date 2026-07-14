@@ -4,7 +4,7 @@
 -- Card:calculate routes Founder cards here via G.FOUNDER_CALC — the scoring engine is untouched.
 
 local Founders = {}
-local Interp = require("game.effect_interp")   -- data-driven ability interpreter
+local Interp = require("game.effect_interp")   -- B2: data-driven ability interpreter
 local Coverage = require("game.coverage")
 
 -- Per-Founder trigger safety rails. These cap a single emitted effect, not the
@@ -122,7 +122,7 @@ FX.f_chesky  = function(_, ctx) if ctx.joker_main then return { x_mult = 1 + 0.4
 FX.f_houston = function(_, ctx) if ctx.joker_main then return { mult = 10 * others() } end end
 FX.f_dorsey  = function(_, ctx) if ctx.after then return { mult = 15, dollars = 5 } end end
 
---  signature: kitchen-engineer42 — starts a ×0.9 drag, the ×Mult INCREMENT doubles each ante
+-- Signature founder: kitchen-engineer42 starts a ×0.9 drag; the ×Mult INCREMENT doubles each ante
 -- survived → 0.9, 1.0, 1.2, 1.6, 2.4, 4.0, 7.2, 13.6, ×26.4 by IPO. Closed form: x = 0.8 + 0.1·2^k,
 -- k = antes survived since hire. Firing her removes the card (curve auto-resets) + deletes John.
 FX["f_kitchen-engineer42"] = function(card, ctx)
@@ -134,9 +134,9 @@ end
 
 Founders.FX = FX
 
--- Fallback for generated founders without hand-coded effects. The data-driven interpreter handles
--- authored abilities first; this table ensures that every remaining founder still does something.
--- It applies a flat effect keyed by embedded effect type and rarity tier.
+-- B1 fallback: the 262 graph-projected founders have no hand-coded FX yet (those f_<lastname> entries
+-- are now fidelity fixtures). Until the B2 effect interpreter lands, every founder does SOMETHING —
+-- a flat effect keyed off its embedded effect.type + rarity tier — so the full pool is playable.
 local RTIER = { Common = 1, Uncommon = 2, Rare = 3, Legendary = 4 }
 local function fallback(card, ctx)
   local ce = card.center or {}
@@ -151,7 +151,7 @@ local function fallback(card, ctx)
   if etype == "xmult" then return { x_mult = 1 + 0.1 * tier } end
   if etype == "plus_chips" then return { chips = 15 * tier } end
   if etype == "plus_mult" then return { mult = 4 * tier } end
-  return { mult = 2 * tier }   -- fallback for data-only utility, generation, and retrigger effects
+  return { mult = 2 * tier }   -- utility / generation / retrigger (data_only) — token value until B3
 end
 
 -- the dispatch seam Card:calculate calls for Founder cards
@@ -159,7 +159,7 @@ G.FOUNDER_CALC = function(card, ctx)
   local fn = FX[card.center_key]
   local effect
   if fn then effect = fn(card, ctx)                            -- (legacy hand-coded; now fixtures)
-  elseif card.center and card.center.dsl then effect = Interp.run(card, ctx)  -- compiled abilities
+  elseif card.center and card.center.dsl then effect = Interp.run(card, ctx)  -- B2: compiled abilities
   else effect = fallback(card, ctx) end                        -- data-only fallback
   local scale = card.ability and card.ability.config and card.ability.config._effect_scale
   if effect and scale and scale ~= 1 then

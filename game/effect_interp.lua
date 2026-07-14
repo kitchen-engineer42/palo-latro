@@ -1,9 +1,9 @@
--- game/effect_interp.lua — data-driven founder ability interpreter.
+-- game/effect_interp.lua — data-driven founder ability interpreter (bridge B2).
 -- A founder center carries `dsl = { hook, gate?, ops[], once? }`; this executes it into the standard
 -- effect table {chips,mult,x_mult,dollars} (or {jokers={repetitions}} for retrigger) that scoring.lua
 -- consumes. Covers the 6 ability shapes the deep-dive found over the engine's real helper vocabulary;
 -- the snowball counters (ships_this_run / rounds_held / …) are approximated by a generic per-trigger
--- accumulator (the f_stoppelman/f_andreessen configuration pattern). Abilities without a DSL fall back.
+-- accumulator (the f_stoppelman/f_andreessen cfg pattern). Abilities with no dsl fall back (B1).
 
 local Meters = require("game.meters")
 local Coverage = require("game.coverage")
@@ -41,7 +41,7 @@ local HELP = {
   hand_size = function(ctx) return hand_size(ctx) end,
   distinct_sub_roles = function(ctx) return distinct_sub_roles(ctx) end,
 }
--- Count source for a `scale` operation. Run-state helpers read G.GAME and per-founder configuration.
+-- count source for a `scale` op. Run-state helpers (E1) read G.GAME / per-founder cfg.
 local function help(name, ctx, card, gate)
   if name == "count_group" then return count_group(gate and gate.group or "") end
   if name == "ante" then return (G.GAME and G.GAME.ante) or 1 end
@@ -95,7 +95,7 @@ local function help(name, ctx, card, gate)
   if name == "salary_due" then                             -- this round's payroll (Σ salary × target / div)
     return require("game.economy").payroll_due(G.GAME, (G.jokers and G.jokers.cards) or {})
   end
-  if G.GAME and G.GAME.meters and G.GAME.meters[name] then return Meters.get(name) end   -- meter read
+  if G.GAME and G.GAME.meters and G.GAME.meters[name] then return Meters.get(name) end   -- meter read (E4)
   local f = HELP[name]; return f and f(ctx) or 0
 end
 
@@ -125,7 +125,7 @@ local function eval_gate(g, ctx, card)
     return (CMP[g.op] or CMP[">="])((G.GAME and G.GAME.overkill) or 0, g.val or 0)
   elseif k == "is_boss_blind" then
     return (G.GAME and G.GAME.blind and G.GAME.blind.is_boss) or false
-  elseif k == "market" then                                  -- gate on the run's Market
+  elseif k == "market" then                                  -- E5: gate on the run's Market
     return (G.GAME and G.GAME.market and (g.attr == nil or G.GAME.market[g.attr] == g.value)) or false
   elseif k == "has_group" then
     return count_group(g.group) >= (g.val or 1)
@@ -188,7 +188,7 @@ local function run_op(op, ctx, card, eff)
       G.GAME.margin_bonus = math.min(Economy.MAX_MARGIN_BONUS,
         (G.GAME.margin_bonus or 0) + math.max(-0.1, math.min(0.1, amt)))
     elseif op.what == "salary" then G.GAME.salary_relief = (G.GAME.salary_relief or 0) + amt end
-  elseif k == "clear_clash" and G.GAME then                  -- utility: dissolve compatibility clashes
+  elseif k == "clear_clash" and G.GAME then                  -- utility: dissolve compatibility clashes (E3)
     if op.amount == "all" then G.GAME._clashes_active = 0
     else
       -- Generated abilities use both the flat `amount=N` shape and a nested scalable
@@ -198,10 +198,10 @@ local function run_op(op, ctx, card, eff)
         or (op.amount or 1)  -- 1.5a: scalable
       G.GAME._clashes_active = math.max(0, (G.GAME._clashes_active or 0) - math.floor(amt))
     end
-  elseif k == "gen" and G.GENERATE then                      -- generation: create cards mid-run; amount is scalable
+  elseif k == "gen" and G.GENERATE then                      -- generation: create cards mid-run (E3); amount scalable (E)
     local amt = op.per and ((op.base or 0) + (op.coef or 1) * help(op.per, ctx, card, op)) or (op.amount or 1)
     if amt >= 1 then G.GENERATE(op.kind, { layer = op.layer, amount = math.floor(amt), key = op.key, which = op.which }) end
-  elseif k == "meter" and G.GAME then                        -- reputation and identity meters
+  elseif k == "meter" and G.GAME then                        -- reputation/identity meters (E4)
     Meters.add(op.name, (op.amount or 0) + (op.per and (op.coef or 1) * help(op.per, ctx, card, op) or 0))
   elseif k == "gamble" then                                  -- stake-or-spike ×mult (Rocket-Boy/Thiel)
     local c = cfg(card)

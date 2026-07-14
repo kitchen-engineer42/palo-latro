@@ -1,7 +1,8 @@
--- game/data/centers/consumables.lua — Tech Law (Tarot analogue) consumables, wave 1.
+-- game/data/centers/consumables.lua — Tech Law (Tarot analogue) consumables, wave 1 (Track C B).
 -- One-shot cards applied via Consumables.apply (game/consumables.lua) using the 5 MVP ops:
 --   sticker(field=users|rev, mode=add|mul|override) · cash · destroy(+refund) · mint · set_layer.
--- `target` = nil (no target) or {area, n[, layer]}. Additional operation types can extend this catalog.
+-- `target` = nil (no target) or {area, n[, layer]}. Effects/balance from the techlaw design workflow
+-- (private content pipeline). Wave-2 cards (stage-clocks, founder-ops, Playbook-level, etc.) await later ops.
 return {
   -- card-stat stickers (persistent per-card modifiers, read at scoring) -------------------------
   { key = "tl_moores_law", set = "Consumable", kind = "TechLaw", name = "Moore's Law", rarity = "common", cost_frac = 0.15,

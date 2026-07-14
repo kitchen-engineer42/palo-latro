@@ -1,7 +1,7 @@
 -- game/scoring.lua — the scoring engine. evaluate_ship() computes ARR instantly and enqueues
 -- the count-up juice via the EventManager. The FULL context vocabulary + return-effect protocol
 -- are defined now (only some populated in the slice) so founders/editions/seals slot in later
--- with ZERO engine change (the runtime design, reference design).
+-- without changing the core traversal contract.
 
 local AppTypes = require("game.apptypes")
 local Juice = require("game.juice")
@@ -82,6 +82,48 @@ local function apply_effect(S, eff)
   end
 end
 
+local function score_snap(S) return { chips = S.chips, mult = S.mult } end
+
+local function score_delta(before, after)
+  local parts = {}
+  local dc, dm = after.chips - before.chips, after.mult - before.mult
+  if math.abs(dc) >= .01 then parts[#parts + 1] = (dc >= 0 and "+" or "") .. format_number(math.floor(dc + .5)) .. " Users" end
+  if math.abs(dm) >= .01 then
+    local ratio = before.mult ~= 0 and after.mult / before.mult or 1
+    if ratio >= 1.18 or ratio <= .82 then parts[#parts + 1] = "x" .. tostring(round_to(ratio, 2)) .. " Rev"
+    else parts[#parts + 1] = (dm >= 0 and "+" or "") .. tostring(round_to(dm, 2)) .. " Rev" end
+  end
+  return table.concat(parts, "  "), dc, dm
+end
+
+-- Presentation is queued alongside the score tween, never used to compute it. That keeps simulation and
+-- headless behavior deterministic while making every material Founder/system contribution attributable.
+local function queue_score_feedback(card, source, before, after, preset, color)
+  local detail, dc, dm = score_delta(before, after)
+  if detail == "" then return end
+  local x = card and card.VT and (card.VT.x + card.VT.w / 2) or G.WINDOW.w / 2
+  local y = card and card.VT and (card.VT.y - 8) or 500
+  local base = math.max(1, math.abs(before.chips) + math.abs(before.mult) * 5)
+  local intensity = clamp(.65 + (math.abs(dc) + math.abs(dm) * 5) / base, .55, 2.2)
+  local ratio = before.mult ~= 0 and after.mult / before.mult or 1
+  local semantic = preset or ((dm < 0 or dc < 0) and "score_penalty"
+    or (ratio >= 1.18 and "score_xmult") or (math.abs(dm) > 0 and "score_mult" or "score_users"))
+  G.E_MANAGER:add_event(Event({ trigger = "immediate", blocking = true, func = function()
+    if card and not card.REMOVED then card:juice_up(.48, .08) end
+    Juice.cue(x, y, source, detail, color or ((dm < 0 or dc < 0) and G.C.lose or (math.abs(dm) > 0 and G.C.mult or G.C.users)))
+    Particles.emit((semantic == "score_penalty" and "penalty") or (semantic == "score_users" and "score")
+      or (semantic == "score_system" and "system") or "mult",
+      x, y + 24, color or ((dm < 0 or dc < 0) and G.C.lose or (math.abs(dm) > 0 and G.C.mult or G.C.users)), intensity)
+    Audio.event(semantic, { intensity = intensity })
+    Juice.shake(semantic == "score_penalty" and .45 or .3 * intensity)
+    return true
+  end }))
+end
+
+local function founder_name(card)
+  return card and card.center and (card.center.short or card.center.name) or "Founder"
+end
+
 -- repetitions for a card = 1 + seal retriggers + joker `repetition` retriggers (0 in the slice)
 local function collect_reps(card, base)
   local reps = 1
@@ -103,7 +145,7 @@ local function juice(field, to, dur, beat)
   if beat then delay(beat) end
 end
 
--- Fixed traversal (mirrors the runtime design). Logical chips/mult are computed in S; the display
+-- Fixed traversal (mirrors the runtime contract). Logical chips/mult are computed in S; the display
 -- (G.GAME.score.*) is tweened to follow, serialized by the blocking event queue.
 function Scoring.evaluate_ship(played)
   local coverage = Coverage.analyze(played)
@@ -139,7 +181,7 @@ function Scoring.evaluate_ship(played)
   juice("chips", S.chips, 0.20)
   juice("mult", S.mult, 0.20, 0.10)
 
-  -- Count compatibility clashes after utility founders clear them, then accrue tech debt.
+  -- compatibility (E3): count clashes (utility founders clear them in the `before` pass) + accrue tech-debt
   G.GAME._clashes_active = #Compat.clashes(played)
   for _, c in ipairs(played) do                                  -- John's JIT schema clears ALL clashes
     if c.center and c.center.clears_clash then G.GAME._clashes_active = 0; break end
@@ -148,8 +190,13 @@ function Scoring.evaluate_ship(played)
   if subs > 0 then Meters.add("tech_debt", (G.GAME.tech_debt_accel and subs * 2 or subs)) end  -- stake 7
 
   -- "before" jokers (clear_clash ops decrement G.GAME._clashes_active)
-  for _, jk in ipairs(G.jokers.cards) do apply_effect(S, eval_card(jk, ctx(base, { before = true }))) end
-  each_automated(ctx(base, { before = true }), function(e) apply_effect(S, e) end)
+  for _, jk in ipairs(G.jokers.cards) do
+    local b = score_snap(S); apply_effect(S, eval_card(jk, ctx(base, { before = true })))
+    queue_score_feedback(jk, founder_name(jk), b, score_snap(S))
+  end
+  each_automated(ctx(base, { before = true }), function(e)
+    local b = score_snap(S); apply_effect(S, e); queue_score_feedback(nil, "Automated", b, score_snap(S), "score_system", G.C.arr)
+  end)
 
   -- each scoring card, left -> right
   local step = 0
@@ -176,13 +223,14 @@ function Scoring.evaluate_ship(played)
       for _, jk in ipairs(G.jokers.cards) do
         local bm, bc = S.mult, S.chips
         apply_effect(S, eval_card(jk, ctx(base, { individual = true, other_card = c })))
-        if S.mult ~= bm then juice("mult", S.mult, 0.12, 0.03); Audio.play("mult", nil, 0.4) end
+        queue_score_feedback(jk, founder_name(jk), { chips = bc, mult = bm }, score_snap(S))
+        if S.mult ~= bm then juice("mult", S.mult, 0.12, 0.03) end
         if S.chips ~= bc then juice("chips", S.chips, 0.10, 0.02) end
       end
       each_automated(ctx(base, { individual = true, other_card = c }), function(e) apply_effect(S, e) end)
       -- card edition (after individual, before joker_main) — seam
       apply_effect(S, eval_card(c, ctx(base, { edition = true, other_card = c })))
-      -- per-card Rev sticker (card_stat_sticker field=rev) folds into the hand mult (override→add→mul)
+      -- Track C: per-card Rev sticker (card_stat_sticker field=rev) folds into the hand mult (override→add→mul)
       local rs = c.rev_sticker and c:rev_sticker()
       if rs then
         if rs.override then S.mult = rs.override end
@@ -195,12 +243,22 @@ function Scoring.evaluate_ship(played)
 
   -- held-card pass (h_mult/h_x_mult) — seam (G.hand), no-op now
   -- joker main + after
-  for _, jk in ipairs(G.jokers.cards) do apply_effect(S, eval_card(jk, ctx(base, { joker_main = true }))) end
-  each_automated(ctx(base, { joker_main = true }), function(e) apply_effect(S, e) end)
+  for _, jk in ipairs(G.jokers.cards) do
+    local b = score_snap(S); apply_effect(S, eval_card(jk, ctx(base, { joker_main = true })))
+    queue_score_feedback(jk, founder_name(jk), b, score_snap(S))
+  end
+  each_automated(ctx(base, { joker_main = true }), function(e)
+    local b = score_snap(S); apply_effect(S, e); queue_score_feedback(nil, "Automated", b, score_snap(S), "score_system", G.C.arr)
+  end)
   G.GAME._pre_after_arr = math.floor(S.chips * S.mult + 0.5)
   G.GAME._running_arr = G.GAME._pre_after_arr
-  for _, jk in ipairs(G.jokers.cards) do apply_effect(S, eval_card(jk, ctx(base, { after = true }))) end
-  each_automated(ctx(base, { after = true }), function(e) apply_effect(S, e) end)
+  for _, jk in ipairs(G.jokers.cards) do
+    local b = score_snap(S); apply_effect(S, eval_card(jk, ctx(base, { after = true })))
+    queue_score_feedback(jk, founder_name(jk), b, score_snap(S))
+  end
+  each_automated(ctx(base, { after = true }), function(e)
+    local b = score_snap(S); apply_effect(S, e); queue_score_feedback(nil, "Automated", b, score_snap(S), "score_system", G.C.arr)
+  end)
   -- D: apply armed buffs (event hooks → scoring), consumed once at the next scoring pass
   if G.GAME._armed_buffs and #G.GAME._armed_buffs > 0 then
     for _, ab in ipairs(G.GAME._armed_buffs) do apply_effect(S, { [ab.field] = ab.value }) end
@@ -216,13 +274,14 @@ function Scoring.evaluate_ship(played)
     end
   end
   ScoreTrace.capture(G.GAME.score_trace, "founders", { chips = S.chips, mult = S.mult })
-  if S.mult ~= G.GAME.score.mult then juice("mult", S.mult, 0.14); Audio.play("mult", nil, 0.4) end
+  if S.mult ~= G.GAME.score.mult then juice("mult", S.mult, 0.14) end
 
   -- Jo-harness-burg (John) — when in the built hand he grows WITH kitchen-engineer42, but
   -- ADDITIVELY (never a 2nd ×engine), plus Hamster flat +rev/user. Polynomial, not exponential.
   local john
   for _, c in ipairs(played) do if c.center_key == "t_joharness-burg" then john = c; break end end
   if john then
+    local john_before = score_snap(S)
     local add = john.center.hamster_mult or 0                  -- Hamster flat +mult
     for _, jk in ipairs(G.jokers.cards) do
       if jk.center_key == "f_kitchen-engineer42" then
@@ -231,18 +290,23 @@ function Scoring.evaluate_ship(played)
         break
       end
     end
-    if add > 0 then S.mult = S.mult + add; juice("mult", S.mult, 0.12) end
+    if add > 0 then
+      S.mult = S.mult + add; queue_score_feedback(john, "Jo-harness-burg", john_before, score_snap(S), "score_system", G.C.arr)
+      juice("mult", S.mult, 0.12)
+    end
   end
 
-  -- Apply the remaining compatibility penalty and tech-debt drag.
+  -- compatibility penalty (clashes left after utility clears) + tech-debt drag (E3)
   local clashes_left = G.GAME._clashes_active or 0
   local td = Meters.tier("tech_debt")
   if clashes_left > 0 or td > 0 then
+    local penalty_before = score_snap(S)
     S.mult = S.mult * (0.9 ^ clashes_left) * (1 - 0.03 * td)
+    queue_score_feedback(nil, clashes_left > 0 and "Compatibility" or "Tech debt", penalty_before, score_snap(S), "score_penalty", G.C.lose)
     juice("mult", S.mult, 0.14)
   end
 
-  -- Apply signature multipliers from maturity, Knowledge, and chemistry.
+  -- E4 signature multipliers: maturity rung · Knowledge MSG · chemistry
   local ndl = coverage.distinct
   local ke = 0
   for _, jk in ipairs(G.jokers.cards) do
@@ -257,28 +321,35 @@ function Scoring.evaluate_ship(played)
   local chem = 1 + math.min(0.02 * math.floor(Compat.complement_score(played)), 0.5)
   G.GAME._ndl = ndl
   if rung_lev ~= 1 or msg ~= 1 or chem ~= 1 then
+    local systems_before = score_snap(S)
     S.mult = S.mult * rung_lev * msg * chem
+    queue_score_feedback(nil, "Startup systems", systems_before, score_snap(S), "score_system", G.C.arr)
     juice("mult", S.mult, 0.14)
   end
 
   local stacks, best_stack = Archetypes.evaluate(played)
   G.GAME.last_stack_progress, G.GAME.last_named_stack = stacks, nil
   if best_stack and best_stack.complete then
+    local stack_before = score_snap(S)
     S.chips = math.min(MAX_USERS, S.chips + best_stack.users)
     S.mult = math.min(MAX_REVENUE, S.mult + best_stack.rev)
     G.GAME.last_named_stack = best_stack.key
+    queue_score_feedback(nil, best_stack.name or "Named stack", stack_before, score_snap(S), "score_system", G.C.arr)
   end
   ScoreTrace.capture(G.GAME.score_trace, "systems", { chips = S.chips, mult = S.mult, chemistry = chem,
     maturity = rung_lev, msg = msg, stack = G.GAME.last_named_stack })
 
-  -- Apply earned Market fit and the telegraphed boss-event penalty.
+  -- E5 Market fit (earned mult) + telegraphed boss event penalty
   local fit = Markets.fit_mult(played, G.GAME.market)
   local boss_key = G.GAME.blind and G.GAME.blind.event
   local evm = Bosses.score_multiplier(boss_key, played, { fit = fit })
   G.GAME.current_boss_margin_delta = Bosses.margin_delta(boss_key)
   G.GAME.last_fit = fit
   if fit ~= 1 or evm ~= 1 then
+    local fit_before = score_snap(S)
     S.mult = S.mult * fit * evm
+    queue_score_feedback(nil, evm < 1 and "Market event" or "Market fit", fit_before, score_snap(S),
+      (fit * evm < 1) and "score_penalty" or "score_system", (fit * evm < 1) and G.C.lose or G.C.arr)
     juice("mult", S.mult, 0.14)
   end
 
@@ -298,8 +369,11 @@ function Scoring.evaluate_ship(played)
   ScoreTrace.finalize(G.GAME.score_trace, { chips = S.chips, mult = S.mult, fit = fit,
     reliability = reliability.score, reliability_mult = reliability.multiplier, arr = final_arr })
   G.E_MANAGER:add_event(Event({ trigger = "immediate", blocking = true, func = function()
-    Juice.shake(2.5); Juice.pulse("score"); Juice.flash(0.18, G.C.arr); Audio.play("ship", 1.3, 0.6)
-    Particles.burst(G.WINDOW.w / 2, 533, G.C.arr, 22)
+    local target = math.max(1, (G.GAME.blind and G.GAME.blind.target) or final_arr)
+    local intensity = clamp(.7 + math.log(1 + final_arr / target) / math.log(2), .7, 2.5)
+    Juice.shake(1.25 + .8 * intensity); Juice.pulse("score"); Juice.flash(.12 + .04 * intensity, G.C.arr)
+    Audio.event("score_final", { pitch = .94 + .12 * intensity, intensity = intensity })
+    Particles.emit("final", G.WINDOW.w / 2, 533, G.C.arr, intensity)
     return true
   end }))
   ease_value(G.GAME.score, "arr", final_arr, 0.55, {

@@ -16,9 +16,17 @@ function Juice.text(x, y, str, color)
   })
 end
 
+-- Semantic attention text keeps the source name visible without coupling this module to scoring.
+-- `detail` is the mechanical delta; `source` may be a Founder, system, or market label.
+function Juice.cue(x, y, source, detail, color)
+  local label = detail or ""
+  if source and source ~= "" then label = source .. "  " .. label end
+  Juice.text(x, y, label, color)
+end
+
 -- screen shake: accumulate amplitude; decays each frame in update
 function Juice.shake(amt)
-  if G.SETTINGS.reduced_motion then return end
+  if G.SETTINGS.reduced_motion or G.SETTINGS.shake == false then return end
   G.SHAKE = G.SHAKE + (amt or 1)
 end
 
@@ -31,11 +39,12 @@ end
 -- full-screen flash: a brief, SUBTLE colored wash over everything (the crescendo / win-lose punctuation).
 -- Drawn last in love.draw via Juice.draw_flash(); decays from a low alpha so it never blinds.
 function Juice.flash(dur, col)
-  if G.SETTINGS.reduced_motion then return end
+  if G.SETTINGS.reduced_motion or G.SETTINGS.flash == false then return end
   G.FLASH = { born = G.TIMERS.REAL, dur = dur or 0.18, col = col or G.C.white }
 end
 
 function Juice.draw_flash()
+  if G.SETTINGS.flash == false then G.FLASH = nil; return end
   local f = G.FLASH
   if not f then return end
   local age = G.TIMERS.REAL - f.born
@@ -70,7 +79,7 @@ end
 -- shake transform around the screen scene (push; pop_transform after the scene)
 function Juice.apply_transform()
   love.graphics.push()
-  if G.SETTINGS.reduced_motion or G.SHAKE <= 0.02 then return end
+  if G.SETTINGS.reduced_motion or G.SETTINGS.shake == false or G.SHAKE <= 0.02 then return end
   local t = G.TIMERS.REAL
   local mag = math.min(G.SHAKE, 8) * 1.4
   local cx, cy = G.WINDOW.w / 2, G.WINDOW.h / 2

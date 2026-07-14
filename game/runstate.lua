@@ -1,7 +1,7 @@
--- game/runstate.lua — the run-state spine. G.GAME is a four-scope hierarchy
+-- game/runstate.lua — the run-state spine (engine v2 E1). G.GAME as a 4-scope hierarchy
 -- (run / ante / blind / round) + the 8-ante × 3-blind funding-stage loop + the ARR target curve.
 -- This is the single serialization boundary (G.GAME is plain data; live cards re-hydrate from
--- center_key + ability.config). Four antes form one era.
+-- center_key + ability.config). It owns the economy and Era seams (4 antes = 1 era).
 
 local Meters = require("game.meters")
 local Markets = require("game.markets")
@@ -25,7 +25,7 @@ RunState.PIVOTS_PER_BLIND = 3
 RunState.HAND_SIZE = 8
 RunState.WIN_ANTE  = 8
 
--- P&L constants used by the current ruleset.
+-- P&L constants — PLACEHOLDERS, tune via the balance-sim pass (target IPO win-rate).
 RunState.SALARY_DIV     = Economy.SALARY_DIV
 RunState.INTEREST_DIV   = 5     -- interest = floor(cash / INTEREST_DIV), per blind cleared
 RunState.BANKRUPT_FLOOR = -20   -- early-game credit floor; the LIVE line scales: min(FLOOR, -2×last_payroll) — see settle_blind
@@ -61,7 +61,7 @@ function RunState.set_blind(ante, blind_idx)
     kind = RunState.BLIND_KIND[blind_idx], idx = blind_idx, ante = ante,
     stage = RunState.STAGE_NAME[ante] or ("Ante " .. ante),
     target = RunState.blind_target(ante, blind_idx),
-    is_boss = (blind_idx == 3), modifier = nil,          -- boss modifier
+    is_boss = (blind_idx == 3), modifier = nil,          -- boss modifier (E5)
   }
   if blind_idx == 3 then                                  -- telegraphed market-event boss
     local ev = { "ai_winter", "platform_shift", "dotcom_bust" }
@@ -110,7 +110,7 @@ function RunState.settle_blind()
   return g.bankrupt
 end
 
--- Apply a Market's unconditional perk.
+-- apply a Market's unconditional perk (E5, light — full perk system is a later pass).
 function RunState.apply_perk(m)
   Markets.apply_perk(G.GAME, m, 1)
 end
@@ -127,11 +127,11 @@ function RunState.new(opts)
     last_income = 0, last_payroll = 0, last_interest = 0, runway = 99, bankrupt = false,
     won = nil, result = nil,
     meters = {},                                          -- threshold-counter primitive (meters.lua)
-    layers_seen_run = {}, app_types_shipped_run = {},     -- run-wide sets
+    layers_seen_run = {}, app_types_shipped_run = {},     -- run sets (E3)
     run_best_arr = 0,
-    master_deck = {}, _deck_uid = 0, _deck_seeded = false, deck_thinned = {},   -- persistent run-owned tech deck
-    consumables = {}, consumable_slots = 2,                                     -- consumable inventory
-    -- maturity and equity state ----------------------------------------------
+    master_deck = {}, _deck_uid = 0, _deck_seeded = false, deck_thinned = {},   -- persistent run-owned tech deck (Track C A)
+    consumables = {}, consumable_slots = 2,                                     -- consumable inventory (Track C B)
+    -- maturity / equity seams (E4) -------------------------------------------
     maturity_rung = 1, leverage_mult = 1,
     equity_pct = 100, valuation = 0, ipo_value = 0, automated_founders = {}, raises_taken = 0, last_raise_ante = 0,
     app_levels = {}, tech_drafts_taken = 0,
@@ -147,7 +147,7 @@ function RunState.new(opts)
     founders_hired_run = 0, markets_seen_run = {}, _last_hand_ndl = 0, _passives = {}, passive_salary = 0,   -- ability primitives (1.5a/b)
     pending_dollars = 0,
     hire_idx = 0, pivot_count = 0, discard_count = 0,
-    -- SHOP scope + voucher run-modifiers   -------------
+    -- SHOP scope + voucher run-modifiers -------------
     shop = nil, shop_founder_slots = 2, shop_pack_slots = 2, founder_slots = 5,
     ships_bonus = 0, pivots_bonus = 0, reroll_discount = 0, shop_discount = 0,
     vouchers_owned = {},
@@ -157,17 +157,17 @@ function RunState.new(opts)
   RunState.apply_stake(G.GAME, opts.stake or 1)          -- apply stake mods BEFORE the first blind target
   G.GAME.boss_sequence = Bosses.sequence(tonumber(opts.seed) or 0)
   RunState.set_blind(1, 1)
-  Meters.def("tech_debt", { thresholds = { 3, 6, 10, 15 } })          -- redundancy and clash debt
-  Meters.def("rung_progress", { thresholds = { 4, 10, 20, 34, 52 } }) -- maturity ladder
-  Meters.def("knowledge_charge", { thresholds = { 3, 6, 10 } })       -- Knowledge seasoning
-  Meters.def("hype", { decay_per_round = 2, thresholds = { 5, 12, 25 } })          -- volatile reputation
-  Meters.def("credibility", { monotonic = true, thresholds = { 4, 10, 20 } })      -- durable reputation
-  Meters.def("moat", { monotonic = true, thresholds = { 3, 8, 16 } })              -- defensive strength
-  Meters.def("oss_lean", { min = -50, thresholds = { 3, 8, 16 } })                 -- OSS↔proprietary
+  Meters.def("tech_debt", { thresholds = { 3, 6, 10, 15 } })          -- E3 redundancy/clash debt → drag
+  Meters.def("rung_progress", { thresholds = { 4, 10, 20, 34, 52 } }) -- E4 maturity ladder (tier→rung)
+  Meters.def("knowledge_charge", { thresholds = { 3, 6, 10 } })       -- E4 KE/MSG seasoning
+  Meters.def("hype", { decay_per_round = 2, thresholds = { 5, 12, 25 } })          -- E4 volatile rep
+  Meters.def("credibility", { monotonic = true, thresholds = { 4, 10, 20 } })      -- E4 durable rep
+  Meters.def("moat", { monotonic = true, thresholds = { 3, 8, 16 } })              -- E4 defense
+  Meters.def("oss_lean", { min = -50, thresholds = { 3, 8, 16 } })                 -- E4 OSS↔proprietary
   G.GAME.market_choices = Markets.offers(3, RNG.fn("market"))
   if opts.market_id then
     local market = Markets.by_id(opts.market_id)
-    if market then Markets.select(G.GAME, market) end
+    if market then Markets.select(G.GAME, market, { initial = true }) end
   end
 end
 

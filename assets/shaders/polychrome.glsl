@@ -1,4 +1,4 @@
-// polychrome.glsl — Palo Latro "Viral" edition shimmer. CLEAN-ROOM: our own diagonal rainbow
+// polychrome.glsl — Palo Latro "Viral" edition shimmer (P4 shine). CLEAN-ROOM: our own diagonal rainbow
 // flow + saturation boost, not Balatro's polychrome.fs. A slow rainbow band drifts across the portrait.
 extern number time;     // wall-clock seconds (G.TIMERS.BACKGROUND)
 extern number phase;    // per-card offset

@@ -1,5 +1,5 @@
--- Investment vouchers are run-persistent perks. One is offered per shop and each may be bought once.
--- Declarative `mod`
+-- game/data/centers/vouchers.lua — Investment vouchers (Balatro Voucher analogue, re-themed
+-- from the runtime contract). Run-PERSISTENT perks, 1 offered per shop, buyable once each. Declarative `mod`
 -- {field, delta} is applied generically by Shop.redeem onto a G.GAME run-field (no per-voucher code).
 -- cost_frac = fraction of the ante's economic scale (Cash = Margin×ARR); sim-tuned drafts.
 return {

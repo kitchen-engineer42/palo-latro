@@ -35,7 +35,9 @@ end
 function format_number(n)
   if n ~= n then return "NaN" end
   if n == math.huge then return "inf" end
-  n = math.floor(n + 0.5)
+  if n == -math.huge then return "-inf" end
+  local sign = n < 0 and "-" or ""
+  n = math.floor(math.abs(n) + 0.5)
   if n < 1e9 then
     local s = tostring(n)
     local out, count = "", 0
@@ -44,12 +46,12 @@ function format_number(n)
       count = count + 1
       if count % 3 == 0 and i > 1 then out = "," .. out end
     end
-    return out
+    return sign .. out
   end
   -- scientific: mantissa e exponent
   local exp = math.floor(math.log(n, 10))
   local mant = n / (10 ^ exp)
-  return string.format("%.2fe%d", mant, exp)
+  return sign .. string.format("%.2fe%d", mant, exp)
 end
 
 -- Axis-aligned point-in-rect

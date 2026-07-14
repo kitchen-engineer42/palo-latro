@@ -1,6 +1,6 @@
 -- engine/event.lua — Event + EventManager. Blocking named queues decouple logic-time from
 -- presentation-time: gameplay computes a result instantly, then schedules the *experience*
--- of it as a sequence of timed events (the runtime design). This is the game-feel backbone.
+-- of it as a sequence of timed events (the runtime contract). This is the game-feel backbone.
 
 Event = Object:extend()
 

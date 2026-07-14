@@ -18,7 +18,7 @@ local S = G.STATES
 StateMachine.handlers[S.SELECTING_HAND] = function() end
 StateMachine.handlers[S.SHIPPING] = function() end           -- unused: ship -> SCORING directly
 StateMachine.handlers[S.SHOP] = function() end               -- passive; input drives buy/reroll/continue
-StateMachine.handlers[S.BLIND_SELECT] = function() end       -- passive; Play button → play_blind
+StateMachine.handlers[S.BLIND_SELECT] = function() end       -- passive; Play button → play_blind (P2)
 StateMachine.handlers[S.MARKET_SELECT] = function() end
 StateMachine.handlers[S.TECH_DRAFT] = function() end
 
@@ -100,7 +100,7 @@ G.FUNCS.refactor = function()
   Audio.play("hire")
 end
 
--- Founder and financing actions.
+-- E4 signature actions (functional; full UX/choice-overlays are a later polish pass).
 local function selected_founder()
   for _, c in ipairs(G.jokers.cards) do if c.selected then return c end end
 end
@@ -118,7 +118,7 @@ G.FUNCS.promote = function()   -- automate a founder into the harness → climb 
   if Lifecycle.remove(c, { promote = true }) then Audio.play("fire") end
 end
 
-G.FUNCS.market_pivot = function()   -- costed Market reroll: abandon fit for fresh demand
+G.FUNCS.market_pivot = function()   -- costed Market re-roll: abandon fit for a fresh demand
   if G.STATE ~= S.SELECTING_HAND then return end
   if G.GAME.last_market_pivot_ante == G.GAME.ante then return end
   local cost = Pricing.base_reroll(G.GAME, require("game.runstate").ANTE_BASE) * math.min(2, 1 + (G.GAME.market_pivots or 0))
@@ -199,14 +199,17 @@ G.FUNCS.shop_open_pack_2 = function() if G.STATE == S.SHOP then Shop.open_pack(2
 G.FUNCS.pack_pick_1 = function() if G.STATE == S.SHOP then Shop.pack_pick(1) end end
 G.FUNCS.pack_pick_2 = function() if G.STATE == S.SHOP then Shop.pack_pick(2) end end
 G.FUNCS.pack_pick_3 = function() if G.STATE == S.SHOP then Shop.pack_pick(3) end end
+G.FUNCS.pack_pick_4 = function() if G.STATE == S.SHOP then Shop.pack_pick(4) end end
+G.FUNCS.pack_pick_5 = function() if G.STATE == S.SHOP then Shop.pack_pick(5) end end
 G.FUNCS.pack_skip = function() if G.STATE == S.SHOP then Shop.pack_skip() end end
+G.FUNCS.pack_locked = function() end -- modal ceremony consumes clicks until the last card is revealed
 G.FUNCS.shop_continue = function()
   if G.STATE ~= S.SHOP then return end
   G.GAME.shop = nil
-  StateMachine.set_state(S.BLIND_SELECT)                       -- preview the upcoming blind; Play → play_blind
+  StateMachine.set_state(S.BLIND_SELECT)                       -- preview the upcoming blind (P2); Play → play_blind
 end
 
--- BLIND_SELECT: commit to the previewed blind → deal + start playing
+-- BLIND_SELECT (P2): commit to the previewed blind → deal + start playing
 G.FUNCS.play_blind = function()
   if G.STATE ~= S.BLIND_SELECT then return end
   Round.next_blind()                                           -- rebuild deck + deal + → SELECTING_HAND
@@ -227,7 +230,7 @@ G.FUNCS.skip_blind = function()
   StateMachine.set_state(S.BLIND_SELECT)
 end
 
--- ── : consumable (Tech Law) use / target-select / sell ────────────────────────────
+-- ── Track C B2/B4/B5: consumable (Tech Law) use / target-select / sell ────────────────────────────
 local Consumables = require("game.consumables")
 local Juice = require("game.juice")
 StateMachine.handlers[S.USE_CARD] = function() end             -- transient (reserved)
@@ -241,11 +244,11 @@ end
 G.FUNCS.use_consumable = function()
   if G.STATE ~= S.SELECTING_HAND then return end
   local c = selected_consumable(); if not c then return end
-  if c.center.target then                                      -- two-stage: pick target card(s) first
+  if c.center.target then                                      -- B4: two-stage — pick target card(s) first
     for _, h in ipairs(G.hand.cards) do h.selected = false end
     G.PENDING_CONSUMABLE = { card = c, center = c.center, picks = {} }
     StateMachine.set_state(S.TARGET_SELECT)
-  else                                                          -- instant cash or automatic-target operation
+  else                                                          -- B2: instant (cash / auto-target ops)
     Consumables.use(c, nil, nil)
     Audio.play("ship"); Juice.pulse("cash")
   end
@@ -299,10 +302,18 @@ for _, L in ipairs({ "Frontend", "Backend", "Data", "Infra", "AI" }) do
   end
 end
 
--- ── : sort hand (bottom-mid row) + Run Info / Options / deck-view overlays ────────────────
+-- ── Phase 4B: sort hand (bottom-mid row) + Run Info / Options / deck-view overlays ────────────────
+local function effective_users(card)
+  return (card and card.get_users and card:get_users()) or (card and card.base_users) or 0
+end
+
 G.FUNCS.sort_users = function()
   if not (G.STATE == S.SELECTING_HAND and G.hand) then return end
-  table.sort(G.hand.cards, function(a, b) return (a.base_users or 0) > (b.base_users or 0) end)
+  table.sort(G.hand.cards, function(a, b)
+    local au, bu = effective_users(a), effective_users(b)
+    if au ~= bu then return au > bu end
+    return (a.center_key or "") < (b.center_key or "")
+  end)
   G.hand:align_cards(); Audio.play("select", nil, 0.4)
 end
 G.FUNCS.sort_layer = function()
@@ -310,7 +321,9 @@ G.FUNCS.sort_layer = function()
   table.sort(G.hand.cards, function(a, b)
     local ia, ib = Coverage.sort_index(a), Coverage.sort_index(b)
     if ia ~= ib then return ia < ib end
-    return (a.base_users or 0) > (b.base_users or 0)
+    local au, bu = effective_users(a), effective_users(b)
+    if au ~= bu then return au > bu end
+    return (a.center_key or "") < (b.center_key or "")
   end)
   G.hand:align_cards(); Audio.play("select", nil, 0.4)
 end
@@ -319,6 +332,9 @@ G.FUNCS.run_info = function() G.SHOW_RUN_INFO = not G.SHOW_RUN_INFO; G.SHOW_OPTI
 G.FUNCS.options  = function() G.SHOW_OPTIONS = not G.SHOW_OPTIONS; G.SHOW_RUN_INFO, G.SHOW_DECK_VIEW = nil, nil end
 G.FUNCS.opt_motion = function() if G.SHOW_OPTIONS then G.SETTINGS.reduced_motion = not G.SETTINGS.reduced_motion end end
 G.FUNCS.opt_sound  = function() if G.SHOW_OPTIONS then G.SETTINGS.sound = (G.SETTINGS.sound == false) end end
+G.FUNCS.opt_shake  = function() if G.SHOW_OPTIONS then G.SETTINGS.shake = not (G.SETTINGS.shake ~= false) end end
+G.FUNCS.opt_flash  = function() if G.SHOW_OPTIONS then G.SETTINGS.flash = not (G.SETTINGS.flash ~= false) end end
+G.FUNCS.opt_particles = function() if G.SHOW_OPTIONS then G.SETTINGS.particles = not (G.SETTINGS.particles ~= false) end end
 G.FUNCS.opt_crt    = function() if G.SHOW_OPTIONS then G.SETTINGS.crt = not G.SETTINGS.crt end end
 G.FUNCS.opt_quit   = function() if G.SHOW_OPTIONS then G.SHOW_OPTIONS = nil; G.FUNCS.restart() end end
 

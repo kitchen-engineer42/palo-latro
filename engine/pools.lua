@@ -1,5 +1,5 @@
 -- engine/pools.lua — instance-pool helpers. Pools (G.I.*) enable batch update/draw/cleanup
--- and flat input dispatch instead of scene-graph traversal (a load-bearing choice
+-- and flat input dispatch instead of scene-graph traversal (the runtime contract; benchmark: load-bearing
 -- for many on-screen objects). Registration happens in Node/Moveable:init; removal here.
 
 function remove_from_pool(pool, obj)

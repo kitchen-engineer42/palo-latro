@@ -1,4 +1,4 @@
--- game/apptypes.lua — the 12 App Types, the tech-native hand vocabulary, as
+-- game/apptypes.lua — the 12 App Types (the tech-native "hand vocabulary") as
 -- centers, plus the deterministic classifier from Layer Coverage (primary) + Depth (secondary).
 -- base_chips = App-Type Users floor; base_mult = Revenue-per-user floor; margin stored (economy
 -- seam, unused this slice). "Your stack IS your app" — no poker-style "pick the highest match".
@@ -28,7 +28,7 @@ AppTypes.by_key = by_key
 
 -- classify a list of played Cards -> the App Type center
 function AppTypes.classify(cards)
-  --  assignment is centralized in Coverage. Knowledge and role tags
+  -- Layer assignment is centralized in Coverage. Knowledge and role tags
   -- never inflate this five-slot product-layer vocabulary.
   local analysis = Coverage.analyze(cards)
   local counts = analysis.counts

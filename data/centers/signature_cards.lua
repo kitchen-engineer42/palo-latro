@@ -1,11 +1,11 @@
--- game/data/centers/signature_cards.lua — the two hand-authored SIGNATURE cards.
--- Hand-authored separately from the generated center catalogs.
+-- game/data/centers/signature_cards.lua — the two hand-authored signature cards.
+-- Kept separate from generated catalogs so content regeneration cannot clobber them.
 -- Behaviour: kitchen-engineer42's per-ante doubling lives in game/founders.lua FX; Jo-harness-burg's
 -- clash-clear / double-layer / additive coupling are handled as the lone special case in scoring.lua.
 return {
   {
     key = "f_kitchen-engineer42", set = "Founder",
-    name = "kitchen-engineer42",
+    name = "kitchen-engineer42",                 -- codename = display name (matches the GitHub handle)
     short = "KE42",
     ability_name = "The Late Bloomer",
     ability_text = "Starts a ×0.9 drag (unproven youth). Each ante you SURVIVE with her employed, her ×Mult " ..
@@ -24,7 +24,7 @@ return {
                { layer = "Knowledge",     sub_role = "jit-schema" } },
     layer = "agent-harness", sub_role = "meta-harness",
     base_users = 12,
-    double_layer = true,        -- the LONE card that fills BOTH Coverage slots exception
+    double_layer = true,        -- the LONE card that fills BOTH Coverage slots (exception)
     clears_clash = true,        -- JIT schema: removes ALL compatibility clashes when in the built hand
     hamster_mult = 8,           -- Hamster: flat +rev/user (+mult)
     signature = true,           -- excluded from the normal deck build; only present while she's employed

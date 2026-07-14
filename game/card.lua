@@ -8,7 +8,7 @@ local Coverage = require("game.coverage")
 
 Card = Moveable:extend()
 
-Card.W, Card.H = math.floor(2.05 * G.TILE + 0.5), math.floor(2.75 * G.TILE + 0.5)   -- Balatro 35:47, ~144×193
+Card.W, Card.H = math.floor(2.05 * G.TILE + 0.5), math.floor(2.75 * G.TILE + 0.5)   -- Balatro 35:47, ~144×193 (P3)
 
 -- ---- founder card-face tunables (V0.1 redesign: SQUARE art + banner, Hearthstone-style, thin frame) ----
 -- The art is generated 1:1; we show it UNCROPPED (square, fit to width) so logos/mascots survive, with a
@@ -24,7 +24,7 @@ Card.SHOW_NICKNAME = true
 Card.FW = math.floor(Card.W * Card.FOUNDER_SCALE + 0.5)         -- founder card width (~180)
 Card.FH = Card.FW + Card.BANNER_H                              -- square art (≈FW) + banner → ~222
 
--- Editions (aux-cards.md): passive founder modifiers ≈ Balatro foil/holo/poly. Stored on the Card
+-- Editions: passive founder modifiers ≈ Balatro foil/holo/poly. Stored on the Card
 -- instance (card.edition = key); scored in scoring.lua; assigned at acquisition (shop/pack).
 Card.EDITIONS = {
   open_source   = { label = "Open-Source",   chips = 40,    col = { 0.55, 0.80, 0.92, 1 }, desc = "+40 Users when scored" },  -- ≈foil
@@ -32,10 +32,10 @@ Card.EDITIONS = {
   viral         = { label = "Viral",         x_mult = 1.5,  col = { 0.92, 0.60, 0.96, 1 }, desc = "\195\1511.5 Rev when scored" },  -- ≈poly
 }
 Card.EDITION_KEYS = { "open_source", "battle_tested", "viral" }
-Card.EDITION_SHADER = { open_source = "foil", battle_tested = "holo", viral = "polychrome" }  -- edition → portrait shimmer
+Card.EDITION_SHADER = { open_source = "foil", battle_tested = "holo", viral = "polychrome" }  -- P4: edition → portrait shimmer
 
--- Seals: per-founder trigger stamps ≈ Balatro red/gold seal. (Enhancements are playing-card props →
--- they wait for the persistent tech deck.) Scored in scoring.lua; assigned at acquisition.
+-- Seals: per-founder trigger stamps ≈ Balatro red/gold seal. The persistent tech deck now
+-- exists; extending edition/seal scoring to tech cards remains a separate scoring contract.
 Card.SEALS = {
   reusable  = { label = "Reusable",  col = { 0.85, 0.35, 0.35, 1 }, retrigger = 1, desc = "Triggers its effect twice" },  -- ≈Red
   monetized = { label = "Monetized", col = { 0.90, 0.78, 0.35, 1 }, cash = 8, desc = "+$8 Cash when it scores" },         -- ≈Gold
@@ -45,7 +45,7 @@ Card.SEAL_KEYS = { "reusable", "monetized" }
 -- layer "suit" abbreviations for the readable top-left corner (until tech-logo art lands, ADR/parking-lot #4)
 Card.LAYER_ABBR = { Frontend = "FE", Backend = "BE", Data = "DA", Infra = "IN", AI = "AI", Knowledge = "KN" }
 
--- a concise, game-facing effect line derived from the compiled DSL: "+15 Users" / "×2 Rev" /
+-- a concise, game-facing effect line derived from the compiled DSL (P2): "+15 Users" / "×2 Rev" /
 -- "Earns Cash" / "Retrigger" … Best-effort + accurate to the real magnitudes; falls back to the effect
 -- category. Shown on the card face + as the tooltip headline so play-time reading is quick.
 local function fmt1(x)  -- compact number: integer if whole, else 1 decimal
@@ -57,7 +57,7 @@ function Card.effect_brief(center, card)
   if not center then return "" end
   local d = center.dsl
   -- 1) LIVE accumulated value (owned card + accumulator op) — the real number this run, on the card face.
-  -- Scan ALL ops for the first growing accumulator (current DSLs may place acc behind a per-op gate, not first).
+  -- Scan ALL ops for the first growing accumulator (post-audit DSLs may place acc behind a per-op gate, not first).
   if card and d and d.ops then
     local op
     for _, o in ipairs(d.ops) do
@@ -72,7 +72,7 @@ function Card.effect_brief(center, card)
       return "+" .. fmt1(live) .. (f == "chips" and " Users" or " Rev")
     end
   end
-  -- 2) curated concise descriptor (editorial pass) — accurate for growth / conditions
+  -- 2) curated concise descriptor (subagent sweep) — accurate for growth / conditions
   if center.effect_brief and center.effect_brief ~= "" then return center.effect_brief end
   -- 3) DSL-derived fallback (founders without a curated brief, e.g. legendary forms)
   if d and d.retrigger then return "Retrigger \195\151" .. d.retrigger end
@@ -177,7 +177,7 @@ function Card.draw_founder_face(t, center, opts)
       local esh = edition and shaders_enabled() and G.SHADERS[Card.EDITION_SHADER[edition] or ""]
       if esh then                                                     -- editioned portrait shimmers through its shader
         local okp = pcall(function()
-          esh:send("time", G.TIMERS.BACKGROUND)
+          esh:send("time", shader_time())
           esh:send("phase", ((card and card.ID) or 0) * 0.6 + ((card and card.states.hover.is) and 1.5 or 0))
           lg.setShader(esh); lg.draw(img, dx, dy, 0, s, s)
         end)
@@ -223,7 +223,7 @@ function Card.draw_founder_face(t, center, opts)
   pixel_rect(t.x, t.y, t.w, t.h, nil, { chamfer = cham, border = opts.border or G.C.border, line_w = opts.line_w or 1 })
 end
 
--- the consumable (Tech Law) card face. The codex art IS the complete card front (portrait,
+-- Track C B1: the consumable (Tech Law) card face. The codex art IS the complete card front (portrait,
 -- framed, name lettered on it) → near-blit, chamfer-clipped, with the state border on top. Fallback (art
 -- not yet deployed): a framed text face with the kind tag + name + desc so the card is still readable.
 function Card.draw_consumable_face(t, center, opts)
@@ -259,7 +259,7 @@ function Card:init(args)
 
   self.center = args.center
   self.center_key = args.center and args.center.key
-  self.uid = args.uid                                 -- back-ref to the master_deck entry; nil for non-deck cards
+  self.uid = args.uid                                 -- back-ref to the master_deck entry (Track C A); nil for non-deck cards
   self.layer = args.center and args.center.layer
   self.base_users = (args.center and args.center.base_users) or 0
   self.ability = {
@@ -277,7 +277,7 @@ end
 -- the "build" contribution of this card (contextual seam for the compatibility graph)
 function Card:get_users(context)
   local u = self.base_users or 0
-  if self.stickers then                                   -- card_stat_sticker(field=users) — adds first, then muls
+  if self.stickers then                                   -- Track C: card_stat_sticker(field=users) — adds first, then muls
     local add, mul = 0, 1
     for _, s in ipairs(self.stickers) do
       if s.field == "users" then
@@ -291,7 +291,7 @@ function Card:get_users(context)
   return math.floor(u + 0.5)
 end
 
--- per-card Rev stickers (card_stat_sticker field=rev) — the consumable engine folds these into the
+-- Track C: per-card Rev stickers (card_stat_sticker field=rev) — the consumable engine folds these into the
 -- hand mult at the per-card scoring pass (see scoring.lua). add/mul/override returned as {add, mul, override}.
 function Card:rev_sticker()
   if not self.stickers then return nil end
@@ -307,6 +307,20 @@ function Card:rev_sticker()
   end
   if not any then return nil end
   return { add = add, mul = mul, override = ovr }
+end
+
+-- Compact, exact description of the per-card Rev transform. Tech cards do not
+-- own a standalone Rev number; their sticker changes the hand's running Rev in
+-- scoring order, so showing the operation is more truthful than inventing a
+-- synthetic total. Used by the card face, tooltip, and deck observability UI.
+function Card:rev_sticker_label()
+  local rs = self:rev_sticker()
+  if not rs then return nil end
+  local parts = {}
+  if rs.override ~= nil then parts[#parts + 1] = "=" .. fmt1(rs.override) end
+  if rs.add and rs.add ~= 0 then parts[#parts + 1] = (rs.add > 0 and "+" or "") .. fmt1(rs.add) end
+  if rs.mul and rs.mul ~= 1 then parts[#parts + 1] = "×" .. fmt1(rs.mul) end
+  return "Rev" .. table.concat(parts)
 end
 
 -- the joker/center behavior seam: returns an effect table or nil. Tech cards do nothing;
@@ -388,31 +402,48 @@ function Card:draw_body(t)
   -- bottom-right, upside down like a real deck), a BIG central suit watermark, and a name plate.
   local L = Coverage.display_layer(self)
   local col = (L and layers[L] and layers[L].color) or G.C.panel
-  local pip = G.SUIT_ART and L and G.SUIT_ART[L]
+  local pip = (G.TECH_ART and self.center and G.TECH_ART[self.center.key]) or (G.SUIT_ART and L and G.SUIT_ART[L])
+  local has_tech_mark = G.TECH_ART and self.center and G.TECH_ART[self.center.key]
 
-  pixel_rect(t.x, t.y, t.w, t.h, col, { chamfer = 5 })          -- shadow + fill + beveled emboss (border below)
+  -- Warm-white poker stock replaces the old full layer-colour placeholder. Layer colour remains a
+  -- restrained trim cue; the individual parody mark now carries the card's visual identity.
+  pixel_rect(t.x, t.y, t.w, t.h, { 0.94, 0.92, 0.84, 1 }, { chamfer = 5 })
+  lg.setColor(col[1], col[2], col[3], 0.85)
+  lg.rectangle("fill", t.x + 4, t.y + 4, 4, t.h - 8)
+  lg.rectangle("fill", t.x + t.w - 8, t.y + 4, 4, t.h - 8)
 
-  if pip then                                                   -- central suit illustration (dark watermark)
-    local iw = pip:getWidth()
-    local s = (t.w * 0.52) / iw
-    lg.setColor(0, 0, 0, 0.30)
-    lg.draw(pip, t.x + (t.w - iw * s) / 2, t.y + t.h * 0.14, 0, s, s)
+  if pip then                                                   -- individual mark; layer pip remains the fallback
+    local iw, ih = pip:getDimensions()
+    local s = math.min((t.w * (has_tech_mark and 0.62 or 0.52)) / iw, (t.h * 0.42) / ih)
+    lg.setColor(1, 1, 1, has_tech_mark and 0.96 or 0.36)
+    lg.draw(pip, t.x + (t.w - iw * s) / 2, t.y + t.h * 0.12, 0, s, s)
   end
   -- name plate
-  lg.setColor(0, 0, 0, 0.30); lg.rectangle("fill", t.x + 6, t.y + t.h * 0.50, t.w - 12, t.h * 0.30, 5, 5)
-  draw_text(G.FONTS.small, self.ability.name or "?", t.x + 5, t.y + t.h * 0.53, G.C.text, t.w - 10, "center")
+  lg.setColor(0.08, 0.09, 0.12, 0.88); lg.rectangle("fill", t.x + 8, t.y + t.h * 0.54, t.w - 16, t.h * 0.25, 4, 4)
+  draw_text(G.FONTS.small, self.ability.name or "?", t.x + 10, t.y + t.h * 0.565, G.C.text, t.w - 20, "center")
   -- corners (visible when cards overlap, Balatro rank+suit): Users + pip top-left, mirrored pip bottom-right
-  draw_text(G.FONTS.normal, tostring(self.base_users), t.x + 8, t.y + 6, G.C.users)
+  local effective_users = self:get_users()
+  local users_col = effective_users ~= (self.base_users or 0) and G.C.win or G.C.users
+  draw_text(G.FONTS.normal, tostring(effective_users), t.x + 8, t.y + 6, users_col)
+  local rev_label = self:rev_sticker_label()
+  if rev_label then
+    local rw, rh = 58, 24
+    pixel_rect(t.x + t.w - rw - 6, t.y + 6, rw, rh, { 0.08, 0.10, 0.15, 0.90 },
+      { chamfer = 4, shadow = false, emboss = false })
+    draw_text(G.FONTS.tiny, rev_label, t.x + t.w - rw - 4, t.y + 8, G.C.mult, rw - 4, "center")
+  end
   if pip then
     local ps = 22 / pip:getWidth()
-    lg.setColor(0, 0, 0, 0.75)
+    lg.setColor(1, 1, 1, has_tech_mark and 0.98 or 0.75)
     lg.draw(pip, t.x + 9, t.y + 40, 0, ps, ps)
     lg.draw(pip, t.x + t.w - 9, t.y + t.h - 40, math.pi, ps, ps)
   else
     draw_text(G.FONTS.tiny, Card.LAYER_ABBR[L] or (L or ""):sub(1, 2):upper(), t.x + 9, t.y + 42, G.C.black)
   end
-  -- layer label (bottom, full name — for the non-overlapped / hover view)
-  draw_text(G.FONTS.tiny, (L or ""):upper(), t.x + 4, t.y + t.h - text_h(G.FONTS.tiny) - 8, G.C.black, t.w - 8, "center")
+  -- Large, clean footer: draw directly so the global drop shadow cannot crowd the glyphs at card size.
+  lg.setFont(G.FONTS.normal)
+  lg.setColor(col)
+  lg.printf((L or ""):upper(), t.x + 8, t.y + t.h - text_h(G.FONTS.normal) - 5, t.w - 16, "center")
 
   -- selection / hover border
   local bcol, bw = G.C.border, 2

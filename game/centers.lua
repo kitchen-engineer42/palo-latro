@@ -1,7 +1,7 @@
 -- game/centers.lua — the content registry. Every content item is registered as an immutable
 -- plain-data CENTER into G.P_CENTERS (by key) + G.P_CENTER_POOLS[set]. A live Card points at a
 -- center by key; behavior/text resolve by string (so save/load + modding work). This is THE
--- architecture that scales to hundreds of entries (reference design/ the runtime design).
+-- architecture that scales to hundreds of entries (benchmark / the runtime contract).
 
 local Centers = {}
 local ContentValidate = require("game.content_validate")
@@ -34,13 +34,13 @@ function Centers.load_all()
     minimums = { techcards = 226, founders = 262, forms = 17 },
   })
 
-  for _, c in ipairs(content.techcards) do Centers.register(c) end   -- 226 Tech cards
+  for _, c in ipairs(content.techcards) do Centers.register(c) end   -- 226 (bridge B1)
   for _, a in ipairs(require("game.apptypes").list) do Centers.register(a) end
-  for _, f in ipairs(content.founders) do Centers.register(f) end    -- 262 Founders
-  for _, s in ipairs(content.signature_cards) do Centers.register(s) end --  pair
-  for _, fm in ipairs(content.forms) do Centers.register(fm) end          --  legendary 2nd forms
-  for _, v in ipairs(content.vouchers) do Centers.register(v) end         --   vouchers
-  for _, c in ipairs(content.consumables) do Centers.register(c) end       -- Tech Law consumables (wave 1)
+  for _, f in ipairs(content.founders) do Centers.register(f) end    -- 262 (bridge B1)
+  for _, s in ipairs(content.signature_cards) do Centers.register(s) end -- signature pair
+  for _, fm in ipairs(content.forms) do Centers.register(fm) end          -- legendary 2nd forms
+  for _, v in ipairs(content.vouchers) do Centers.register(v) end         -- investment vouchers
+  for _, c in ipairs(content.consumables) do Centers.register(c) end       -- Track C B: Tech Law consumables (wave 1)
 end
 
 -- preload founder art into G.FOUNDER_ART (call from love.load — needs love.graphics).
@@ -63,7 +63,7 @@ function Centers.load_art()
   end
 end
 
--- consumable (Tech Law) card-face art — the codex art is the COMPLETE card front.
+-- Track C B1: consumable (Tech Law) card-face art — the codex art is the COMPLETE card front.
 -- assets/consumables/<key>.png, keyed by the Consumable center key. Missing files → the text fallback face.
 function Centers.load_consumable_art()
   G.CONSUMABLE_ART = {}
@@ -73,17 +73,35 @@ function Centers.load_consumable_art()
   end
 end
 
--- misc art — Layer suit icons (white-on-alpha, engine-tinted), pack covers, the card back.
+-- Phase 4B: misc art — Layer suit icons (white-on-alpha, engine-tinted), pack covers, the card back.
 function Centers.load_misc_art()
-  G.SUIT_ART, G.PACK_ART = {}, {}
+  G.SUIT_ART, G.PACK_ART, G.TECH_ART = {}, {}, {}
   for _, L in ipairs({ "Frontend", "Backend", "Data", "Infra", "AI" }) do
     local ok, img = pcall(love.graphics.newImage, "assets/suits/" .. L:lower() .. ".png", { mipmaps = true })
     if ok then pcall(img.setFilter, img, "linear", "linear"); G.SUIT_ART[L] = img end
   end
-  local okp, pimg = pcall(love.graphics.newImage, "assets/packs/hiring_round.png", { mipmaps = true })
-  if okp then pcall(pimg.setFilter, pimg, "linear", "linear"); G.PACK_ART.hiring_round = pimg end
+  local pack_cache = {}
+  local function pack_image(key)
+    if pack_cache[key] ~= nil then return pack_cache[key] or nil end
+    local ok, img = pcall(love.graphics.newImage, "assets/packs/" .. key .. ".png", { mipmaps = true })
+    if ok then pcall(img.setFilter, img, "linear", "linear"); pack_cache[key] = img; return img end
+    pack_cache[key] = false
+  end
+  for _, p in ipairs(require("game.packs").all()) do
+    local img = pack_image(p.art_key) or (p.fallback_art and pack_image(p.fallback_art))
+    if img then G.PACK_ART[p.art_key] = img end
+  end
+  -- Compatibility key for the existing approved Hiring Round cover.
+  G.PACK_ART.hiring_round = pack_image("hiring_round")
   local okb, bimg = pcall(love.graphics.newImage, "assets/card_back.png", { mipmaps = true })
   if okb then pcall(bimg.setFilter, bimg, "linear", "linear"); G.CARD_BACK = bimg end   -- nil until the art lands
+  for _, c in ipairs(Centers.pool("TechCard")) do
+    local id = c.key and c.key:gsub("^t_", "")
+    if id then
+      local ok, img = pcall(love.graphics.newImage, "assets/tech_marks/" .. id .. ".png", { mipmaps = true })
+      if ok then pcall(img.setFilter, img, "linear", "linear"); G.TECH_ART[c.key] = img end
+    end
+  end
 end
 
 return Centers

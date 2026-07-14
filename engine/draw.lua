@@ -1,8 +1,8 @@
 -- engine/draw.lua — fixed-order flat draw pipeline (not a recursive tree walk). Iterates
--- pools by type in a deliberate stacking order (the runtime design / benchmark). The HUD/overlay is
+-- pools by type in a deliberate stacking order (the runtime contract / benchmark). The HUD/overlay is
 -- drawn separately by ui.lua after this, and declarative UIBoxes (later) would slot in here.
 
--- ---- pixel-art rect primitive ---------------------------------------------------------------
+-- ---- pixel-art rect primitive (P1 skin pass) -------------------------------------------------
 -- A simplified clean-room take on Balatro's draw_pixellated_rect (engine/ui.lua): a chamfered-corner
 -- polygon with an offset drop-shadow + a 3D emboss edge (light top/left, dark bottom/right) + border.
 -- This is the one primitive that makes panels/cards/buttons read as Balatro. (The full parallax/
@@ -92,11 +92,11 @@ function chip(x, y, text, font, fill, txtcol)
   return w, h
 end
 
--- ---- resolution scaling -----------------------------------------------------------------
+-- ---- resolution scaling (P2) -----------------------------------------------------------------
 -- Fit the VW×VH virtual layout into the real window, preserving aspect. G.VIEW holds the transform;
 -- vmap/vmouse convert real window points back to virtual coords for input.
 
--- Build G.FONTS at a rasterization scale `rs` (1 = the virtual base size). draw_text() divides by
+-- (P3) Build G.FONTS at a rasterization scale `rs` (1 = the virtual base size). draw_text() divides by
 -- G.FONT_S so on-screen size always equals the virtual base size — so flipping `rs` up later (to the live
 -- display scale, for pixel-perfect crispness at any window size, à la Balatro) is a one-line change that
 -- doesn't disturb layout. For now rs=1 (bigger base sizes carry the legibility win; nearest stays sharp).
@@ -161,24 +161,30 @@ end
 
 -- per-area draw-rank: lower draws first (under). Within an area, cards draw by their position index, so the
 -- hand's z-order matches its left→right layout. (Was: pool-insertion order = tech-LAYER-grouped → e.g.
--- Knowledge always on top regardless of hand position.) The hovered/selected card lifts to the top of its area.
+-- Knowledge always on top regardless of hand position.) Hand/play rows keep this order even while a card is
+-- hovered or selected: every card to the right must remain above the card immediately to its left.
 local CARD_AREA_Z = { deck = 1, jokers = 2, play = 3, hand = 4 }
 function draw_all()
   draw_pool(G.I.CARDAREA)   -- areas (mostly invisible / debug outline)
   local list = {}
   for _, c in ipairs(G.I.CARD) do
     if not c.REMOVED and c.states and c.states.visible and c.draw then
-      local rank = (c.area and c.area.config and CARD_AREA_Z[c.area.config.type]) or 5
+      local area_type = c.area and c.area.config and c.area.config.type
+      local rank = CARD_AREA_Z[area_type] or 5
       local idx = 0
       if c.area and c.area.cards then
         for i = 1, #c.area.cards do if c.area.cards[i] == c then idx = i; break end end
       end
-      local lift = ((c.states.hover and c.states.hover.is) or c.selected) and 900 or 0
+      local strict_row_order = area_type == "hand" or area_type == "play"
+      local lift = (not strict_row_order and ((c.states.hover and c.states.hover.is) or c.selected)) and 900 or 0
       c._zsort = rank * 1000 + idx + lift
       list[#list + 1] = c
     end
   end
-  table.sort(list, function(a, b) return a._zsort < b._zsort end)
+  table.sort(list, function(a, b)
+    if a._zsort == b._zsort then return (a.ID or 0) < (b.ID or 0) end
+    return a._zsort < b._zsort
+  end)
   for _, c in ipairs(list) do c:draw() end
   -- G.I.UIBOX reserved for the declarative UI module
 end

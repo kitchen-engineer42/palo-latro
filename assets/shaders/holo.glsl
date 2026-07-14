@@ -1,4 +1,4 @@
-// holo.glsl — Palo Latro "Battle-Tested" edition shimmer. CLEAN-ROOM: our own turbulence+grid
+// holo.glsl — Palo Latro "Battle-Tested" edition shimmer (P4 shine). CLEAN-ROOM: our own turbulence+grid
 // field, not Balatro's holo.fs. A shifting hue wash + faint diagonal grid sparkle over the portrait.
 extern number time;     // wall-clock seconds (G.TIMERS.BACKGROUND)
 extern number phase;    // per-card offset

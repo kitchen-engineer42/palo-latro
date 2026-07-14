@@ -21,9 +21,10 @@ On macOS, this alternative starts a separate LÖVE instance:
 open -n -a /Applications/love.app --args "$(pwd)"
 ```
 
-Palo Latro currently includes the complete blind loop, persistent deckbuilding, twelve app types,
-founders and evolved forms, markets, bosses, shops, packs, consumables, funding stakes, economy and
-payroll systems, profile progression, and deterministic seeded runs.
+Palo Latro includes the complete blind loop, persistent deckbuilding, twelve app types, 262 founders
+and 17 evolved forms, 16 markets, bosses, shops, normal/jumbo/mega packs, consumables, eight funding
+stakes, economy and payroll systems, profile progression, deterministic seeded runs, and original
+card artwork throughout the playable game.
 
 ## License
 
@@ -32,5 +33,3 @@ The Lua source code is available under the [MIT License](LICENSE).
 Original artwork, graphs, audio, and other creative game assets are licensed under
 [CC BY-NC 4.0](ASSETS-LICENSE.md). Third-party assets remain governed by the license notice bundled
 with the relevant asset.
-
-Built with John: https://github.com/kitchen-engineer42/joharnessburg

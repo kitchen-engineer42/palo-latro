@@ -22,11 +22,12 @@ local UI           = require("game.ui")
 local Audio        = require("game.audio")
 local Juice        = require("game.juice")
 local Particles    = require("game.particles")
+local PackPresentation = require("game.pack_presentation")
 
 local layers = require("data.layers")
-local MarketTint = require("data.market_tint")   -- per-market background tint
+local MarketTint = require("data.market_tint")   -- P4: per-market background tint
 
--- compile every assets/shaders/*.glsl into G.SHADERS[name] (Balatro auto-loads its shader dir the same
+-- P4: compile every assets/shaders/*.glsl into G.SHADERS[name] (Balatro auto-loads its shader dir the same
 -- way). pcall-guarded per file so a bad/unsupported shader just disables THAT effect (its call site falls
 -- back to the static render) instead of crashing — and a no-GPU/headless run simply leaves G.SHADERS empty.
 local function load_shaders()
@@ -49,7 +50,7 @@ function love.load()
   love.math.setRandomSeed(os.time())
   G.WINDOW.w, G.WINDOW.h = G.VW, G.VH                  -- gameplay lays out in VIRTUAL coords; drawn via a
 
-  -- pixel-art typeface: prefer m6x11 (Balatro's family — taller/clearer; free for commercial use)
+  -- pixel-art typeface (P3): prefer m6x11 (Balatro's family — taller/clearer; free for commercial use)
   -- if present, else the m5x7 we ship. Fonts are (re)rasterized at the DISPLAY scale by rebuild_fonts()
   -- so text stays crisp at any window size (mirrors Balatro). Base point sizes are VIRTUAL; ×G.FONT_S live.
   G.FONT_FILE = (love.filesystem.getInfo("assets/fonts/m6x11.ttf") and "assets/fonts/m6x11.ttf")
@@ -63,16 +64,23 @@ function love.load()
   Centers.load_all()
   Profile.apply_to_centers(Centers)               -- lock 2nd-forms etc. unless unlocked in the profile
   Centers.load_art()
-  Centers.load_consumable_art()                   -- Tech Law card-face art (assets/consumables/)
-  Centers.load_misc_art()                         -- suit icons / pack covers / card back
+  Centers.load_consumable_art()                   -- Track C B1: Tech Law card-face art (assets/consumables/)
+  Centers.load_misc_art()                         -- Phase 4B: suit icons / pack covers / card back
   Audio.load()
-  load_shaders()                                  -- compile assets/shaders/*.glsl → G.SHADERS (guarded)
+  load_shaders()                                  -- P4: compile assets/shaders/*.glsl → G.SHADERS (guarded)
   StateMachine.prep_stage(G.STAGES.MAIN_MENU, G.STATES.MENU)   -- boot to the stake-select menu
   if os.getenv("PL_AUTORUN") then                              -- dev: skip the menu, jump into a run at stake N
     Round.start_run({ stake = tonumber(os.getenv("PL_AUTORUN")) or 1,
       market_id = os.getenv("PL_MARKET") or "indie-saas" })
     if os.getenv("PL_PLAY") and G.FUNCS.play_blind then G.FUNCS.play_blind() end   -- + deal into the play screen
-    if os.getenv("PL_SHOP") then require("game.shop").enter(); StateMachine.set_state(G.STATES.SHOP) end  -- jump to shop
+    if os.getenv("PL_SHOP") then
+      local PreviewShop = require("game.shop")
+      PreviewShop.enter(); StateMachine.set_state(G.STATES.SHOP)
+      if os.getenv("PL_PACK_PREVIEW") then
+        G.GAME.cash = math.max(G.GAME.cash or 0, PreviewShop.pack_price(1))
+        PreviewShop.open_pack(1)
+      end
+    end  -- jump to shop; optionally start its pack ceremony for screenshot review
     if os.getenv("PL_LAWS") and G.consumables then                -- dev: grant Tech Laws (consumable-GUI testing)
       local C = require("game.consumables")
       C.grant("tl_seed_round"); C.grant("tl_moores_law")
@@ -82,7 +90,7 @@ function love.load()
   if ov == "runinfo" then G.SHOW_RUN_INFO = true
   elseif ov == "options" then G.SHOW_OPTIONS = true
   elseif ov == "deck" then G.SHOW_DECK_VIEW = true end
-  if os.getenv("PL_EDITIONS") and G.jokers then     -- dev: spawn founders-with-art carrying each edition (preview  shimmer)
+  if os.getenv("PL_EDITIONS") and G.jokers then     -- dev: spawn founders-with-art carrying each edition (preview P4 shimmer)
     local picks = {}
     for _, c in ipairs(Centers.pool("Founder")) do
       if G.FOUNDER_ART and G.FOUNDER_ART[c.key] then picks[#picks + 1] = c; if #picks >= #Card.EDITION_KEYS then break end end
@@ -92,7 +100,26 @@ function love.load()
       if c then local jk = Card({ center = c, T = { x = G.jokers.T.x, y = G.jokers.T.y } }); jk.edition = ed; G.jokers:emplace(jk) end
     end
   end
-  if os.getenv("PL_CRT") then G.SETTINGS.crt = true end        -- dev: force CRT post-fx on at boot
+  local tech_preview = os.getenv("PL_TECH_PREVIEW") -- dev: render an exact art-review hand, comma-separated center keys
+  if tech_preview and G.hand then
+    -- Preview replacement must destroy the old hand, not merely detach it. Detached cards remain in
+    -- G.I.CARD and would be drawn above the requested row with no deterministic area/index ordering.
+    for i = #G.hand.cards, 1, -1 do
+      local card = G.hand.cards[i]
+      G.hand:remove_card(card, true)
+      card:remove()
+    end
+    for key in tech_preview:gmatch("[^,]+") do
+      key = key:match("^%s*(.-)%s*$")
+      local center = Centers.get(key)
+      if center and center.set == "TechCard" then
+        G.hand:emplace(Card({ center = center, T = { x = G.hand.T.x, y = G.hand.T.y } }), true)
+      end
+    end
+    G.hand:align_cards()
+    StateMachine.set_state(G.STATES.SELECTING_HAND)
+  end
+  if os.getenv("PL_CRT") then G.SETTINGS.crt = true end        -- dev: force CRT post-fx on at boot (P4.4)
   if os.getenv("PL_FULLSCREEN") then                           -- dev: launch fullscreen (test scaling)
     love.window.setFullscreen(true)
     update_view(love.graphics.getDimensions())
@@ -102,7 +129,7 @@ end
 function love.update(dt)
   -- clocks
   G.TIMERS.REAL = G.TIMERS.REAL + dt
-  G.TIMERS.BACKGROUND = G.TIMERS.BACKGROUND + dt   --  shader spin-time (wall-clock, never paused)
+  G.TIMERS.BACKGROUND = G.TIMERS.BACKGROUND + dt   -- P4 shader spin-time (wall-clock, never paused)
   local accel = 0
   if G.STATE == G.STATES.SCORING then
     G.ACC = math.min((G.ACC or 0) + dt * 0.6, 3)
@@ -117,13 +144,16 @@ function love.update(dt)
   if G.E_MANAGER then G.E_MANAGER:update() end
   Juice.update(dt)
   Particles.update(dt)
+  if G.STATE == G.STATES.SHOP and G.GAME and G.GAME.shop then
+    PackPresentation.update(G.GAME.shop.pack_open)
+  end
 
   -- ease every moveable toward its target (visual time, clamped for stability)
   local move_dt = math.min(1 / 30, dt)
   for _, m in ipairs(G.I.MOVEABLE) do if m.move and not m.REMOVED then m:move(move_dt) end end
   for _, m in ipairs(G.I.MOVEABLE) do if m.update and not m.REMOVED then m:update(dt) end end
 
-  -- Hover the topmost hand card under the cursor in virtual coordinates.
+  -- hover: topmost hand card under the cursor (virtual coords, P2)
   local mx, my = vmouse()
   if G.hand then
     local top = nil
@@ -165,8 +195,9 @@ function love.update(dt)
 
   if os.getenv("PL_SHOT") then                       -- dev: grab a settled frame to a PNG, then quit
     G._shot = (G._shot or 0) + 1
-    if G._shot == 30 then love.graphics.captureScreenshot("pl_shot.png") end
-    if G._shot > 33 then love.event.quit(0) end
+    local shot_frame = tonumber(os.getenv("PL_SHOT_FRAME")) or 30
+    if G._shot == shot_frame then love.graphics.captureScreenshot("pl_shot.png") end
+    if G._shot > shot_frame + 3 then love.event.quit(0) end
   end
 end
 
@@ -176,7 +207,7 @@ local function area_label(text, area)
 end
 
 function love.draw()
-  --  (optional, default off): render the whole frame to G.CANVAS, then blit it through the gentle CRT
+  -- P4.4 (optional, default off): render the whole frame to G.CANVAS, then blit it through the gentle CRT
   -- shader. No geometric warp, so the mouse→virtual mapping is unaffected. Falls straight to the screen when off.
   local use_crt = shaders_enabled() and G.SETTINGS.crt and G.SHADERS.crt
   if use_crt then
@@ -186,10 +217,10 @@ function love.draw()
     end
     love.graphics.setCanvas({ G.CANVAS, stencil = true }); love.graphics.clear()   -- stencil buffer → clip_chamfer works under CRT
   end
-  -- Resolution independence (revised): draw the virtual 1280×800 layout under a single uniform
+  -- Resolution independence (P2, revised): draw the virtual 1280×800 layout under a single uniform
   -- SCALE TRANSFORM at the window's native resolution (crisp — no low-res canvas/linear upscale), centred,
   -- with the bg filling the surround (adaptive to any aspect — no hard black letterbox). G.VIEW = scale+offset.
-  -- animated, market-tinted backdrop fills the whole window (incl. the centred surround), in WINDOW
+  -- P4: animated, market-tinted backdrop fills the whole window (incl. the centred surround), in WINDOW
   -- space before the scale transform. Falls back to the flat clear when shaders are off/unsupported or a
   -- uniform send errors (pcall) — so the frame always has a clean background.
   local bg_ok = false
@@ -198,7 +229,7 @@ function love.draw()
     local w, h = love.graphics.getDimensions()
     local t1, t2, t3, contrast = MarketTint.current()
     bg_ok = pcall(function()
-      sh:send("time", G.TIMERS.BACKGROUND)
+      sh:send("time", shader_time())
       sh:send("spin", (G.GAME and G.GAME._bg_spin) or 0)
       sh:send("resolution", { w, h })
       sh:send("contrast", contrast)
@@ -216,7 +247,7 @@ function love.draw()
 
   Juice.apply_transform()    -- screen shake wraps the scene only (UI stays steady/clickable)
   if G.STATE ~= G.STATES.SHOP and G.STATE ~= G.STATES.MENU and G.STATE ~= G.STATES.BLIND_SELECT then   -- full-screen pages skip the play scene
-    draw_all()               -- cards + areas (fixed-order pools); zone labels are drawn by ui.lua ( layout)
+    draw_all()               -- cards + areas (fixed-order pools); zone labels are drawn by ui.lua (P3 layout)
     Particles.draw()         -- sparkle bursts
     Juice.draw()             -- floating combat text (on top)
   end
@@ -230,14 +261,14 @@ function love.draw()
   UI.render()                -- HUD / buttons / overlay (no shake)
   Juice.draw_flash()         -- brief crescendo/win-lose flash over the scene + HUD
   UI.draw_tooltip()          -- hovered card's full ability text, on top of everything
-  UI.draw_overlays()         -- deck view / run info / options (topmost)
+  UI.draw_overlays()         -- Phase 4B: deck view / run info / options (topmost)
 
   love.graphics.pop()        -- end the virtual→native scale transform
 
-  if use_crt then            -- blit the full-scene canvas to the screen through the CRT post-fx
+  if use_crt then            -- P4.4: blit the full-scene canvas to the screen through the CRT post-fx
     love.graphics.setCanvas()
     local ok = pcall(function()
-      G.SHADERS.crt:send("time", G.TIMERS.BACKGROUND)
+      G.SHADERS.crt:send("time", shader_time())
       G.SHADERS.crt:send("resolution", { G.CANVAS:getWidth(), G.CANVAS:getHeight() })
       love.graphics.setShader(G.SHADERS.crt)
       love.graphics.setColor(1, 1, 1, 1)
@@ -252,9 +283,9 @@ end
 local function input_locked() return G.STATE == G.STATES.SCORING end
 
 function love.mousepressed(x, y, button)
-  if button == 2 and G.STATE == G.STATES.TARGET_SELECT then G.CONSUMABLE_CANCEL(); return end   -- cancel targeting
+  if button == 2 and G.STATE == G.STATES.TARGET_SELECT then G.CONSUMABLE_CANCEL(); return end   -- B4 cancel
   if button ~= 1 then return end
-  x, y = vmap(x, y)                      -- window → virtual coords
+  x, y = vmap(x, y)                      -- window → virtual coords (P2)
   if G.STATE == G.STATES.GAME_OVER then G.FUNCS.restart(); return end
   if input_locked() then return end
 
@@ -274,7 +305,7 @@ function love.mousepressed(x, y, button)
     return
   end
 
-  -- During TARGET_SELECT only eligible hand cards are clickable; buttons above still work
+  -- B4: TARGET_SELECT — ONLY eligible hand cards are clickable (hard-gated; buttons above still work
   -- so the Layer picker + cancel reach their FUNCS). Everything else falls through to nothing.
   if G.STATE == G.STATES.TARGET_SELECT then
     local pc = G.PENDING_CONSUMABLE
@@ -291,7 +322,7 @@ function love.mousepressed(x, y, button)
     return
   end
 
-  -- Consumables click to select; Use/Sell buttons appear beneath, separate from founder drag.
+  -- B2: consumable click-to-select (Use/Sell buttons appear beneath; separate from founder drag)
   if (G.STATE == G.STATES.SELECTING_HAND or G.STATE == G.STATES.SHOP) and G.consumables then
     for i = #G.consumables.cards, 1, -1 do
       local c = G.consumables.cards[i]
@@ -351,19 +382,19 @@ function love.keypressed(key)
   elseif key == "r" then G.FUNCS.restart(); return
   elseif key == "m" then G.SETTINGS.sound = not G.SETTINGS.sound; return          -- dev: toggle sound
   elseif key == "j" then G.SETTINGS.reduced_motion = not G.SETTINGS.reduced_motion; return  -- dev: toggle motion
-  elseif key == "h" then G.SETTINGS.shaders = not G.SETTINGS.shaders; return                -- dev: toggle shaders
-  elseif key == "c" then G.SETTINGS.crt = not G.SETTINGS.crt; return                        -- dev: toggle CRT post-fx
+  elseif key == "h" then G.SETTINGS.shaders = not G.SETTINGS.shaders; return                -- dev: toggle shaders (P4)
+  elseif key == "c" then G.SETTINGS.crt = not G.SETTINGS.crt; return                        -- dev: toggle CRT post-fx (P4.4)
   end
   if input_locked() then return end                                              -- lock actions during the count-up
   if key == "space" then if G.FUNCS.ship then G.FUNCS.ship() end
-  elseif key == "f" then if G.FUNCS.refactor then G.FUNCS.refactor() end   -- pay down tech debt
-  elseif key == "d" then if G.FUNCS.distill then G.FUNCS.distill() end      -- distill selected founder
-  elseif key == "p" then if G.FUNCS.promote then G.FUNCS.promote() end      -- automate selected founder
-  elseif key == "e" then if G.FUNCS.raise then G.FUNCS.raise() end          -- raise round / dilute equity
-  elseif key == "v" then if G.FUNCS.market_pivot then G.FUNCS.market_pivot() end  -- pivot markets
+  elseif key == "f" then if G.FUNCS.refactor then G.FUNCS.refactor() end   -- pay down tech-debt (E3)
+  elseif key == "d" then if G.FUNCS.distill then G.FUNCS.distill() end      -- distill selected founder (E4)
+  elseif key == "p" then if G.FUNCS.promote then G.FUNCS.promote() end      -- automate selected founder (E4)
+  elseif key == "e" then if G.FUNCS.raise then G.FUNCS.raise() end          -- raise round / dilute equity (E4)
+  elseif key == "v" then if G.FUNCS.market_pivot then G.FUNCS.market_pivot() end  -- pivot markets (E5)
   end
 end
 
 function love.resize(w, h)
-  update_view(w, h)          -- recompute the virtual→window fit; G.WINDOW stays the virtual resolution
+  update_view(w, h)          -- recompute the virtual→window fit; G.WINDOW stays the virtual resolution (P2)
 end

@@ -1,6 +1,5 @@
 -- game/text.lua — the G.TEXT localization seam. All player-facing strings come from here
--- (never string literals in UI code), so a localization file can fill G.TEXT later (:
--- shipped static; no runtime translation service). Themed verbs: a "hand" = a Ship (launch),
+-- (never string literals in UI code), so a localization file can fill G.TEXT later (-- shipped static; no runtime translation service). Themed verbs: a "hand" = a Ship (launch),
 -- a "discard" = a Pivot.
 G.TEXT.title       = "PALO LATRO"
 G.TEXT.ship        = "Ship"

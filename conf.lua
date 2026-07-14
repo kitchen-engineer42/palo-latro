@@ -10,7 +10,7 @@ function love.conf(t)
   t.window.resizable = true
   t.window.vsync = 1
   t.window.highdpi = true
-  -- Modules we don't use yet (kept lean per 's lightweight runtime):
+  -- Modules the lightweight runtime does not use:
   t.modules.physics = false
   t.modules.joystick = false
   t.modules.touch = false

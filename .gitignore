@@ -5,3 +5,15 @@
 *.love
 build/
 dist/
+
+# Private development material is intentionally kept outside the public game repository
+.claude/
+.codex/
+knowledge/
+docs/adr/
+docs/internal/
+tools/private/
+art-source/
+receipts/
+reports/private/
+*.bundle

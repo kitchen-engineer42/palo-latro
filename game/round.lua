@@ -21,7 +21,7 @@ function Round.start_run(opts)
   local W, H = G.WINDOW.w, G.WINDOW.h
   RunState.new(opts)                                     -- the 4-scope run state + ante/blind loop
 
-  -- Balatro layout: LEFT = counter column (drawn by ui.lua, x 0..328); RIGHT = play area.
+  -- Balatro layout (P3): LEFT = counter column (drawn by ui.lua, x 0..328); RIGHT = play area.
   -- jokers top-left of the play zone, played cards centre, hand bottom, deck bottom-right corner.
   local PX = 352                                          -- left edge of the play zone (right of the panel)
   -- the hand gets the full bottom width (Ship/Pivot live in a right column above the deck, not beside the hand)
@@ -31,7 +31,7 @@ function Round.start_run(opts)
   G.hand   = CardArea({ type = "hand",   card_limit = 8, T = { x = PX - 8, y = H - Card.H - 62, w = 880, h = Card.H } })  -- lifted: Ship·Sort·Pivot row sits under it (Balatro bottom-mid)
   G.deck   = CardArea({ type = "deck",   T = { x = W - Card.W - 16, y = H - Card.H - 18, w = Card.W, h = Card.H } })
   G.consumables = CardArea({ type = "consumables", card_limit = G.GAME.consumable_slots or 2,
-                             T = { x = W - 244, y = 24, w = 220, h = Card.H } })   --  (the reserved top-right region)
+                             T = { x = W - 244, y = 24, w = 220, h = Card.H } })   -- Track C B1 (the reserved top-right region)
 
   if G.GAME.market then
     Round.seed_master_deck()
@@ -41,7 +41,8 @@ function Round.start_run(opts)
   end
 end
 
--- between blinds: fresh deck + redraw (deck draft is a later module), fire the blind hooks
+-- between blinds: materialize the persistent deck, redraw, and fire blind hooks (post-boss drafts
+-- are handled by the TECH_DRAFT state rather than inside this transition)
 function Round.next_blind()
   for i = #G.hand.cards, 1, -1 do local c = G.hand.cards[i]; G.hand:remove_card(c, true); c:remove() end
   for i = #G.deck.cards, 1, -1 do local c = G.deck.cards[i]; G.deck:remove_card(c, true); c:remove() end
@@ -57,7 +58,7 @@ function Round.restart()
   Round.start_run()
 end
 
--- A founder `gen` operation can create cards or modify hand size mid-run.
+-- generation API (E3): a founder `gen` op creates cards / modifies hand size mid-run.
 function G.GENERATE(kind, opts)
   opts = opts or {}
   if kind == "tech_card" or kind == "specific_tech_card" or kind == "remove_card" or kind == "copy_card" then
@@ -79,17 +80,17 @@ function G.GENERATE(kind, opts)
     end
     if #cands > 0 then
       local c = cands[RNG.int("generation", #cands)]
-      local e = Round.master_add(c.key)                                  -- persist into master_deck
+      local e = Round.master_add(c.key)                                  -- A3: persist into master_deck
       G.deck:emplace(Card({ center = c, face_down = true, uid = e and e.uid, T = { x = G.deck.T.x, y = G.deck.T.y } }))
     end
   elseif kind == "specific_tech_card" and opts.key and G.deck then       -- inject John on hire
     local ce = Centers.get(opts.key)
     if ce then
-      local e = Round.master_add(opts.key)                               -- persist across blinds while hired
+      local e = Round.master_add(opts.key)                               -- A3: John now persists across blinds while hired
       G.deck:emplace(Card({ center = ce, face_down = true, uid = e and e.uid, T = { x = G.deck.T.x, y = G.deck.T.y } }))
     end
   elseif kind == "remove_tech_card" and opts.key then                    -- delete John on fire
-    Round.master_remove_key(opts.key)                                    -- remove from the deck of record too
+    Round.master_remove_key(opts.key)                                    -- A3: drop from the deck-of-record too
     for _, area in ipairs({ G.deck, G.hand, G.play }) do
       if area and area.cards then
         for i = #area.cards, 1, -1 do
@@ -115,14 +116,14 @@ function G.GENERATE(kind, opts)
       elseif opts.which ~= "highest" and (c.base_users or 0) < (src.base_users or 0) then src = c end  -- default: cheapest
     end
     if src and src.center then
-      local e = Round.master_add(src.center_key or src.center.key)       -- the copy persists too
+      local e = Round.master_add(src.center_key or src.center.key)       -- A3: the copy persists too
       G.deck:emplace(Card({ center = src.center, face_down = true, uid = e and e.uid, T = { x = G.deck.T.x, y = G.deck.T.y } }))
     end
   end
   -- founder_shop: the shop module is a later seam
 end
 
--- the run owns a persistent deck-of-record (master_deck). Seed it once from the TechCard pool
+-- Track C A1: the run owns a persistent deck-of-record (master_deck). Seed it once from the TechCard pool
 -- (skip `signature` — John is injected on hire), assigning a stable uid per entry. Plain data → serializable.
 function Round.next_uid()
   local g = G.GAME
@@ -149,7 +150,7 @@ end
 
 function Round.select_market(market)
   if G.GAME._deck_seeded then return false end
-  require("game.markets").select(G.GAME, market)
+  require("game.markets").select(G.GAME, market, { initial = true })
   G.GAME.era = Eras.for_ante(require("data.gameplay.market_rules").for_market(market), G.GAME.ante)
   Round.seed_master_deck()
   StateMachine.set_state(G.STATES.BLIND_SELECT)
@@ -180,7 +181,7 @@ function Round.choose_tech(index)
   return true
 end
 
--- the SINGLE mutation path into master_deck (so deck changes persist across blinds). All deck
+-- Track C A3: the SINGLE mutation path into master_deck (so deck changes persist across blinds). All deck
 -- adds/removes funnel through these; no direct table.insert into master_deck elsewhere. No-op headless.
 function Round.master_add(center_key, props)
   local g = G.GAME
@@ -222,8 +223,8 @@ function Round.build_deck()
     if center then
       local c = Card({ center = center, face_down = true, uid = entry.uid, T = { x = G.deck.T.x, y = G.deck.T.y } })
       c.edition, c.seal, c.enh = entry.edition, entry.seal, entry.enh
-      c.stickers = entry.stickers and deep_copy(entry.stickers) or nil   -- consumable card-stat stickers
-      c.layer_override = entry.layer_override                            -- set_layer override
+      c.stickers = entry.stickers and deep_copy(entry.stickers) or nil   -- Track C: consumable card-stat stickers
+      c.layer_override = entry.layer_override                            -- Track C: set_layer override
       if entry.config and next(entry.config) then c.ability.config = deep_copy(entry.config) end
       cards[#cards + 1] = c
     end
@@ -276,7 +277,7 @@ function Round.cash_out_ship()
   g.ships_this_run = g.ships_this_run + 1
   g.valuation = g.run_best_arr or 0
   Scoring.fire_hook("end_of_round")
-  require("game.meters").decay_all()                           -- hype decays per round
+  require("game.meters").decay_all()                           -- E4: hype decays per round
 
   for i = #G.play.cards, 1, -1 do                              -- clear the played cards
     local c = G.play.cards[i]

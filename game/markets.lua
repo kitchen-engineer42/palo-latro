@@ -63,29 +63,31 @@ function Markets.offers(count, rng, include_all)
   return out
 end
 
-function Markets.apply_perk(g, market, sign)
+function Markets.apply_perk(g, market, sign, opts)
   sign = sign or 1
+  opts = opts or {}
   for _, op in ipairs(Rules.for_market(market).perk_ops or {}) do
     local amount = (op.amount or 0) * sign
     if op.op == "ships_per_blind" then g.ships_bonus = (g.ships_bonus or 0) + amount
     elseif op.op == "pivots_per_blind" then g.pivots_bonus = (g.pivots_bonus or 0) + amount
     elseif op.op == "founder_slots" then g.founder_slots = math.max(1, (g.founder_slots or 5) + amount)
     elseif op.op == "hand_size" then g.hand_size = math.max(1, (g.hand_size or 8) + amount)
-    elseif op.op == "starting_cash_units" and sign > 0 then
+    elseif op.op == "starting_cash_units" and sign > 0 and opts.initial then
       local Economy = require("game.economy")
       local RunState = require("game.runstate")
       g.cash = (g.cash or 0) + amount * Economy.unit(g, RunState.ANTE_BASE)
-    elseif op.op == "free_voucher" and sign > 0 then g.free_voucher_pending = true
+    elseif op.op == "free_voucher" and sign > 0 and opts.initial then g.free_voucher_pending = true
     end
   end
 end
 
-function Markets.select(g, market)
+function Markets.select(g, market, opts)
+  opts = opts or {}
   if g.market then Markets.apply_perk(g, g.market, -1) end
   g.market = market
   g.markets_seen_run = g.markets_seen_run or {}
   g.markets_seen_run[market.id] = true
-  Markets.apply_perk(g, market, 1)
+  Markets.apply_perk(g, market, 1, opts)
   return market
 end
 

@@ -3,7 +3,7 @@
 -- literals are parsed by a restricted grammar and migrated without executing them. NO between-run player
 -- power — only WHICH content is in the pool + which
 -- stakes are selectable change. Locked content = the 17 legendary 2nd-forms (alternate versions; locking them
--- never gates base content or the knowledge edge, plus an initially empty marquee list.
+-- never gates base content or the Knowledge edge) plus an initially empty marquee list.
 
 local Profile = {}
 local Codec = require("game.profile_codec")
@@ -137,7 +137,7 @@ function Profile.max_stake()
   return m
 end
 
--- Progressive form reveal: Legendary second forms unlock according to run depth,
+-- Progressive form reveal: legendary 2nd-forms unlock by how DEEP the player has reached,
 -- not all-at-once on a win. Sorted by key for a stable order; a deeper best-ante reveals a larger fraction.
 --   reach ante 4 → ~⅓ of forms · ante 6 → ~⅔ · ante 8 / IPO win → all.
 -- Tying the reveal to depth (achievable mid-run) makes forms a felt progression rather than a single win-wall.

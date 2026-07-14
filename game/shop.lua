@@ -1,7 +1,9 @@
--- game/shop.lua — the between-blinds shop. Random rarity-weighted founder offers limit access:
--- players can only buy what is shown, rerolls cost money, and Cash depends on Margin and ARR.
--- The shop uses two founder slots, a 70/25/5 rarity poll, spawn-only Legendary cards, and
--- ante-scaled pricing. Packs, vouchers, consumables, and Founder offers share the same economy.
+-- game/game/shop.lua — the between-blinds founder SHOP. Random rarity-weighted founder offers
+-- are the P0 access brake the balance-sim identified (the runtime contract): you can only buy what's
+-- shown, rerolls cost money, and money = Margin × ARR, so the low-margin lane is genuinely gated.
+-- Structure ported from Balatro (2 slots, 70/25/5 poll, Legendary spawn-only, reroll base+1/roll); the $
+-- numbers are ANTE-SCALED drafts (sized to expected Cash), to be tuned by the #36 re-sim. Packs/vouchers
+-- are P2/P3 (this file exposes the founder core + seams).
 
 local Centers = require("game.centers")
 local Audio = require("game.audio")
@@ -10,22 +12,23 @@ local Interp = require("game.effect_interp")   -- 1.5b: passive run-modifiers ap
 local Pricing = require("game.pricing")
 local Lifecycle = require("game.founder_lifecycle")
 local Packs = require("game.packs")
+local PackPresentation = require("game.pack_presentation")
 local Stakes = require("game.stakes")
 local MarketRules = require("data.gameplay.market_rules")
 local RNG = require("game.rng")
 local random = RNG.fn("shop")
+local pack_random = RNG.fn("packs")
+local pack_shop_random = RNG.fn("pack_shop")
 
 local Shop = {}
 
--- Cumulative rarity poll; Legendary cards appear only through packs.
+-- cumulative rarity poll (Balatro 70/25/5); Legendary is excluded (spawn-only, via packs in P3).
 local POLL = { { r = "Common", c = 0.70 }, { r = "Uncommon", c = 0.95 }, { r = "Rare", c = 1.00 } }
--- Price as a fraction of the ante's expected Cash.
+-- price as a fraction of the ante's expected Cash; sim-tuned. (#36)
 local PRICE_FRAC = { Common = 0.15, Uncommon = 0.30, Rare = 0.55, Legendary = 1.0 }
 local REROLL_FRAC, REROLL_INC = 0.10, 0.02
--- Hiring Round pack: open → choose m of n founders, with a Legendary BREAKTHROUGH chance per slot.
+-- Default retained for callers that ask for a pack price without identifying an offer.
 local PACK = Packs.get("hiring")
-local BREAKTHROUGH = PACK.legendary_chance
-local EDITION_CHANCE = PACK.edition_chance
 
 local function maybe_edition(jk, edition)
   if not Card then return end
@@ -71,7 +74,7 @@ function Shop.sell_value(center)
   return Pricing.sell_value(center, Shop.price(center))
 end
 
--- Tech Law consumables — 1 offered per shop, ante-scaled price, common-weighted roll.
+-- Track C B3: Tech Law consumables — 1 offered per shop, ante-scaled price, common-weighted roll.
 function Shop.consumable_price(c) return math.max(2, math.floor(ante_scale() * (c.cost_frac or 0.2) + 0.5)) end
 function Shop.consumable_sell_value(c)
   local basis = c and c.ability and c.ability.config and c.ability.config._sell_basis
@@ -107,8 +110,9 @@ function Shop.buy_consumable()
   return true
 end
 
-local function roll_rarity()
-  local x = random()
+local function roll_rarity(rng)
+  rng = rng or random
+  local x = rng()
   for _, e in ipairs(POLL) do if x <= e.c then return e.r end end
   return "Common"
 end
@@ -137,12 +141,13 @@ local function market_weight(center)
   return weight
 end
 
-local function roll_one(excluded)
+local function roll_one(excluded, rng)
+  rng = rng or random
   for _ = 1, 6 do                                   -- retry if a rolled tier is exhausted
-    local pool = eligible(roll_rarity(), excluded)
+    local pool = eligible(roll_rarity(rng), excluded)
     if #pool > 0 then
       local total = 0; for _, c in ipairs(pool) do total = total + market_weight(c) end
-      local roll, c = random() * total
+      local roll, c = rng() * total
       for _, cand in ipairs(pool) do roll = roll - market_weight(cand); if roll <= 0 then c = cand; break end end
       c = c or pool[#pool]
       c.discovered = true                           -- soft "discovery" flag
@@ -183,8 +188,11 @@ function Shop.enter()
                   consumable = roll_consumable(), packs = {}, pack_open = nil }
   if G.GAME.shop.voucher_free then G.GAME.free_voucher_pending = false end
   roll_offers()
-  G.GAME.shop.packs[1] = PACK
-  if (G.GAME.shop_pack_slots or 2) >= 2 then G.GAME.shop.packs[2] = Packs.get("playbook") end
+  local seen = {}
+  for i = 1, (G.GAME.shop_pack_slots or 2) do
+    local pack = Packs.roll_shop(pack_shop_random, seen)
+    if pack then seen[pack.key] = true; G.GAME.shop.packs[i] = pack end
+  end
 end
 
 -- redeem the offered voucher: pay, apply its run-modifier generically, mark owned (one-time).
@@ -233,15 +241,33 @@ function Shop.buy(idx)
   return true
 end
 
--- ── Pitch packs ──────────────────────────────────────────────────────────────────────────────
--- Hiring Round = open → choose 1 of N founders, with a small Legendary "BREAKTHROUGH" chance — the
--- spawn-only channel for Legendaries/forms (poll-excluded). (Tech Eval packs await a persistent tech deck.)
-function Shop.pack_price() return Pricing.pack(G.GAME, RunState.ANTE_BASE, PACK.size) end
+-- ── Pitch packs (P3) ──────────────────────────────────────────────────────────────────────────────
+-- Hiring Rounds draft founders; Playbook Workshops upgrade App Types; Tech Law Packs
+-- add consumables. Every definition carries its own Balatro-like size/choice band.
+function Shop.pack_price(definition)
+  if type(definition) == "number" then
+    definition = G.GAME and G.GAME.shop and G.GAME.shop.packs[definition]
+  elseif type(definition) == "string" then
+    definition = Packs.get(definition)
+  end
+  return Pricing.pack(G.GAME, RunState.ANTE_BASE, (definition or PACK).size)
+end
 function Shop.pack_slots() return G.GAME.shop_pack_slots or 2 end
 
-local function emplace_founder(c, sell_basis, edition)
-  local jk = Card({ center = c, T = { x = G.jokers.T.x, y = G.jokers.T.y } })
+local function emplace_founder(c, sell_basis, edition, source_i, source_count)
+  local sx, sy = G.jokers.T.x, G.jokers.T.y
+  if not G.SETTINGS.reduced_motion and source_i and source_count then
+    local pick_w, gap = 160, 30
+    local play_cx = 332 + (G.WINDOW.w - 332) / 2
+    local x0 = play_cx - (source_count * pick_w + (source_count - 1) * gap) / 2
+    sx = x0 + (source_i - 1) * (pick_w + gap) + (pick_w - Card.FW) / 2
+    sy = 360
+  end
+  local jk = Card({ center = c, T = { x = sx, y = sy } })
   G.jokers:emplace(jk)
+  if G.SETTINGS.reduced_motion then
+    jk.VT.x, jk.VT.y = jk.T.x, jk.T.y
+  end
   if jk.juice_up then jk:juice_up(0.5) end                     -- the new hire pops as it joins the row
   maybe_edition(jk, edition)
   Lifecycle.acquire(jk, { source = "pack", sell_basis = sell_basis or 0 })
@@ -251,30 +277,46 @@ function Shop.open_pack(idx)
   local sh = G.GAME.shop
   if not sh or not sh.packs[idx] then return false end
   local definition = sh.packs[idx]
-  local cost = Shop.pack_price()
+  local cost = Shop.pack_price(definition)
   if (G.GAME.cash or 0) < cost then return false end
   G.GAME.cash = G.GAME.cash - cost
-  if definition.key == "playbook" then
+  if definition.family == "playbook" then
     local apps = require("game.apptypes").list
     local opts, seen = {}, {}
     while #opts < definition.options do
-      local app = apps[random(#apps)]
+      local app = apps[pack_random(#apps)]
       if not seen[app.key] then seen[app.key] = true; opts[#opts + 1] = app end
     end
     sh.packs[idx] = false
-    sh.pack_open = { kind = "playbook", options = opts, picks_left = definition.picks }
+    sh.pack_open = { kind = "playbook", name = definition.name, pack_key = definition.key,
+      art_key = definition.art_key, options = opts, picks_left = definition.picks }
+    PackPresentation.begin(sh.pack_open, idx, definition)
+    Audio.play("select", nil, 0.6)
+    return true
+  end
+  if definition.family == "tech_law" then
+    local pool = Centers.pool("Consumable")
+    local opts, seen = {}, {}
+    while #opts < definition.options and #opts < #pool do
+      local c = pool[pack_random(#pool)]
+      if not seen[c.key] then seen[c.key] = true; opts[#opts + 1] = c end
+    end
+    sh.packs[idx] = false
+    sh.pack_open = { kind = "tech_law", name = definition.name, pack_key = definition.key,
+      art_key = definition.art_key, options = opts, picks_left = definition.picks }
+    PackPresentation.begin(sh.pack_open, idx, definition)
     Audio.play("select", nil, 0.6)
     return true
   end
   local opts, seen = {}, {}                                    -- exclude owned (via eligible) + no within-pack dups
-  for _ = 1, PACK.options do
+  for _ = 1, definition.options do
     local c
     for _ = 1, 8 do
       local cand
-      if random() < BREAKTHROUGH then                          -- Legendary/form breakthrough
-        local leg = eligible("Legendary", seen); if #leg > 0 then cand = leg[random(#leg)] end
+      if pack_random() < (definition.legendary_chance or 0) then -- Legendary/form breakthrough
+        local leg = eligible("Legendary", seen); if #leg > 0 then cand = leg[pack_random(#leg)] end
       end
-      if not cand then cand = roll_one(seen) end
+      if not cand then cand = roll_one(seen, pack_random) end
       if cand and not seen[cand.key] then c = cand; break end
       if not cand then break end
     end
@@ -286,7 +328,9 @@ function Shop.open_pack(idx)
     end
   end
   sh.packs[idx] = false
-  sh.pack_open = { kind = "hiring", options = opts, picks_left = PACK.picks }
+  sh.pack_open = { kind = "hiring", name = definition.name, pack_key = definition.key,
+    art_key = definition.art_key, options = opts, picks_left = definition.picks }
+  PackPresentation.begin(sh.pack_open, idx, definition)
   Audio.play("select", nil, 0.6)
   return true
 end
@@ -303,8 +347,16 @@ function Shop.pack_pick(i)
     Audio.play("hire")
     return true
   end
+  if po.kind == "tech_law" then
+    local entry = require("game.consumables").grant(c.key)
+    if not entry then return false end
+    po.options[i] = false; po.picks_left = po.picks_left - 1
+    if po.picks_left <= 0 then sh.pack_open = nil end
+    Audio.play("hire")
+    return true
+  end
   if #G.jokers.cards >= Shop.founder_cap() then return false end
-  emplace_founder(c.center or c, 0, c.edition); Audio.play("hire")
+  emplace_founder(c.center or c, 0, c.edition, i, #po.options); Audio.play("hire")
   po.options[i] = false
   po.picks_left = po.picks_left - 1
   if po.picks_left <= 0 then sh.pack_open = nil end             -- pack consumed

@@ -1,5 +1,5 @@
 -- game/compat.lua — runtime tech compatibility over the played hand. Clashes feed a
--- scoring haircut + tech-debt; substitutes create redundancy; complement weight feeds chemistry.
+-- scoring haircut + tech-debt; substitutes = redundancy/tech-debt; complement weight feeds E4 chemistry.
 local C = require("data.centers.compat_gen")
 local Compat = {}
 
@@ -22,7 +22,7 @@ end
 function Compat.clashes(played)     return pairs_in(played, C.clashes) end
 function Compat.substitutes(played) return pairs_in(played, C.substitutes) end
 
--- Sum complement-edge weights among played pairs for live chemistry coherence.
+-- sum of complement-edge weights among played pairs (E4 live-chemistry coherence)
 function Compat.complement_score(played)
   local s = 0
   for i = 1, #played do

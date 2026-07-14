@@ -8,6 +8,7 @@ UI.rects = {}
 local lg = love.graphics
 local Juice = require("game.juice")
 local Shop = require("game.shop")
+local PackPresentation = require("game.pack_presentation")
 local RunState = require("game.runstate")
 local Coverage = require("game.coverage")
 
@@ -20,7 +21,7 @@ local function panel(x, y, w, h, col)
   pixel_rect(x, y, w, h, col or G.C.panel, { chamfer = 5, border = G.C.border, line_w = 2 })
 end
 
--- crisp pixel-art label with a drop shadow: delegates to the scale-compensated global draw_text so
+-- crisp pixel-art label with a drop shadow (P3): delegates to the scale-compensated global draw_text so
 -- text stays sharp at any window size. w/align optional → printf when given.
 function UI.text(font, str, x, y, col, w, align)
   draw_text(font, str, x, y, col, w, align)
@@ -46,6 +47,81 @@ local function draw_button(r, label, enabled, hovered)
     { chamfer = 4, border = G.C.border, line_w = 2, shadow = not pressed, soy = 4 })
   UI.text(G.FONTS.normal, label, r.x + ox, r.y + oy + r.h / 2 - 13,
     enabled and G.C.text or G.C.text_dim, r.w, "center")
+end
+
+local function ease_out_cubic(t)
+  t = clamp(t, 0, 1)
+  return 1 - (1 - t) ^ 3
+end
+
+-- Immediate-mode pack choices are not live Card objects, so they need a small shared back renderer.
+local function draw_pack_card_back(t)
+  if G.CARD_BACK then
+    pixel_rect(t.x, t.y, t.w, t.h, { 0.06, 0.08, 0.12, 1 }, { chamfer = 6 })
+    clip_chamfer(t.x, t.y, t.w, t.h, 6, function()
+      local iw, ih = G.CARD_BACK:getDimensions()
+      local s = math.max(t.w / iw, t.h / ih)
+      lg.setColor(1, 1, 1, 1)
+      lg.draw(G.CARD_BACK, t.x + (t.w - iw * s) / 2, t.y + (t.h - ih * s) / 2, 0, s, s)
+    end)
+    pixel_rect(t.x, t.y, t.w, t.h, nil, { chamfer = 6, border = G.C.border, line_w = 2 })
+  else
+    pixel_rect(t.x, t.y, t.w, t.h, G.C.btn, { chamfer = 6, border = G.C.arr, line_w = 2 })
+    lg.setColor(G.C.btn_hi); lg.setLineWidth(2)
+    lg.rectangle("line", t.x + 10, t.y + 10, t.w - 20, t.h - 20, 4, 4); lg.setLineWidth(1)
+    UI.text(G.FONTS.normal, "PL", t.x, t.y + t.h / 2 - 16, G.C.arr, t.w, "center")
+  end
+end
+
+local function draw_pack_cover(W, H, frame, title, pack_open)
+  local p = ease_out_cubic(frame.cover_progress or 0)
+  local scale = 0.68 + p * 0.32
+  local w, h = 260 * scale, 350 * scale
+  local play_x = 332
+  local cx, cy = play_x + (W - play_x) / 2, H / 2 - 28
+  local x, y = cx - w / 2, cy - h / 2
+  local tear = frame.tear_progress or 0
+  -- Balatro's booster does not gain a second card frame when opened: the pack artwork itself
+  -- juices, wobbles, then dissolves into a light particle release. Preserve our art's own jagged
+  -- wrapper silhouette and never put a grey panel, yellow outline, or drop shadow behind it.
+  local release = frame.tearing and clamp((tear - 0.62) / 0.38, 0, 1) or 0
+  local alpha = 1 - release
+  local burst_scale = 1 + (frame.tearing and 0.08 * tear or 0)
+
+  lg.push()
+  lg.translate(cx, cy)
+  if frame.tearing then lg.rotate(math.sin(tear * math.pi) * 0.025) end
+  lg.scale(burst_scale, burst_scale)
+  lg.translate(-cx, -cy)
+  local cvr = G.PACK_ART and (G.PACK_ART[pack_open and pack_open.art_key] or G.PACK_ART.hiring_round)
+  if cvr then
+    local iw, ih = cvr:getDimensions()
+    local s = math.min(w / iw, h / ih)
+    lg.setColor(1, 1, 1, alpha)
+    lg.draw(cvr, cx - iw * s / 2, cy - ih * s / 2, 0, s, s)
+  else
+    pixel_rect(x, y, w, h, { 0.11, 0.13, 0.18, alpha }, { chamfer = 8 })
+    UI.text(G.FONTS.big, title, x + 12, cy - 48, { G.C.arr[1], G.C.arr[2], G.C.arr[3], alpha }, w - 24, "center")
+    UI.text(G.FONTS.small, "OPEN TO REVEAL", x + 12, cy + 40, { 1, 1, 1, alpha }, w - 24, "center")
+  end
+  lg.pop()
+
+  if frame.tearing then
+    -- Deterministic wrapper-colour fragments replace the literal drawn tear seam. The expanding
+    -- release follows Balatro's booster explode/materialize rhythm without copying its code/assets.
+    local spread = 20 + tear * 150
+    local fleck_alpha = math.sin(math.pi * tear) * 0.9
+    local fleck_cols = { { 0.92, 0.56, 0.20 }, { 0.20, 0.43, 0.42 }, { 0.88, 0.76, 0.48 } }
+    for i = 1, 12 do
+      local ang = i * 2.399963 + 0.35
+      local radius = spread * (0.56 + (i % 4) * 0.11)
+      local fx, fy = cx + math.cos(ang) * radius, cy + math.sin(ang) * radius * 0.72
+      local fc = fleck_cols[(i - 1) % #fleck_cols + 1]
+      lg.setColor(fc[1], fc[2], fc[3], fleck_alpha)
+      lg.push(); lg.translate(fx, fy); lg.rotate(ang + tear * 2.4)
+      lg.rectangle("fill", -5, -2, 10, 4); lg.pop()
+    end
+  end
 end
 
 -- the shared LEFT COUNTER PANEL (Balatro layout) — used by both the play screen and the shop. `shop_mode`
@@ -110,17 +186,12 @@ function UI.left_panel(GAME, shop_mode)
   statbox(ix, py + 356, half, "Ships", tostring(GAME.ships_left or 0), G.C.users)
   statbox(rx, py + 356, half, "Pivots", tostring(GAME.pivots_left or 0), G.C.mult)
   if GAME.cash ~= UI._last_cash then if UI._last_cash ~= nil then Juice.pulse("cash") end; UI._last_cash = GAME.cash end
-  -- Cash + the salary-pressure indicator side by side: the Payroll box's label carries the team's total
-  -- salary, the value is this blind's payroll due; it turns red when Cash can't cover it (user request).
+  -- Cash + canonical payroll due for this blind. `RunState.payroll_due` includes Distill, Rental,
+  -- passive relief, boss modifiers, and the current target; raw salary sums must not be labelled payroll.
   statbox(ix, py + 422, half, "Cash", "$" .. format_number(GAME.cash or 0), (GAME.cash or 0) < 0 and G.C.lose or G.C.arr)
   do
-    local sal = 0
-    for _, c in ipairs((G.jokers and G.jokers.cards) or {}) do
-      local cf = c.ability and c.ability.config
-      sal = sal + ((cf and cf._salary) or (c.center and c.center.salary) or 0)
-    end
     local due = RunState.payroll_due()
-    statbox(rx, py + 422, half, "Payroll (sal $" .. format_number(sal) .. ")", "-$" .. format_number(due),
+    statbox(rx, py + 422, half, "Payroll due", "-$" .. format_number(due),
       ((GAME.cash or 0) < due) and G.C.lose or G.C.mult)
   end
   statbox(ix, py + 488, half, "Ante", (GAME.ante or 1) .. "/8", G.C.text)
@@ -154,8 +225,8 @@ function UI.render()
 
   -- ===== RIGHT PLAY ZONE: labels, counts, controls =====
   UI.text(G.FONTS.tiny, "FOUNDERS  " .. #G.jokers.cards .. "/5", G.jokers.T.x, G.jokers.T.y - 24, G.C.text_dim)
-  -- Consumables slot, reserved for Tech Laws, Playbooks, and Moonshots.
-  -- the consumable (Tech Law) inventory — real cards live in G.consumables (drawn by draw_all);
+  -- consumables slot (reserved: Tech Laws / Playbooks / Moonshots — P4)
+  -- Track C B1: the consumable (Tech Law) inventory — real cards live in G.consumables (drawn by draw_all);
   -- the framed placeholder shows only while empty, the count always.
   local csw, csx = 220, W - 220 - 24
   local ncons = (G.consumables and #G.consumables.cards) or 0
@@ -164,7 +235,7 @@ function UI.render()
     UI.text(G.FONTS.tiny, "Tech Laws", csx, 24 + Card.H / 2 - 10, G.C.text_dim, csw, "center")
   end
   UI.text(G.FONTS.tiny, "Tech Laws  " .. ncons .. "/" .. (GAME.consumable_slots or 2), csx, 24 + Card.H + 6, G.C.text_dim, csw, "center")
-  -- Selected consumable → Use / Sell buttons beneath it.
+  -- selected consumable → Use / Sell buttons beneath it (B2/B5)
   local selC
   if G.consumables then for _, c in ipairs(G.consumables.cards) do if c.selected then selC = c; break end end end
   if selC and selecting then
@@ -177,7 +248,7 @@ function UI.render()
     draw_button(UI.rects.sell_consumable, "Sell $" .. Shop.consumable_sell_value(selC.center),
       true, point_in_rect(mx, my, bx + bw2 + 8, by2, bw2, bh2))
   end
-  -- Targeting banner and Conway's layer picker overlay.
+  -- B4: targeting banner + Conway's layer picker overlay
   if G.STATE == G.STATES.TARGET_SELECT and G.PENDING_CONSUMABLE then
     local pc = G.PENDING_CONSUMABLE
     lg.setColor(0, 0, 0, 0.35); lg.rectangle("fill", 0, 260, W, 44)
@@ -362,7 +433,12 @@ function UI.draw_tooltip()
     if sl then body = body .. "\n\226\151\137 " .. sl.label .. " seal: " .. (sl.desc or "") end
     body = body .. "\n\n" .. (c.ability_text or c.hint or "")          -- flavor sketch (secondary)
   else
-    sub = (Coverage.display_layer(hovered) or "") .. " card"
+    local effective = hovered.get_users and hovered:get_users() or (hovered.base_users or 0)
+    local base = hovered.base_users or 0
+    local users = "Users " .. format_number(effective)
+    if effective ~= base then users = users .. " (base " .. format_number(base) .. ")" end
+    local rev = hovered.rev_sticker_label and hovered:rev_sticker_label()
+    sub = (Coverage.display_layer(hovered) or "") .. "  ·  " .. users .. (rev and ("  ·  " .. rev) or "")
     body = c.desc or ""
   end
   UI.tip_box(hovered.VT.x + hovered.VT.w + 10, hovered.VT.y, c.name or c.short or "?", sub, body)
@@ -420,7 +496,7 @@ local EVENT_DESC = {
   dotcom_bust    = "Dot-com Bust \194\183 all plays \195\1510.85",
 }
 
--- the BLIND-SELECT page: preview the upcoming blind before committing. Shows the ante's three blinds
+-- the BLIND-SELECT page (P2): preview the upcoming blind before committing. Shows the ante's three blinds
 -- (Small/Big/Boss) with ARR targets, the current one highlighted, the boss event telegraphed, the economy
 -- readout, a Play button, and a disabled Skip seam (Leads/Tags come later).
 function UI.render_blind_select(W, H, GAME)
@@ -464,10 +540,9 @@ function UI.render_blind_select(W, H, GAME)
     UI.text(G.FONTS.tiny, label, x, y0 + ch - 26, current and G.C.arr or G.C.text_dim, cw, "center")
   end
 
-  local payroll = 0
-  for _, c in ipairs((G.jokers and G.jokers.cards) or {}) do payroll = payroll + ((c.center and c.center.salary) or 0) end
+  local payroll = RunState.payroll_due()
   lg.setFont(G.FONTS.small); lg.setColor((GAME.cash or 0) < 0 and G.C.lose or G.C.text_dim)
-  lg.printf(("Cash $%s   \194\183   payroll $%d/round   \194\183   founders %d"):format(
+  lg.printf(("Cash $%s   \194\183   payroll due $%s   \194\183   founders %d"):format(
     format_number(GAME.cash or 0), payroll, #((G.jokers and G.jokers.cards) or {})), 0, y0 + ch + 26, W, "center")
 
   local pb = { x = W / 2 - 130, y = y0 + ch + 62, w = 260, h = 60 }
@@ -506,45 +581,101 @@ function UI.render_shop(W, H, GAME)
     UI.text(G.FONTS.small, "Sell $" .. Shop.sell_value(selF), bx, by + 5, G.C.text, bw, "center")
   end
 
-  -- pack-open PICK overlay  : pick from the Hiring Round (founder row stays visible + sellable)
+  -- Pack ceremony: shop dims, the cover opens, cards deal face-down and flip in sequence. The options
+  -- already exist (shop.lua owns RNG); this timeline only gates when the player may interact with them.
   if sh.pack_open then
     local po = sh.pack_open
-    lg.setFont(G.FONTS.normal); lg.setColor(G.C.arr)
-    lg.printf("HIRING ROUND \194\183 pick " .. po.picks_left .. "  (sell a founder above to free a slot)", 0, 330, W, "center")
+    local frame = PackPresentation.snapshot(po)
+    local title = (po.name or (po.kind == "playbook" and "Playbook Workshop" or
+      (po.kind == "tech_law" and "Tech Law Pack" or "Hiring Round"))):upper()
+
+    lg.setColor(0, 0, 0, frame.ready and 0.58 or 0.72)
+    lg.rectangle("fill", 332, 0, W - 332, H)
+
+    if frame.cover then
+      draw_pack_cover(W, H, frame, title, po)
+      if frame.reduced then
+        UI.text(G.FONTS.tiny, "Opening...", 332, H - 74, G.C.text_dim, W - 332, "center")
+      elseif frame.tearing then
+        UI.text(G.FONTS.small, "BREAKTHROUGH", 332, H - 76, G.C.arr, W - 332, "center")
+      end
+    end
+
+    if not frame.cover then
+      lg.setFont(G.FONTS.normal); lg.setColor(G.C.arr)
+      local capacity_hint = po.kind == "hiring" and "  (sell a founder above to free a slot)" or
+        (po.kind == "tech_law" and "  (use or sell a Tech Law to free a slot)" or "")
+      lg.printf(title .. " \194\183 pick " .. po.picks_left .. capacity_hint, 332, 318, W - 332, "center")
+    end
     local n = #po.options
     local cw, ch, gap, y0 = 160, 206, 30, 360            -- pick options as founder faces (square art + banner), pick below
-    local x0 = (W - (n * cw + (n - 1) * gap)) / 2
+    local play_cx = 332 + (W - 332) / 2
+    local x0 = play_cx - (n * cw + (n - 1) * gap) / 2
     local hc, hx, hy
     for i = 1, n do
       local c = po.options[i]
       local x = x0 + (i - 1) * (cw + gap)
-      if c then
-        local hov = point_in_rect(mx, my, x, y0, cw, ch)
+      local cf = frame.cards[i] or { visible = true, face_down = false, deal = 1, scale_x = 1 }
+      if c and cf.visible then
+        local deal = ease_out_cubic(cf.deal or 1)
+        local dx = play_cx + (x - play_cx) * deal
+        local dy = 252 + (y0 - 252) * deal
+        local card_scale = 0.86 + 0.14 * deal
+        local dw, dh = cw * card_scale, ch * card_scale
+        local tx, ty = dx + (cw - dw) / 2, dy + (ch - dh) / 2
+        local hov = frame.ready and point_in_rect(mx, my, x, y0, cw, ch)
         local rc = SHOP_RARITY_COL[c.rarity] or G.C.border
-        if po.kind == "playbook" then
-          pixel_rect(x, y0, cw, ch, { 0.13, 0.15, 0.20, 1 }, { chamfer = 6, border = hov and G.C.hover or G.C.arr })
-          UI.text(G.FONTS.small, c.name, x + 8, y0 + 32, G.C.arr, cw - 16, "center")
+        lg.push()
+        lg.translate(tx + dw / 2, ty + dh / 2)
+        lg.scale(cf.scale_x or 1, 1)
+        lg.translate(-(tx + dw / 2), -(ty + dh / 2))
+        if cf.face_down then
+          draw_pack_card_back({ x = tx, y = ty, w = dw, h = dh })
+        elseif po.kind == "playbook" then
+          pixel_rect(tx, ty, dw, dh, { 0.13, 0.15, 0.20, 1 }, { chamfer = 6, border = hov and G.C.hover or G.C.arr })
+          UI.text(G.FONTS.small, c.name, tx + 8, ty + 32, G.C.arr, dw - 16, "center")
           local level = require("game.playbooks").level(c.key)
-          UI.text(G.FONTS.tiny, "Level " .. level .. " -> " .. (level + 1), x, y0 + 116, G.C.win, cw, "center")
+          UI.text(G.FONTS.tiny, "Level " .. level .. " -> " .. (level + 1), tx, ty + 116, G.C.win, dw, "center")
+        elseif po.kind == "tech_law" then
+          Card.draw_consumable_face({ x = tx, y = ty, w = dw, h = dh }, c,
+            { border = hov and G.C.hover or G.C.arr, line_w = hov and 3 or 2 })
         else
-          Card.draw_founder_face({ x = x, y = y0, w = cw, h = ch }, c, { border = hov and G.C.hover or rc, line_w = hov and 3 or 2 })
-          local rl = (c.rarity or ""):upper()
-          chip(x + cw - (text_w(G.FONTS.tiny, rl) + 14) - 6, y0 + 5, rl, G.FONTS.tiny, rc, { 0, 0, 0, 1 })
-          if c.edition then chip(x + 6, y0 + 5, tostring(c.edition), G.FONTS.tiny, G.C.arr, { 0, 0, 0, 1 }) end
+          Card.draw_founder_face({ x = tx, y = ty, w = dw, h = dh }, c,
+            { border = hov and G.C.hover or rc, line_w = hov and 3 or 2 })
+          if frame.ready then
+            local rl = (c.rarity or ""):upper()
+            chip(tx + dw - (text_w(G.FONTS.tiny, rl) + 14) - 6, ty + 5, rl, G.FONTS.tiny, rc, { 0, 0, 0, 1 })
+            if c.edition then chip(tx + 6, ty + 5, tostring(c.edition), G.FONTS.tiny, G.C.arr, { 0, 0, 0, 1 }) end
+          end
         end
-        local r = { x = x + 10, y = y0 + ch + 8, w = cw - 20, h = 32 }
-        UI.rects["pack_pick_" .. i] = r
-        draw_button(r, "Pick", po.kind == "playbook" or #G.jokers.cards < Shop.founder_cap(), point_in_rect(mx, my, r.x, r.y, r.w, r.h))
-        if hov then hc, hx, hy = c, x + cw + 10, y0 end
+        lg.pop()
+        if frame.ready then
+          local r = { x = x + 10, y = y0 + ch + 8, w = cw - 20, h = 32 }
+          UI.rects["pack_pick_" .. i] = r
+          local can_pick = po.kind == "playbook" or
+            (po.kind == "tech_law" and #(GAME.consumables or {}) < (GAME.consumable_slots or 2)) or
+            (po.kind == "hiring" and #G.jokers.cards < Shop.founder_cap())
+          draw_button(r, "Pick", can_pick,
+            point_in_rect(mx, my, r.x, r.y, r.w, r.h))
+          if hov then hc, hx, hy = c, x + cw + 10, y0 end
+        end
       else
-        pixel_rect(x, y0, cw, ch, { 0.12, 0.12, 0.14, 1 }, { chamfer = 6, border = G.C.border, shadow = false, emboss = false })
-        lg.setColor(G.C.text_dim); lg.setFont(G.FONTS.small); lg.printf("(taken)", x, y0 + ch / 2 - 10, cw, "center")
+        if not c and frame.ready then
+          pixel_rect(x, y0, cw, ch, { 0.12, 0.12, 0.14, 1 }, { chamfer = 6, border = G.C.border, shadow = false, emboss = false })
+          lg.setColor(G.C.text_dim); lg.setFont(G.FONTS.small); lg.printf("(taken)", x, y0 + ch / 2 - 10, cw, "center")
+        end
       end
     end
-    local sk = { x = W / 2 - 100, y = y0 + ch + 50, w = 200, h = 46 }
-    UI.rects.pack_skip = sk
-    draw_button(sk, "Skip", true, point_in_rect(mx, my, sk.x, sk.y, sk.w, sk.h))
-    if hc and po.kind ~= "playbook" then UI.tip_box(hx, hy, hc.name, Card.effect_brief(hc) .. "   \194\183   " .. (hc.rarity or ""), (hc.ability_name or "") .. "\n\n" .. (hc.ability_text or hc.hint or "")) end
+    if frame.ready then
+      local sk = { x = play_cx - 100, y = y0 + ch + 50, w = 200, h = 46 }
+      UI.rects.pack_skip = sk
+      draw_button(sk, "Skip", true, point_in_rect(mx, my, sk.x, sk.y, sk.w, sk.h))
+      if hc and po.kind == "hiring" then UI.tip_box(hx, hy, hc.name,
+        Card.effect_brief(hc) .. "   \194\183   " .. (hc.rarity or ""),
+        (hc.ability_name or "") .. "\n\n" .. (hc.ability_text or hc.hint or ""))
+      elseif hc and po.kind == "tech_law" then UI.tip_box(hx, hy, hc.name,
+        (hc.kind or "Tech Law") .. "   \194\183   " .. (hc.rarity or ""), hc.desc or "") end
+    end
     return
   end
 
@@ -574,7 +705,7 @@ function UI.render_shop(W, H, GAME)
     end
   end
 
-  -- one Tech Law consumable offer per shop (rendered with the real card face)
+  -- Track C B3: one Tech Law consumable offer per shop (rendered with the real card face)
   local hovcc, hovccx, hovccy
   local cc = sh.consumable
   if cc then
@@ -598,7 +729,7 @@ function UI.render_shop(W, H, GAME)
   UI.rects.shop_continue = cont
   draw_button(cont, "Next Blind \194\187", true, point_in_rect(mx, my, cont.x, cont.y, cont.w, cont.h))
 
-  -- One Investment voucher per shop.
+  -- Investment voucher (one per shop)
   local v = sh.voucher
   if v then
     local vw, vy = 480, y0 + ch + 112
@@ -612,45 +743,47 @@ function UI.render_shop(W, H, GAME)
     draw_button(vr, "Buy $" .. vp, (GAME.cash or 0) >= vp, point_in_rect(mx, my, vr.x, vr.y, vr.w, vr.h))
   end
 
-  -- Pitch packs  : Hiring Round packs (open → pick a founder; Legendary breakthrough channel)
+  -- Booster row: Hiring (Founder), Playbook (App-Type), and Tech Law families.
   local packs = sh.packs or {}
   local np = #packs
   if np > 0 then
-    local pp, pw = Shop.pack_price(), 220
+    local pw = 220
     local px0 = (W - (np * pw + (np - 1) * 24)) / 2
     local py = y0 + ch + 174
     for i = 1, np do
       local x = px0 + (i - 1) * (pw + 24)
       local r = { x = x, y = py, w = pw, h = 44 }
       UI.rects["shop_open_pack_" .. i] = r
-      local lbl = packs[i] and ("Hiring Round $" .. pp) or "(opened)"
+      local pp = packs[i] and Shop.pack_price(packs[i]) or 0
+      local lbl = packs[i] and ((packs[i].name or "Pack") .. " $" .. pp) or "(opened)"
       draw_button(r, lbl, packs[i] and (GAME.cash or 0) >= pp, point_in_rect(mx, my, r.x, r.y, r.w, r.h))
-      if packs[i] and G.PACK_ART and G.PACK_ART.hiring_round then   -- cover thumbnail (right edge, clear of the label)
-        local cvr = G.PACK_ART.hiring_round
+      local cvr = packs[i] and G.PACK_ART and (G.PACK_ART[packs[i].art_key] or G.PACK_ART.hiring_round)
+      if cvr then   -- cover thumbnail (right edge, clear of the label)
         local cs = (r.h - 4) / cvr:getHeight()
         lg.setColor(1, 1, 1, 1); lg.draw(cvr, r.x + r.w - cvr:getWidth() * cs - 3, r.y + 2, 0, cs, cs)
       end
     end
   end
 
-  local payroll = 0
-  for _, c in ipairs(G.jokers.cards) do payroll = payroll + ((c.center and c.center.salary) or 0) end
+  local payroll = RunState.payroll_due()
   lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text_dim)
   lg.printf("Your founders: " .. #G.jokers.cards .. "/" .. Shop.founder_cap() ..
-    "   payroll $" .. payroll .. "/round", 0, y0 + ch + 230, W, "center")
+    "   payroll due $" .. format_number(payroll), 0, y0 + ch + 230, W, "center")
   if hovc then UI.tip_box(hovx, hovy, hovc.name, Card.effect_brief(hovc) .. "   \194\183   " .. (hovc.rarity or ""), (hovc.ability_name or "") .. "\n\n" .. (hovc.ability_text or hovc.hint or "")) end
   if hovcc then UI.tip_box(hovccx, hovccy, hovcc.name, (hovcc.kind or "Tech Law") .. "   \194\183   " .. (hovcc.rarity or ""), hovcc.desc or "") end
 end
 
 -- input: which button (if any) is under the point — handler validates enabled state
 function UI.button_at(x, y)
+  local po = G.STATE == G.STATES.SHOP and G.GAME and G.GAME.shop and G.GAME.shop.pack_open
+  if PackPresentation.input_locked(po) then return "pack_locked" end
   for name, r in pairs(UI.rects) do
     if point_in_rect(x, y, r.x, r.y, r.w, r.h) then return name end
   end
   return nil
 end
 
--- ──  overlays: deck view · run info · options (topmost, any page; click-outside closes) ────
+-- ── Phase 4B overlays: deck view · run info · options (topmost, any page; click-outside closes) ────
 function UI.draw_overlays()
   if not (G.SHOW_DECK_VIEW or G.SHOW_RUN_INFO or G.SHOW_OPTIONS) then return end
   local W, H = G.WINDOW.w, G.WINDOW.h
@@ -676,7 +809,11 @@ function UI.draw_overlays()
     for _, L in ipairs({ "Frontend", "Backend", "Data", "Infra", "AI", "Knowledge" }) do
       local list = byl[L]
       if list and #list > 0 then
-        table.sort(list, function(a, b) return (a.base_users or 0) > (b.base_users or 0) end)
+        table.sort(list, function(a, b)
+          local au = (a.get_users and a:get_users()) or (a.base_users or 0)
+          local bu = (b.get_users and b:get_users()) or (b.base_users or 0)
+          return au > bu
+        end)
         local lcol = (layersmod[L] and layersmod[L].color) or G.C.text
         UI.text(G.FONTS.tiny, L:upper() .. "  (" .. #list .. ")", px0 + 20, y, lcol, pw - 40, "left")
         y = y + 20
@@ -685,7 +822,11 @@ function UI.draw_overlays()
         for _, c in ipairs(list) do
           if xx + cw2 > px0 + pw - 20 then xx = cx0; y = y + ch2 + g2 end
           pixel_rect(xx, y, cw2, ch2, lcol, { chamfer = 3, shadow = false, emboss = false })
-          draw_text(G.FONTS.tiny, tostring(c.base_users or 0), xx, y + 8, G.C.black, cw2, "center")
+          local users = (c.get_users and c:get_users()) or (c.base_users or 0)
+          draw_text(G.FONTS.tiny, tostring(users), xx, y + 5, G.C.black, cw2, "center")
+          if c.rev_sticker_label and c:rev_sticker_label() then
+            draw_text(G.FONTS.tiny, "R", xx, y + 20, G.C.mult, cw2, "center")
+          end
           xx = xx + cw2 + g2
         end
         y = y + ch2 + 12
@@ -735,13 +876,16 @@ function UI.draw_overlays()
   end
 
   if G.SHOW_OPTIONS then
-    local pw, ph = 420, 380
+    local pw, ph = 420, 540
     local px0, py0 = (W - pw) / 2, (H - ph) / 2
     pixel_rect(px0, py0, pw, ph, { 0.10, 0.12, 0.16, 1 }, { chamfer = 8, border = G.C.arr, line_w = 2 })
     UI.text(G.FONTS.normal, "OPTIONS", px0, py0 + 12, G.C.arr, pw, "center")
     local rows = {
       { "opt_motion", "Motion FX:  " .. (G.SETTINGS.reduced_motion and "OFF" or "ON") },
       { "opt_sound",  "Sound:  " .. (G.SETTINGS.sound == false and "OFF" or "ON") },
+      { "opt_shake",  "Screen shake:  " .. (G.SETTINGS.shake == false and "OFF" or "ON") },
+      { "opt_flash",  "Screen flash:  " .. (G.SETTINGS.flash == false and "OFF" or "ON") },
+      { "opt_particles", "Particles:  " .. (G.SETTINGS.particles == false and "OFF" or "ON") },
       { "opt_crt",    "CRT filter:  " .. (G.SETTINGS.crt and "ON" or "OFF") },
       { "opt_quit",   "Quit to menu" },
     }
