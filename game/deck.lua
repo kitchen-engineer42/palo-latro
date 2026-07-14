@@ -4,6 +4,7 @@ local Eras = require("game.eras")
 local MarketRules = require("data.gameplay.market_rules")
 local AppTypes = require("game.apptypes")
 local Coverage = require("game.coverage")
+local TechModifiers = require("game.tech_modifiers")
 
 local Deck = {}
 
@@ -272,9 +273,11 @@ end
 
 function Deck.validate(entries, expected_size)
   local seen = {}
-  for _, e in ipairs(entries or {}) do
+  for i, e in ipairs(entries or {}) do
     if not e.uid or not e.center_key then return false, "deck entry lacks uid or center_key" end
     if seen[e.uid] then return false, "duplicate deck uid" end
+    local valid, reason = TechModifiers.validate(e, "master_deck[" .. i .. "]")
+    if not valid then return false, reason end
     seen[e.uid] = true
   end
   if expected_size and #(entries or {}) ~= expected_size then return false, "wrong deck size" end

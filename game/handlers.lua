@@ -62,6 +62,7 @@ G.FUNCS.pivot = function()
   if G.STATE ~= S.SELECTING_HAND or G.GAME.pivots_left <= 0 then return end
   local sel = G.hand:highlighted()
   if #sel < 1 then return end
+  G.GAME.last_tech_modifier_discard = require("game.tech_modifiers").on_discard(sel)
   for _, c in ipairs(sel) do
     G.hand:remove_card(c, true)
     c:remove()

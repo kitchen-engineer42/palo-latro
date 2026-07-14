@@ -16,6 +16,7 @@ local RNG = require("game.rng")
 local Profile = require("game.profile")
 local Guidance = require("game.guidance")
 local TechLifecycle = require("game.tech_lifecycle")
+local TechModifiers = require("game.tech_modifiers")
 
 local Round = {}
 
@@ -174,7 +175,7 @@ function Round.seed_master_deck()
     if not center.signature then
       local entry = {
         uid = Round.next_uid(), center_key = center.key,
-        edition = nil, seal = nil, enh = nil, config = {},
+        edition = nil, enhancement = nil, seal = nil, modifier_state = nil, config = {},
       }
       TechLifecycle.acquire(entry, { source = "starter", acquired_ante = g.ante })
       g.master_deck[#g.master_deck + 1] = entry
@@ -210,8 +211,14 @@ function Round.prepare_tech_draft()
   G.GAME.draft_choice_bonus = 0
   local choices = Deck.draft_candidates(Centers.pool("TechCard"), G.GAME.market, G.GAME.era,
     G.GAME.master_deck, count, RNG.fn("draft"))
-  G.GAME.tech_draft = { choices = {} }
-  for _, center in ipairs(choices) do G.GAME.tech_draft.choices[#G.GAME.tech_draft.choices + 1] = center.key end
+  G.GAME.tech_draft = { choices = {}, offers = {} }
+  local modifier_rng = RNG.fn("tech_modifier_offer")
+  for _, center in ipairs(choices) do
+    G.GAME.tech_draft.choices[#G.GAME.tech_draft.choices + 1] = center.key
+    local offer = TechModifiers.make_offer(center, modifier_rng)
+    offer.center = nil -- run-state offers remain plain serializable data
+    G.GAME.tech_draft.offers[#G.GAME.tech_draft.offers + 1] = offer
+  end
   Profile.discover_many(G.GAME.tech_draft.choices)
   return #choices > 0
 end
@@ -220,9 +227,12 @@ function Round.choose_tech(index)
   local draft = G.GAME.tech_draft
   local key = draft and draft.choices and draft.choices[index]
   if not key then return false end
-  local seal
-  if RNG.value("modifier") < 0.03 then seal = (RNG.value("modifier") < 0.5) and "reusable" or "monetized" end
-  Round.master_add(key, { seal = seal, source = "boss_draft" })
+  local offer = draft.offers and draft.offers[index] or { key = key, center_key = key }
+  local entry = Round.master_add(key, {
+    enhancement = offer.enhancement, seal = offer.seal,
+    modifier_state = offer.modifier_state, source = "boss_draft",
+  })
+  if not entry then return false end
   Profile.discover(key)
   G.GAME.tech_drafts_taken = (G.GAME.tech_drafts_taken or 0) + 1
   G.GAME.tech_draft = nil
@@ -245,8 +255,18 @@ function Round.master_add(center_key, props, game)
     local allowed, reason = Deck.candidate_allowed(center, g.market)
     if not allowed then return nil, reason end
   end
+  local modifier_props = {
+    enhancement = props.enhancement,
+    enh = props.enh,
+    seal = props.seal,
+    modifier_state = props.modifier_state,
+  }
+  local modifier_valid, modifier_reason = TechModifiers.validate(modifier_props, "Tech acquisition")
+  if not modifier_valid then return nil, modifier_reason end
+  TechModifiers.normalize(modifier_props)
   local e = { uid = Round.next_uid(g), center_key = center_key,
-              edition = props.edition, seal = props.seal, enh = props.enh,
+              edition = props.edition, enhancement = modifier_props.enhancement, seal = modifier_props.seal,
+              modifier_state = modifier_props.modifier_state and deep_copy(modifier_props.modifier_state) or nil,
               stickers = props.stickers, layer_override = props.layer_override,
               config = props.config or {} }
   TechLifecycle.acquire(e, {
@@ -282,12 +302,14 @@ function Round.build_deck()
   if G.GAME and not G.GAME._deck_seeded then Round.seed_master_deck() end
   local cards = {}
   for _, entry in ipairs((G.GAME and G.GAME.master_deck) or {}) do
+    TechModifiers.normalize(entry)
     local center = Centers.get(entry.center_key)
     if center then
       local c = Card({ center = center, face_down = true, uid = entry.uid,
         source = entry.source, acquired_ante = entry.acquired_ante, migrated_from = entry.migrated_from,
+        edition = entry.edition, enhancement = entry.enhancement, seal = entry.seal,
+        modifier_state = entry.modifier_state,
         T = { x = G.deck.T.x, y = G.deck.T.y } })
-      c.edition, c.seal, c.enh = entry.edition, entry.seal, entry.enh
       c.stickers = entry.stickers and deep_copy(entry.stickers) or nil   -- Track C: consumable card-stat stickers
       c.layer_override = entry.layer_override                            -- Track C: set_layer override
       if entry.config and next(entry.config) then c.ability.config = deep_copy(entry.config) end
@@ -357,6 +379,7 @@ function Round.cash_out_ship()
 
   if g.cumulative_arr >= g.blind.target then                  -- BLIND WON
     local cleared_boss = g.blind_idx == 3
+    g.last_tech_modifier_rewards = TechModifiers.on_blind_won(G.hand.cards)
     Scoring.fire_hook("blind_won")
     g.last_income = Economy.operating_income(g, g.best_ship_arr, g.best_ship_margin)
     g.last_efficiency = Economy.early_close_reward(g, RunState.ANTE_BASE)

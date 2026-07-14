@@ -6,6 +6,7 @@ local Centers = require("game.centers")
 local Deck = require("game.deck")
 local Eras = require("game.eras")
 local TechLifecycle = require("game.tech_lifecycle")
+local TechModifiers = require("game.tech_modifiers")
 
 local TechEvaluation = {}
 
@@ -65,6 +66,14 @@ function TechEvaluation.generate(game, count, rng)
     game.master_deck or {}, count or 3, rng)
 end
 
+function TechEvaluation.generate_offers(game, count, rng, modifier_rng)
+  local out = {}
+  for _, center in ipairs(TechEvaluation.generate(game, count, rng)) do
+    out[#out + 1] = TechModifiers.make_offer(center, modifier_rng)
+  end
+  return out
+end
+
 function TechEvaluation.available_count(game)
   game = game or (G and G.GAME)
   local total = 0
@@ -103,7 +112,7 @@ local function acquire_provenance(entry, game)
   return TechLifecycle.acquire(copy(entry), context)
 end
 
-function TechEvaluation.adopt(center_key, game)
+function TechEvaluation.adopt(center_key, game, modifier)
   game = game or (G and G.GAME)
   local valid, reason = valid_master(game)
   if not valid then return nil, reason end
@@ -118,6 +127,9 @@ function TechEvaluation.adopt(center_key, game)
   local previous_uid, previous_size = game._deck_uid, #game.master_deck
   local entry = require("game.round").master_add(center.key, {
     source = "tech_eval_adopt", acquired_ante = game.ante,
+    enhancement = modifier and (modifier.enhancement or modifier.enh),
+    seal = modifier and modifier.seal,
+    modifier_state = modifier and modifier.modifier_state,
   }, game)
   if not entry then return nil, "Tech adoption failed" end
   local acquired = acquire_provenance(entry, game)

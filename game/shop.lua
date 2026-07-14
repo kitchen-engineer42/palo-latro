@@ -306,7 +306,8 @@ function Shop.open_pack(idx)
   local tech_options
   if definition.family == "tech_evaluation" then
     if TechEvaluation.available_count(G.GAME) < definition.options then return false end
-    tech_options = TechEvaluation.generate(G.GAME, definition.options, pack_random)
+    tech_options = TechEvaluation.generate_offers(G.GAME, definition.options, pack_random,
+      RNG.fn("tech_modifier_offer"))
     if #tech_options < definition.options then return false end -- no charge for an exhausted evaluation
   end
   G.GAME.cash = G.GAME.cash - cost
@@ -431,7 +432,7 @@ function Shop.pack_adopt(i)
   local po = sh and sh.pack_open
   local option = po and po.kind == "tech_evaluation" and po.options[i]
   if not option then return false end
-  local entry, reason = TechEvaluation.adopt(option.key, G.GAME)
+  local entry, reason = TechEvaluation.adopt(option.key, G.GAME, option)
   if not entry then po.error = reason; return false, reason end
   po.error = nil
   consume_pack_option(sh, po, i, option, "adopt")

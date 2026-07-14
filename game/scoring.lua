@@ -20,6 +20,7 @@ local ScoreTrace = require("game.score_trace")
 local Centers = require("game.centers")
 local Bosses = require("game.bosses")
 local AIMaturity = require("game.ai_maturity")
+local TechModifiers = require("game.tech_modifiers")
 
 local Scoring = {}
 local MAX_USERS, MAX_REVENUE = 10000000, 100000
@@ -127,12 +128,10 @@ local function founder_name(card)
   return card and card.center and (card.center.short or card.center.name) or "Founder"
 end
 
--- repetitions for a card = 1 + seal retriggers + joker `repetition` retriggers (0 in the slice)
+-- Tech seals own their retrigger. Founder seals are historical save data only:
+-- they are neither assigned nor evaluated after the seal system moved to Tech.
 local function collect_reps(card, base)
-  local reps = 1
-  local seal = card.seal and Card.SEALS and Card.SEALS[card.seal]
-  if seal and seal.retrigger then reps = reps + math.min(1, seal.retrigger) end
-  if seal and seal.cash then G.GAME.pending_dollars = G.GAME.pending_dollars + seal.cash end
+  local reps = TechModifiers.repetitions(card)
   local seal_eff = eval_card(card, ctx(base, { repetition = true, repetition_only = true, other_card = card }))
   if seal_eff.seals and seal_eff.seals.repetitions then reps = reps + seal_eff.seals.repetitions end
   for _, jk in ipairs(G.jokers.cards) do
@@ -211,6 +210,7 @@ function Scoring.evaluate_ship(played)
 
   -- each scoring card, left -> right
   local step = 0
+  local modifier_budget = { monetized_cash = 0 }
   for _, c in ipairs(played) do
     local reps = collect_reps(c, base)
     for _ = 1, reps do
@@ -241,6 +241,9 @@ function Scoring.evaluate_ship(played)
       each_automated(ctx(base, { individual = true, other_card = c }), function(e) apply_effect(S, e) end)
       -- card edition (after individual, before joker_main) — seam
       apply_effect(S, eval_card(c, ctx(base, { edition = true, other_card = c })))
+      local modifier_before = score_snap(S)
+      apply_effect(S, TechModifiers.played_effect(c, modifier_budget))
+      queue_score_feedback(c, "Tech modifier", modifier_before, score_snap(S), "score_system", G.C.arr)
       -- Track C: per-card Rev sticker (card_stat_sticker field=rev) folds into the hand mult (override→add→mul)
       local rs = c.rev_sticker and c:rev_sticker()
       if rs then
@@ -250,9 +253,21 @@ function Scoring.evaluate_ship(played)
       end
     end
   end
-  ScoreTrace.capture(G.GAME.score_trace, "tech", { chips = S.chips, mult = S.mult })
+  G.GAME.last_tech_modifier_updates = TechModifiers.on_played(played)
 
-  -- held-card pass (h_mult/h_x_mult) — seam (G.hand), no-op now
+  -- Held Tech resolves after played cards and before Founders, matching the
+  -- normal card traversal. Cash-Cow deliberately pays only on blind clear.
+  local held_before = score_snap(S)
+  local held_effect = TechModifiers.held_effect((G.hand and G.hand.cards) or {})
+  apply_effect(S, held_effect)
+  if held_effect.load_bearing_count > 0 then
+    queue_score_feedback(nil, "Load-Bearing", held_before, score_snap(S), "score_system", G.C.arr)
+    juice("mult", S.mult, 0.12, 0.03)
+  end
+  ScoreTrace.capture(G.GAME.score_trace, "tech", { chips = S.chips, mult = S.mult,
+    monetized_cash = modifier_budget.monetized_cash,
+    load_bearing_count = held_effect.load_bearing_count })
+
   -- joker main + after
   for _, jk in ipairs(G.jokers.cards) do
     local b = score_snap(S); apply_effect(S, eval_card(jk, ctx(base, { joker_main = true })))

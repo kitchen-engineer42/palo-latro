@@ -15,7 +15,6 @@ local Pricing = require("game.pricing")
 local RunState = require("game.runstate")
 local Centers = require("game.centers")
 local Deck = require("game.deck")
-local TechLifecycle = require("game.tech_lifecycle")
 local TechEvaluation = require("game.tech_evaluation")
 local Markets = require("game.markets")
 local CardModel = require("game.card")
@@ -106,6 +105,16 @@ local function card_id(card, area, index)
   return area .. ":" .. tostring(index) .. ":" .. key
 end
 
+local function modifier_view(subject)
+  local out = {}
+  for _, row in ipairs(CardModel.tech_modifier_rows(subject)) do
+    out[#out + 1] = {
+      kind = row.kind, key = row.key, label = row.label, description = row.desc,
+    }
+  end
+  return out
+end
+
 local function card_view(card, area, index)
   local center = card.center or card
   local users = card.get_users and card:get_users() or card.base_users or center.base_users
@@ -118,20 +127,26 @@ local function card_view(card, area, index)
     sub_role = center.sub_role,
     users = users,
     selected = card.selected == true,
-    edition = card.edition,
-    seal = card.seal,
     salary = center.salary,
     ability = center.ability_name,
     effect = center.effect_brief or center.ability_text or center.desc,
     sell_value = cfg._sell_basis and math.max(0, math.floor(cfg._sell_basis * 0.5)) or nil,
   }
   if center.set == "Founder" then
+    out.edition = card.edition
     local terms = CardModel.founder_terms(card, center)
     out.base_salary = terms.base_salary
     out.effective_salary = terms.effective_salary
     out.effect_scale = terms.effect_scale
     out.distilled = terms.distilled
     out.rental_salary_mult = terms.rental_salary_mult
+  elseif center.set == "TechCard" then
+    out.layer = CardModel.tech_layer_label(card, center)
+    out.edition = card.edition -- compatibility-only; not a Block 6 Tech modifier
+    out.enhancement = card.enhancement or card.enh
+    out.seal = card.seal
+    out.modifier_state = copy_plain(card.modifier_state)
+    out.modifiers = modifier_view(card)
   end
   return out
 end
@@ -148,14 +163,13 @@ local function master_deck_view()
     local center = Centers.get(entry.center_key)
     local effective, status, before_deprecation
     if center then
-      effective, status, before_deprecation = TechLifecycle.effective_users(
-        entry, center, G.GAME and G.GAME.era)
+      effective, status, before_deprecation = CardModel.tech_users(entry, center, G.GAME and G.GAME.era)
     end
     out[#out + 1] = {
       uid = entry.uid,
       key = entry.center_key,
       name = center and center.name,
-      layer = entry.layer_override or (center and center.layer),
+      layer = center and CardModel.tech_layer_label(entry, center),
       base_users = entry.base_users or (center and center.base_users),
       users_before_deprecation = before_deprecation,
       effective_users = effective,
@@ -171,8 +185,11 @@ local function master_deck_view()
       source = entry.source,
       acquired_ante = entry.acquired_ante,
       migrated_from = entry.migrated_from,
-      edition = entry.edition,
+      edition = entry.edition, -- compatibility-only; live rules are enhancement + seal
       seal = entry.seal,
+      enhancement = entry.enhancement or entry.enh,
+      modifier_state = copy_plain(entry.modifier_state),
+      modifiers = modifier_view(entry),
       layer_override = entry.layer_override,
       stickers = copy_plain(entry.stickers),
     }
@@ -185,16 +202,22 @@ local function master_deck_view()
 end
 
 local function tech_option_view(option, index)
-  local center = option and (option.center or option)
+  local center = type(option) == "string" and Centers.get(option)
+    or (option and (option.center or Centers.get(option.key or option.center_key)))
   if not center then return nil end
-  local effective, status = TechLifecycle.effective_users({}, center, G.GAME and G.GAME.era)
+  local subject = type(option) == "table" and option or {}
+  local effective, status = CardModel.tech_users(subject, center, G.GAME and G.GAME.era)
   return {
     index = index,
     key = center.key,
     name = center.name,
-    layer = center.layer,
+    layer = CardModel.tech_layer_label(subject, center),
     base_users = center.base_users,
     effective_users = effective,
+    enhancement = subject.enhancement or subject.enh,
+    seal = subject.seal,
+    modifier_state = copy_plain(subject.modifier_state),
+    modifiers = modifier_view(subject),
     deprecation = {
       state = status.state,
       eras_behind = status.eras_behind,
@@ -369,7 +392,10 @@ function Mimic.legal_actions()
     add_action(out, "cancel_targeting")
   elseif state == G.STATES.TECH_DRAFT then
     local choices = {}
-    for i, key in ipairs((g.tech_draft and g.tech_draft.choices) or {}) do choices[#choices + 1] = { index = i, key = key } end
+    local offers = (g.tech_draft and g.tech_draft.offers) or {}
+    for i, key in ipairs((g.tech_draft and g.tech_draft.choices) or {}) do
+      choices[#choices + 1] = offers[i] and tech_option_view(offers[i], i) or { index = i, key = key }
+    end
     add_action(out, "choose_tech", { index = "integer" }, choices)
     add_raise_action(out, g)
   elseif state == G.STATES.SHOP then
@@ -477,7 +503,11 @@ local function public_state()
       perk = copy_plain(view.perk), rule = copy_plain(view) }
   end
   local draft = {}
-  for i, key in ipairs((g.tech_draft and g.tech_draft.choices) or {}) do draft[#draft + 1] = { index = i, key = key } end
+  local draft_offers = (g.tech_draft and g.tech_draft.offers) or {}
+  for i, key in ipairs((g.tech_draft and g.tech_draft.choices) or {}) do
+    local offer = draft_offers[i]
+    draft[#draft + 1] = offer and tech_option_view(offer, i) or { index = i, key = key }
+  end
   return {
     protocol = Mimic.VERSION,
     step = g._mimic_step or 0,

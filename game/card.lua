@@ -6,6 +6,7 @@
 local layers = require("data.layers")
 local Coverage = require("game.coverage")
 local TechLifecycle = require("game.tech_lifecycle")
+local TechModifiers = require("game.tech_modifiers")
 
 Card = Moveable:extend()
 
@@ -35,13 +36,106 @@ Card.EDITIONS = {
 Card.EDITION_KEYS = { "open_source", "battle_tested", "viral" }
 Card.EDITION_SHADER = { open_source = "foil", battle_tested = "holo", viral = "polychrome" }  -- P4: edition → portrait shimmer
 
--- Seals: per-founder trigger stamps ≈ Balatro red/gold seal. The persistent tech deck now
--- exists; extending edition/seal scoring to tech cards remains a separate scoring contract.
-Card.SEALS = {
-  reusable  = { label = "Reusable",  col = { 0.85, 0.35, 0.35, 1 }, retrigger = 1, desc = "Triggers its effect twice" },  -- ≈Red
-  monetized = { label = "Monetized", col = { 0.90, 0.78, 0.35, 1 }, cash = 8, desc = "+$8 Cash when it scores" },         -- ≈Gold
-}
-Card.SEAL_KEYS = { "reusable", "monetized" }
+-- Tech seals are defined with their mechanics in one canonical module. Keep
+-- these aliases for presentation/mod-loader callers that historically looked
+-- them up on Card; Founders no longer render or evaluate seals.
+Card.SEALS = TechModifiers.SEALS
+Card.SEAL_KEYS = TechModifiers.SEAL_KEYS
+
+local function modifier_key(subject, field)
+  if not subject then return nil end
+  if field == "enhancement" then return subject.enhancement or subject.enh end
+  return subject[field]
+end
+
+local function modifier_definition(kind, key)
+  if not key then return nil end
+  return TechModifiers.definition(kind, key)
+end
+
+local function title_key(key)
+  local value = tostring(key or ""):gsub("_", " ")
+  return value:gsub("(%a)([%w']*)", function(first, rest) return first:upper() .. rest end)
+end
+
+-- The presentation contract for persistent Tech modifiers. Mechanics remain in
+-- game.tech_modifiers; every player-facing surface consumes these same rows so
+-- a badge, tooltip, Deck View, and headless observation cannot rename a rule.
+function Card.tech_modifier_rows(subject)
+  local out = {}
+  for _, spec in ipairs({
+    { kind = "enhancement", field = "enhancement", prefix = "EN" },
+    { kind = "seal", field = "seal", prefix = "SE" },
+  }) do
+    local key = modifier_key(subject, spec.field)
+    if key then
+      local definition = modifier_definition(spec.kind, key) or {}
+      local label = definition.label or definition.name or title_key(key)
+      local state, state_label = subject.modifier_state, nil
+      if spec.kind == "enhancement" and type(state) == "table" then
+        local uses_left, deprecated
+        for state_key, value in pairs(state) do
+          if tostring(state_key):match("uses_left$") and type(value) == "number" then uses_left = value end
+          if tostring(state_key):match("deprecated$") and value == true then deprecated = true end
+        end
+        if deprecated then state_label = "DEPRECATED"
+        elseif uses_left ~= nil then state_label = tostring(uses_left) .. " SHIPS LEFT" end
+      end
+      local desc = definition.desc or definition.description or ""
+      if state_label then desc = desc .. " Current state: " .. state_label .. "." end
+      out[#out + 1] = {
+        kind = spec.kind,
+        key = key,
+        label = label,
+        short = definition.short or definition.abbr or label,
+        desc = desc,
+        state_label = state_label,
+        col = definition.col or definition.color
+          or (spec.kind == "enhancement" and G.C.users or { 0.90, 0.78, 0.35, 1 }),
+        prefix = spec.prefix,
+      }
+    end
+  end
+  return out
+end
+
+-- A Tech modifier may replace the native Layer identity. Keep the label shared
+-- between the face, Deck View, tooltip, and headless protocol.
+function Card.tech_layer_label(subject, center)
+  subject = subject or {}
+  if center and not subject.center then
+    local display = {}
+    for key, value in pairs(subject) do display[key] = value end
+    display.center, display.layer = center, subject.layer or center.layer
+    subject = display
+  end
+  local options = TechModifiers.coverage_options(subject)
+  if options ~= nil then
+    if #options == 0 then return "No Layer" end
+    if #options > 1 then return "Any Layer" end
+    return options[1]
+  end
+  return Coverage.display_layer(subject)
+end
+
+function Card.tech_modifier_summary(subject)
+  local labels = {}
+  for _, row in ipairs(Card.tech_modifier_rows(subject)) do
+    local label = row.label
+    if row.state_label then label = label .. " [" .. row.state_label .. "]" end
+    labels[#labels + 1] = label
+  end
+  return table.concat(labels, " · ")
+end
+
+function Card.tech_modifier_detail(subject)
+  local lines = {}
+  for _, row in ipairs(Card.tech_modifier_rows(subject)) do
+    local kind = row.kind:gsub("^%l", string.upper)
+    lines[#lines + 1] = kind .. " · " .. row.label .. (row.desc ~= "" and (": " .. row.desc) or "")
+  end
+  return table.concat(lines, "\n")
+end
 
 -- Layer "suit" abbreviations for the readable top-left corner when logo art is unavailable.
 Card.LAYER_ABBR = { Frontend = "FE", Backend = "BE", Data = "DA", Infra = "IN", AI = "AI", Knowledge = "KN" }
@@ -177,7 +271,6 @@ function Card.draw_founder_face(t, center, opts)
   local lg = love.graphics
   local card = opts.card
   local edition = card and card.edition
-  local seal = card and card.seal
   local cham = Card.CHAMFER
   local pad = Card.FRAME_PAD
   -- layout derived from the rect: square art on top, effect banner fills the remainder
@@ -247,14 +340,6 @@ function Card.draw_founder_face(t, center, opts)
         G.FONTS.tiny, { 0.08, 0.10, 0.15, 0.92 }, G.C.win)
     end
   end
-  local sl = seal and Card.SEALS[seal]                               -- seal stamp (top-right of the art)
-  if sl then
-    local r = math.floor(t.w * 0.075)
-    local sx, sy = t.x + t.w - r - 7, t.y + r + 7
-    lg.setColor(sl.col); lg.circle("fill", sx, sy, r)
-    lg.setColor(0, 0, 0, 0.6); lg.setLineWidth(1); lg.circle("line", sx, sy, r); lg.setLineWidth(1)
-  end
-
   pixel_rect(t.x, t.y, t.w, t.h, nil, { chamfer = cham, border = opts.border or G.C.border, line_w = opts.line_w or 1 })
 end
 
@@ -298,6 +383,10 @@ function Card:init(args)
   self.source = args.source                           -- per-instance Tech acquisition provenance
   self.acquired_ante = args.acquired_ante
   self.migrated_from = args.migrated_from
+  self.edition = args.edition
+  self.enhancement = args.enhancement or args.enh
+  self.seal = args.seal
+  self.modifier_state = args.modifier_state and deep_copy(args.modifier_state) or nil
   self.layer = args.center and args.center.layer
   self.base_users = (args.center and args.center.base_users) or 0
   self.ability = {
@@ -313,10 +402,15 @@ function Card:init(args)
 end
 
 -- the "build" contribution of this card (contextual seam for the compatibility graph)
+function Card.tech_users(subject, center, era)
+  local users, status, before_decay = TechLifecycle.effective_users(subject, center, era)
+  return TechModifiers.users(subject, users), status, before_decay
+end
+
 function Card:get_users(context)
   local era = type(context) == "table" and context.era or context
-  local users = TechLifecycle.effective_users(self, self.center, era)
-  return users
+  if self.center and self.center.set == "TechCard" then return Card.tech_users(self, self.center, era) end
+  return TechLifecycle.effective_users(self, self.center, era)
 end
 
 function Card:tech_status(context)
@@ -378,16 +472,15 @@ function Card.draw_tech_face(t, center, opts)
   opts = opts or {}
   local lg = love.graphics
   local subject = opts.card or opts.entry or {}
-  local display = {
-    center = center,
-    layer = (subject.layer ~= nil and subject.layer) or (center and center.layer),
-    layer_override = subject.layer_override,
-  }
-  local L = Coverage.display_layer(display)
-  local col = (L and layers[L] and layers[L].color) or G.C.panel
-  local pip = (G.TECH_ART and center and G.TECH_ART[center.key]) or (G.SUIT_ART and L and G.SUIT_ART[L])
+  local L = Card.tech_layer_label(subject, center)
+  local native_layer = (L == "Any Layer" or L == "No Layer") and nil or L
+  local col = (native_layer and layers[native_layer] and layers[native_layer].color)
+    or (L == "Any Layer" and G.C.arr or G.C.panel_dim)
+  local pip = (G.TECH_ART and center and G.TECH_ART[center.key])
+    or (G.SUIT_ART and native_layer and G.SUIT_ART[native_layer])
   local has_tech_mark = G.TECH_ART and center and G.TECH_ART[center.key]
-  local effective_users, status, before_decay = TechLifecycle.effective_users(subject, center, opts.era)
+  local effective_users, status, before_decay = Card.tech_users(subject, center, opts.era)
+  local modifier_rows = Card.tech_modifier_rows(subject)
 
   -- Warm-white poker stock replaces the old full layer-colour placeholder. Layer colour remains a
   -- restrained trim cue; the individual parody mark now carries the card's visual identity.
@@ -410,8 +503,12 @@ function Card.draw_tech_face(t, center, opts)
 
   local base_users = subject.base_users
   if base_users == nil then base_users = (center and center.base_users) or 0 end
-  local users_col = status.state == "deprecated" and G.C.lose
-    or (before_decay ~= base_users and G.C.win or G.C.users)
+  local enhancement_deprecated = false
+  for _, row in ipairs(modifier_rows) do
+    if row.kind == "enhancement" and row.state_label == "DEPRECATED" then enhancement_deprecated = true end
+  end
+  local users_col = (status.state == "deprecated" or enhancement_deprecated) and G.C.lose
+    or ((effective_users ~= before_decay or before_decay ~= base_users) and G.C.win or G.C.users)
   draw_text(G.FONTS.normal, tostring(effective_users), t.x + 8, t.y + 6, users_col)
   local rev_label = subject.rev_sticker_label and subject:rev_sticker_label()
   if rev_label then
@@ -419,6 +516,28 @@ function Card.draw_tech_face(t, center, opts)
     pixel_rect(t.x + t.w - rw - 6, t.y + 6, rw, rh, { 0.08, 0.10, 0.15, 0.90 },
       { chamfer = 4, shadow = false, emboss = false })
     draw_text(G.FONTS.tiny, rev_label, t.x + t.w - rw - 4, t.y + 8, G.C.mult, rw - 4, "center")
+  end
+
+  -- Persistent modifiers are acquisition decisions, so they must be legible on
+  -- the face before a player adopts a draft/Evaluation offer. The compact badge
+  -- uses a stable two-letter family prefix; the full rule remains in the detail
+  -- tooltip and Deck View.
+  local badge_w = math.min(70, t.w * 0.49)
+  for index, row in ipairs(modifier_rows) do
+    local badge_h, badge_gap = 18, 2
+    local bx = t.x + t.w - badge_w - 6
+    local by = t.y + (rev_label and 34 or 6) + (index - 1) * (badge_h + badge_gap)
+    local short = tostring(row.short or row.label or row.key)
+    if row.state_label == "DEPRECATED" then short = "DEPR"
+    elseif row.state_label then
+      local uses = row.state_label:match("^(%d+)")
+      short = short:sub(1, 3) .. (uses and (" " .. uses) or "")
+    end
+    if #short > 5 then short = short:sub(1, 5) end
+    pixel_rect(bx, by, badge_w, badge_h, { 0.08, 0.10, 0.15, 0.94 },
+      { chamfer = 3, border = row.col, line_w = 1, shadow = false, emboss = false })
+    draw_text(G.FONTS.tiny, row.prefix .. " " .. short, bx + 3,
+      by + (badge_h - text_h(G.FONTS.tiny)) / 2, row.col, badge_w - 6, "center")
   end
   if pip then
     local ps = 22 / pip:getWidth()
@@ -447,10 +566,12 @@ function Card.draw_tech_face(t, center, opts)
       t.y + t.h - text_h(G.FONTS.normal) - 5, t.w - 16, "center")
   end
 
-  local border = opts.border or (status.state == "deprecated" and G.C.lose or G.C.border)
+  local modifier_border = modifier_rows[1] and modifier_rows[1].col
+  local border = opts.border or (status.state == "deprecated" and G.C.lose or modifier_border or G.C.border)
   pixel_rect(t.x, t.y, t.w, t.h, nil,
     { chamfer = 6, border = border, line_w = opts.line_w or (status.state == "deprecated" and 3 or 2) })
-  return { effective_users = effective_users, before_decay = before_decay, status = status, layer = L }
+  return { effective_users = effective_users, before_decay = before_decay, status = status, layer = L,
+    modifiers = modifier_rows }
 end
 
 -- the joker/center behavior seam: returns an effect table or nil. Tech cards do nothing;

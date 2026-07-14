@@ -14,6 +14,7 @@ Collection.CATEGORIES = {
   { id = "forms", label = "Forms" },
   { id = "playbooks", label = "Playbooks" },
   { id = "tech_laws", label = "Tech Laws" },
+  { id = "tech_modifiers", label = "Tech Mods" },
 }
 
 local CATEGORY_BY_ID = {}
@@ -65,6 +66,32 @@ local function all_tech_laws()
   return wrap(centers_pool("Consumable"), "key", function(center) return center.kind == "TechLaw" end)
 end
 
+local function all_tech_modifiers()
+  local rules = require("game.tech_modifiers")
+  local out = {}
+  for _, group in ipairs({
+    { kind = "enhancement", definitions = rules.ENHANCEMENTS or {} },
+    { kind = "seal", definitions = rules.SEALS or {} },
+  }) do
+    for key, definition in pairs(group.definitions) do
+      out[#out + 1] = {
+        id = group.kind .. ":" .. key,
+        source = {
+          key = key,
+          name = definition.label or definition.name or key,
+          kind = group.kind,
+          desc = definition.desc or definition.description or "",
+        },
+      }
+    end
+  end
+  table.sort(out, function(a, b)
+    if a.source.kind ~= b.source.kind then return a.source.kind < b.source.kind end
+    return a.source.name < b.source.name
+  end)
+  return out
+end
+
 local function value_filter(field, value)
   return function(entry) return tostring(entry.source[field] or ""):lower() == value:lower() end
 end
@@ -110,6 +137,11 @@ local FILTERS = {
     { id = "common", label = "Common", matches = value_filter("rarity", "common") },
     { id = "uncommon", label = "Uncommon", matches = value_filter("rarity", "uncommon") },
   },
+  tech_modifiers = {
+    { id = "all", label = "All" },
+    { id = "enhancement", label = "Enhancements", matches = value_filter("kind", "enhancement") },
+    { id = "seal", label = "Seals", matches = value_filter("kind", "seal") },
+  },
 }
 
 local CATALOGS = {
@@ -119,6 +151,7 @@ local CATALOGS = {
   forms = all_forms,
   playbooks = all_playbooks,
   tech_laws = all_tech_laws,
+  tech_modifiers = all_tech_modifiers,
 }
 local CATALOG_CACHE = {}
 
@@ -136,6 +169,7 @@ local function profile_or_default(profile)
 end
 
 local function discovered(entry, profile)
+  if entry.source.kind == "enhancement" or entry.source.kind == "seal" then return true end
   if profile.discovered[entry.id] == true then return true end
   -- Founders may be discovered during the current run before the profile is persisted.
   return entry.source.set == "Founder" and entry.source.discovered == true
@@ -158,6 +192,8 @@ local function summary(category, source)
       "Margin " .. tostring(math.floor((source.margin or 0) * 100 + 0.5)) .. "%"
   elseif category == "tech_laws" then
     return (source.rarity or "common"):gsub("^%l", string.upper), source.desc or ""
+  elseif category == "tech_modifiers" then
+    return source.kind:gsub("^%l", string.upper) .. " · persistent Tech modifier", source.desc or ""
   end
   return "", ""
 end

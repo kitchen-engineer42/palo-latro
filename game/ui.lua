@@ -15,13 +15,23 @@ local UIBox = require("engine.uibox")
 local Collection = require("game.collection")
 local Guidance = require("game.guidance")
 local Bosses = require("game.bosses")
-local TechLifecycle = require("game.tech_lifecycle")
 local Deck = require("game.deck")
 local Centers = require("game.centers")
 local AIMaturity = require("game.ai_maturity")
 local Economy = require("game.economy")
 local Pricing = require("game.pricing")
 local Markets = require("game.markets")
+
+local function tech_offer_center(option)
+  if type(option) == "string" then return Centers.get(option) end
+  if type(option) ~= "table" then return nil end
+  return option.center or Centers.get(option.key or option.center_key)
+end
+
+local function tech_offer_subject(option, center)
+  if type(option) == "table" then return option end
+  return { key = option, center = center }
+end
 
 local function cursor()
   if G.CONTROLLER and G.CONTROLLER.cursor then return G.CONTROLLER.cursor.x, G.CONTROLLER.cursor.y end
@@ -641,7 +651,10 @@ function UI.render()
   end
   if selecting and n_sel > 0 then
     local selected = G.hand:highlighted()
-    local preview = require("game.preview").evaluate(selected)
+    local selected_set, held = {}, {}
+    for _, card in ipairs(selected) do selected_set[card] = true end
+    for _, card in ipairs(G.hand.cards or {}) do if not selected_set[card] then held[#held + 1] = card end end
+    local preview = require("game.preview").evaluate(selected, { held_cards = held })
     local app, cov, stack, rel, fit = preview.app, preview.coverage, preview.best_stack, preview.reliability, preview.fit
     local stack_text = stack and ((stack.complete and stack.name) or (stack.name .. " " .. stack.matched .. "/" .. stack.total)) or "none"
     UI.text(G.FONTS.tiny, ("Preview: %s · Coverage %d/5 · Stack %s · Fit ×%.2f · Reliability %d/10"):format(
@@ -661,6 +674,19 @@ function UI.render()
       preview.substitutes, preview.substitutes == 1 and "" or "s"),
       G.play.T.x, compat_y,
       preview.clashes > 0 and G.C.lose or G.C.text_dim, G.play.T.w, "center")
+    if preview.tech_modifier_summary and preview.tech_modifier_summary ~= "" then
+      local effects = preview.tech_modifiers and preview.tech_modifiers.effects or {}
+      local effect_text = {}
+      if (effects.repetitions or 0) > 0 then effect_text[#effect_text + 1] = "+" .. effects.repetitions .. " trigger" end
+      if (effects.played_rev or 0) ~= 0 then effect_text[#effect_text + 1] = "+" .. effects.played_rev .. " Rev" end
+      if (effects.held_rev_mult or 1) ~= 1 then effect_text[#effect_text + 1] = "held ×" .. effects.held_rev_mult .. " Rev" end
+      if (effects.blind_clear_cash or 0) > 0 then
+        effect_text[#effect_text + 1] = "+$" .. effects.blind_clear_cash .. " at blind clear"
+      end
+      UI.text(G.FONTS.tiny, "Tech modifiers · " .. preview.tech_modifier_summary
+          .. (#effect_text > 0 and (" · " .. table.concat(effect_text, " · ")) or ""),
+        G.play.T.x, compat_y + 21, G.C.win, G.play.T.w, "center")
+    end
   end
   -- hand
   UI.text(G.FONTS.tiny, "YOUR TECH  \194\183  " .. n_sel .. "/" .. (GAME.select_max or 5) .. " selected",
@@ -757,20 +783,33 @@ function UI.render_tech_draft(W, H, GAME)
   UI.text(G.FONTS.tiny, ("Deck %d → %d · source: Boss draft"):format(deck_before, deck_before + 1),
     0, 138, G.C.win, W, "center")
   local choices = (GAME.tech_draft and GAME.tech_draft.choices) or {}
-  local Centers = require("game.centers")
+  local offers = (GAME.tech_draft and GAME.tech_draft.offers) or {}
   local cw, ch, gap, y = (#choices > 3 and 260 or 320), 350, 32, 184
   local x0 = (W - (#choices * cw + math.max(0, #choices - 1) * gap)) / 2
+  local hovered, hover_x, hover_y
   for i, key in ipairs(choices) do
-    local center, x = Centers.get(key), x0 + (i - 1) * (cw + gap)
+    local offer = offers[i] or key
+    local center, x = tech_offer_center(offer) or Centers.get(key), x0 + (i - 1) * (cw + gap)
+    local subject = tech_offer_subject(offer, center)
+    local hov = point_in_rect(mx, my, x, y, cw, ch)
     pixel_rect(x, y, cw, ch, { 0.12, 0.14, 0.18, 1 }, { chamfer = 8, border = G.C.border, line_w = 2 })
-    UI.text(G.FONTS.normal, center and center.name or key, x + 16, y + 28, G.C.arr, cw - 32, "center")
-    UI.text(G.FONTS.small, (center and center.layer or "Tech") .. "  ·  " .. (center and center.sub_role or ""),
-      x + 16, y + 92, G.C.text_dim, cw - 32, "center")
-    lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text)
-    lg.printf((center and center.desc) or "", x + 28, y + 144, cw - 56, "center")
+    local fw, fh = math.min(Card.W, cw - 48), 218
+    Card.draw_tech_face({ x = x + (cw - fw) / 2, y = y + 16, w = fw, h = fh }, center,
+      { entry = subject, era = GAME.era, border = hov and G.C.hover or G.C.border, line_w = hov and 3 or 2 })
+    local summary = Card.tech_modifier_summary(subject)
+    UI.text(G.FONTS.tiny, summary ~= "" and summary or "Unmodified Tech",
+      x + 12, y + 246, summary ~= "" and G.C.win or G.C.text_dim, cw - 24, "center")
     local b = { x = x + 55, y = y + ch - 66, w = cw - 110, h = 44 }
     UI.rects["tech_pick_" .. i] = b
     draw_button(b, "Adopt (+1)", true, point_in_rect(mx, my, b.x, b.y, b.w, b.h))
+    if hov then hovered, hover_x, hover_y = { center = center, subject = subject }, x + cw + 10, y end
+  end
+  if hovered and hovered.center then
+    local detail = hovered.center.desc or ""
+    local modifiers = Card.tech_modifier_detail(hovered.subject)
+    if modifiers ~= "" then detail = detail .. "\n\n" .. modifiers end
+    UI.tip_box(hover_x, hover_y, hovered.center.name or "Tech",
+      (hovered.center.layer or "Tech") .. " · Boss draft offer", detail)
   end
   local controls = capital_controls(GAME, G.STATE)
   local raise = { x = W / 2 - 120, y = H - 68, w = 240, h = 42 }
@@ -835,17 +874,15 @@ function UI.draw_tooltip()
     end
     body = economics .. "\n" .. (c.ability_name or "")
     local ed = hovered.edition and Card.EDITIONS[hovered.edition]
-    local sl = hovered.seal and Card.SEALS[hovered.seal]
     if ed then body = body .. "\n\226\156\166 " .. ed.label .. " edition: " .. (ed.desc or "") end
-    if sl then body = body .. "\n\226\151\137 " .. sl.label .. " seal: " .. (sl.desc or "") end
     body = body .. "\n\n" .. (c.ability_text or c.hint or "")          -- flavor sketch (secondary)
   else
-    local effective, status, before_decay = TechLifecycle.effective_users(hovered, c)
+    local effective, status, before_decay = Card.tech_users(hovered, c)
     local base = hovered.base_users or c.base_users or 0
     local users = "Users " .. format_number(effective)
     if effective ~= base then users = users .. " (base " .. format_number(base) .. ")" end
     local rev = hovered.rev_sticker_label and hovered:rev_sticker_label()
-    sub = (Coverage.display_layer(hovered) or "") .. "  ·  " .. users .. (rev and ("  ·  " .. rev) or "")
+    sub = (Card.tech_layer_label(hovered, c) or "") .. "  ·  " .. users .. (rev and ("  ·  " .. rev) or "")
     body = c.desc or ""
     if status.state == "deprecated" then
       body = body .. ("\n\nDEPRECATED · %d Era%s behind · -%d%% Users (%s → %s)."):format(
@@ -860,6 +897,8 @@ function UI.draw_tooltip()
       if previous then provenance = provenance:gsub(tostring(hovered.migrated_from), previous.name or previous.key) end
     end
     body = body .. "\n\nAcquisition · " .. provenance
+    local modifier_detail = Card.tech_modifier_detail(hovered)
+    if modifier_detail ~= "" then body = body .. "\n\n" .. modifier_detail end
   end
   UI.tip_box(hovered.VT.x + hovered.VT.w + 10, hovered.VT.y, c.name or c.short or "?", sub, body)
 end
@@ -1097,6 +1136,10 @@ function UI.render_shop(W, H, GAME)
         (po.kind == "tech_law" and "  (use or sell a Tech Law to free a slot)" or
         (po.kind == "tech_evaluation" and "  ·  Adopt +1 or Migrate +0" or ""))
       lg.printf(title .. " \194\183 pick " .. po.picks_left .. capacity_hint, 332, 318, W - 332, "center")
+      if po.kind == "tech_evaluation" then
+        UI.text(G.FONTS.tiny, "Visible offer modifiers apply on Adopt · Migrate keeps the target's modifiers",
+          332, 340, G.C.win, W - 332, "center")
+      end
     end
     local n = #po.options
     local cw, ch, gap, y0 = 160, 206, 30, 360            -- pick options as founder faces (square art + banner), pick below
@@ -1114,11 +1157,13 @@ function UI.render_shop(W, H, GAME)
       if migration_target then
         migration_center = Centers.get(migration_target.center_key)
         migration_effective, migration_status, migration_before =
-          TechLifecycle.effective_users(migration_target, migration_center, GAME.era)
+          Card.tech_users(migration_target, migration_center, GAME.era)
       end
     end
     for i = 1, n do
       local c = po.options[i]
+      local tech_center = po.kind == "tech_evaluation" and tech_offer_center(c) or nil
+      local tech_subject = tech_center and tech_offer_subject(c, tech_center) or nil
       local x = x0 + (i - 1) * (cw + gap)
       local cf = frame.cards[i] or { visible = true, face_down = false, deal = 1, scale_x = 1 }
       if c and cf.visible then
@@ -1145,8 +1190,9 @@ function UI.render_shop(W, H, GAME)
           Card.draw_consumable_face({ x = tx, y = ty, w = dw, h = dh }, c,
             { border = hov and G.C.hover or G.C.arr, line_w = hov and 3 or 2 })
         elseif po.kind == "tech_evaluation" then
-          Card.draw_tech_face({ x = tx, y = ty, w = dw, h = dh }, c,
-            { border = hov and G.C.hover or G.C.border, line_w = hov and 3 or 2, era = GAME.era })
+          Card.draw_tech_face({ x = tx, y = ty, w = dw, h = dh }, tech_center,
+            { entry = tech_subject, border = hov and G.C.hover or G.C.border,
+              line_w = hov and 3 or 2, era = GAME.era })
         else
           Card.draw_founder_face({ x = tx, y = ty, w = dw, h = dh }, c,
             { border = hov and G.C.hover or rc, line_w = hov and 3 or 2 })
@@ -1169,7 +1215,7 @@ function UI.render_shop(W, H, GAME)
             draw_button(migrate, "Migrate", can_migrate,
               point_in_rect(mx, my, migrate.x, migrate.y, migrate.w, migrate.h), G.FONTS.tiny)
             if migration_target then
-              local replacement_users = TechLifecycle.effective_users(migration_target, c, GAME.era)
+              local replacement_users = Card.tech_users(migration_target, tech_center, GAME.era)
               UI.text(G.FONTS.tiny, ("Deck +0 · %s -> %s"):format(
                 format_number(migration_effective), format_number(replacement_users)),
                 x, y0 + ch + 43, can_migrate and G.C.win or G.C.text_dim, cw, "center")
@@ -1240,16 +1286,20 @@ function UI.render_shop(W, H, GAME)
       elseif hc and po.kind == "tech_law" then UI.tip_box(hx, hy, hc.name,
         (hc.kind or "Tech Law") .. "   \194\183   " .. (hc.rarity or ""), hc.desc or "")
       elseif hc and po.kind == "tech_evaluation" then
-        local replacement_users = migration_target and TechLifecycle.effective_users(migration_target, hc, GAME.era)
-        local detail = (hc.desc or "") .. "\n\nAdopt adds one card to the deck."
+        local center = tech_offer_center(hc)
+        local subject = tech_offer_subject(hc, center)
+        local replacement_users = migration_target and Card.tech_users(migration_target, center, GAME.era)
+        local detail = (center.desc or "") .. "\n\nAdopt adds this exact card and its visible modifiers to the deck."
+        local modifier_detail = Card.tech_modifier_detail(subject)
+        if modifier_detail ~= "" then detail = detail .. "\n\n" .. modifier_detail end
         if migration_target and migration_center then
-          detail = detail .. ("\nMigrate replaces %s in place: %s → %s Users; UID and modifiers survive."):format(
+          detail = detail .. ("\nMigrate replaces %s in place: %s → %s Users; its existing UID and modifiers survive, so the offer modifiers do not apply."):format(
             migration_center.name or migration_center.key, format_number(migration_effective),
             format_number(replacement_users))
         else
           detail = detail .. "\nMigrate needs an owned Deprecated Tech."
         end
-        UI.tip_box(hx, hy, hc.name, (hc.layer or "Tech") .. " · Tech Evaluation", detail)
+        UI.tip_box(hx, hy, center.name, (center.layer or "Tech") .. " · Tech Evaluation", detail)
       end
     end
     return
@@ -1435,9 +1485,8 @@ function UI.draw_overlays()
     for _, entry in ipairs(master) do
       local center = Centers.get(entry.center_key)
       if center then
-        local display = { center = center, layer = center.layer, layer_override = entry.layer_override }
-        local L = Coverage.display_layer(display) or "?"
-        local effective, status, before = TechLifecycle.effective_users(entry, center, G.GAME and G.GAME.era)
+        local L = Card.tech_layer_label(entry, center) or "?"
+        local effective, status, before = Card.tech_users(entry, center, G.GAME and G.GAME.era)
         byl[L] = byl[L] or {}
         byl[L][#byl[L] + 1] = { entry = entry, center = center, effective = effective,
           before = before, status = status }
@@ -1461,15 +1510,17 @@ function UI.draw_overlays()
       px0 + 20, py0 + 66, G.C.text_dim, pw - 40, "center")
 
     local order = { "Frontend", "Backend", "Data", "Infra", "AI", "Knowledge" }
+    if #(byl["Any Layer"] or {}) > 0 then order[#order + 1] = "Any Layer" end
+    if #(byl["No Layer"] or {}) > 0 then order[#order + 1] = "No Layer" end
     local gap, inner_x, inner_w = 8, px0 + 20, pw - 40
     local col_w = (inner_w - gap * (#order - 1)) / #order
-    local top, row_h, row_gap = py0 + 100, 30, 4
+    local top, row_h, row_gap = py0 + 100, 42, 4
     local max_rows = math.floor((py0 + ph - 24 - (top + 28)) / (row_h + row_gap))
     local function clipped_name(value)
       value = tostring(value or "?")
       return #value > 17 and (value:sub(1, 16) .. "...") or value
     end
-    for _, L in ipairs({ "Frontend", "Backend", "Data", "Infra", "AI", "Knowledge" }) do
+    for _, L in ipairs(order) do
       local list, col_index = byl[L] or {}, 1
       for index, name in ipairs(order) do if name == L then col_index = index; break end end
       local x = inner_x + (col_index - 1) * (col_w + gap)
@@ -1495,13 +1546,21 @@ function UI.draw_overlays()
         if is_deprecated then value = value .. " (-" .. math.floor(item.status.penalty * 100 + 0.5) .. "%)" end
         UI.text(G.FONTS.tiny, value .. "  " .. clipped_name(item.center.short or item.center.name),
           x + 5, y + 2, is_deprecated and G.C.lose or G.C.text, col_w - 10, "left")
+        local modifier_parts = {}
+        for _, row in ipairs(Card.tech_modifier_rows(item.entry)) do
+          local short = tostring(row.short or row.label or row.key)
+          if #short > 6 then short = short:sub(1, 6) end
+          modifier_parts[#modifier_parts + 1] = row.prefix .. ":" .. short
+        end
+        UI.text(G.FONTS.tiny, #modifier_parts > 0 and table.concat(modifier_parts, " · ") or "NO MODIFIERS",
+          x + 5, y + 15, #modifier_parts > 0 and G.C.win or G.C.panel_dim, col_w - 10, "left")
         local src = source_short[item.entry.source] or tostring(item.entry.source or "UNKNOWN"):upper()
         if item.entry.acquired_ante then src = src .. " A" .. tostring(item.entry.acquired_ante) end
         if item.entry.migrated_from then
           local old = Centers.get(item.entry.migrated_from)
           src = src .. " <- " .. clipped_name(old and (old.short or old.name) or item.entry.migrated_from)
         end
-        UI.text(G.FONTS.tiny, src, x + 5, y + 15, G.C.text_dim, col_w - 10, "left")
+        UI.text(G.FONTS.tiny, src, x + 5, y + 28, G.C.text_dim, col_w - 10, "left")
       end
       if #list > max_rows then
         UI.text(G.FONTS.tiny, "+" .. (#list - max_rows) .. " more", x, py0 + ph - 22, G.C.text_dim, col_w, "center")
