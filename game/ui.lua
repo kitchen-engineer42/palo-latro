@@ -18,6 +18,10 @@ local Bosses = require("game.bosses")
 local TechLifecycle = require("game.tech_lifecycle")
 local Deck = require("game.deck")
 local Centers = require("game.centers")
+local AIMaturity = require("game.ai_maturity")
+local Economy = require("game.economy")
+local Pricing = require("game.pricing")
+local Markets = require("game.markets")
 
 local function cursor()
   if G.CONTROLLER and G.CONTROLLER.cursor then return G.CONTROLLER.cursor.x, G.CONTROLLER.cursor.y end
@@ -107,6 +111,63 @@ local function guidance_geometry(W, H)
   return panel, { x = panel.x + panel.w - 112, y = panel.y + panel.h - 40, w = 96, h = 28 }
 end
 
+-- One read-only projection feeds both retained hit targets and immediate-mode labels so the two
+-- cannot disagree about capital terms or legality.
+local function capital_controls(GAME, state)
+  local equity_cost, cash_fraction = Economy.raise_terms(GAME)
+  local market = Markets.view(GAME and GAME.market)
+  local raise_mult = market and market.economy and market.economy.raise_cash_mult or 1
+  local raise_cash = math.floor(((GAME and GAME.run_best_arr) or 0) * cash_fraction * raise_mult)
+  local raise_allowed = state == G.STATES.SELECTING_HAND or state == G.STATES.SHOP
+    or state == G.STATES.TECH_DRAFT
+  local raise_enabled = raise_allowed and GAME.raise_available == true
+    and (GAME.equity_pct or 0) > equity_cost
+  local raise_label
+  if GAME.raise_available == false then
+    raise_label = "Raise used"
+  elseif (GAME.equity_pct or 0) <= equity_cost then
+    raise_label = "Need >" .. equity_cost .. "% Eq"
+  else
+    raise_label = ("Raise +$%d · -%d%% Eq"):format(raise_cash, equity_cost)
+  end
+
+  local pivot_cost = Pricing.base_reroll(GAME, RunState.ANTE_BASE)
+    * math.min(2, 1 + (GAME.market_pivots or 0))
+  local founder_count = #((G.jokers and G.jokers.cards) or {})
+  local has_queueable_market, pivot_block_reason = false, nil
+  for _, destination in ipairs(Markets.list or {}) do
+    if not GAME.market or destination.id ~= GAME.market.id then
+      local allowed, reason = Markets.can_queue(GAME, destination, founder_count)
+      if allowed then has_queueable_market = true; break end
+      pivot_block_reason = pivot_block_reason or reason
+    end
+  end
+  local pivot_enabled = state == G.STATES.SELECTING_HAND
+    and has_queueable_market and GAME.last_market_pivot_ante ~= GAME.ante
+    and (GAME.cash or 0) >= pivot_cost
+  local pivot_label
+  if GAME.pending_market then
+    local allowed, reason = Markets.can_queue(GAME, GAME.pending_market, founder_count)
+    pivot_label = allowed and ("Next: " .. (GAME.pending_market.name or "Market"))
+      or (reason or "Destination blocked")
+    pivot_enabled = false
+  elseif GAME.last_market_pivot_ante == GAME.ante then
+    pivot_label = "Pivot used A" .. tostring(GAME.ante or 1)
+  elseif state ~= G.STATES.SELECTING_HAND then
+    pivot_label = "Pivot during blind"
+  elseif not has_queueable_market then
+    pivot_label = pivot_block_reason or "No legal Market"
+  elseif (GAME.cash or 0) < pivot_cost then
+    pivot_label = "Pivot needs $" .. tostring(pivot_cost)
+  else
+    pivot_label = "Market Pivot -$" .. tostring(pivot_cost)
+  end
+  return {
+    raise = { label = raise_label, enabled = raise_enabled },
+    pivot = { label = pivot_label, enabled = pivot_enabled },
+  }
+end
+
 -- Build every button from current state without drawing. UIBox owns deterministic z/order/focus
 -- metadata; the runtime input adapter consumes the flattened specs bottom-to-top.
 function UI.prepare()
@@ -132,6 +193,11 @@ function UI.prepare()
     local half, rx = (iw - 12) / 2, ix + (iw - 12) / 2 + 12
     add("run_info", { x = ix, y = py + 554, w = half, h = 50 }, true)
     add("options", { x = rx, y = py + 554, w = half, h = 50 }, true)
+    local controls = capital_controls(GAME, G.STATE)
+    add("raise", { x = ix, y = py + 612, w = half, h = 38 }, controls.raise.enabled)
+    if G.STATE == G.STATES.SELECTING_HAND then
+      add("market_pivot", { x = rx, y = py + 612, w = half, h = 38 }, controls.pivot.enabled)
+    end
   end
 
   if G.STATE == G.STATES.MENU then
@@ -177,6 +243,8 @@ function UI.prepare()
       add("tech_pick_" .. i, { x = x0 + (i - 1) * (cw + gap) + 55,
         y = y + ch - 66, w = cw - 110, h = 44 }, true)
     end
+    local controls = capital_controls(GAME, G.STATE)
+    add("raise", { x = W / 2 - 120, y = H - 68, w = 240, h = 42 }, controls.raise.enabled)
   elseif G.STATE == G.STATES.BLIND_SELECT and GAME then
     local y0, ch = 168, 248
     local play = { x = W / 2 - 130, y = y0 + ch + 62, w = 260, h = 60 }
@@ -440,10 +508,16 @@ function UI.left_panel(GAME, shop_mode)
     UI.text(G.FONTS.tiny, (bl.stage or "?") .. "  \194\183  Ante " .. (GAME.ante or 1) .. "/8", ix, py + 66, G.C.text_dim, iw, "center")
     -- market + boss telegraph live in the TOP-LEFT header (Balatro-style), not buried at the rail bottom
     UI.text(G.FONTS.tiny, (GAME.market and GAME.market.name or ""), ix, py + 82, G.C.arr, iw, "center")
+    local telegraph = ""
     if bl.is_boss and bl.event then
       local boss = Bosses.rule(bl.event)
-      UI.text(G.FONTS.tiny, "! " .. ((boss and boss.name) or bl.event), ix, py + 96, G.C.lose, iw, "center")
+      telegraph = "! " .. ((boss and boss.name) or bl.event)
     end
+    if GAME.pending_market then
+      telegraph = telegraph .. (telegraph ~= "" and "  ·  " or "") .. "Next: " .. GAME.pending_market.name
+    end
+    if telegraph ~= "" then UI.text(G.FONTS.tiny, telegraph, ix, py + 96,
+      bl.is_boss and G.C.lose or G.C.win, iw, "center") end
   end
 
   -- ARR target + progress + raised
@@ -485,9 +559,16 @@ function UI.left_panel(GAME, shop_mode)
   draw_button(UI.rects.run_info, "Run Info", true, point_in_rect(mx, my, ix, py + 554, half, 50))
   UI.rects.options = { x = rx, y = py + 554, w = half, h = 50 }
   draw_button(UI.rects.options, "Options", true, point_in_rect(mx, my, rx, py + 554, half, 50))
+  local controls = capital_controls(GAME, G.STATE)
+  UI.rects.raise = { x = ix, y = py + 612, w = half, h = 38 }
+  draw_button(UI.rects.raise, controls.raise.label, controls.raise.enabled,
+    point_in_rect(mx, my, ix, py + 612, half, 38), G.FONTS.tiny)
+  UI.rects.market_pivot = { x = rx, y = py + 612, w = half, h = 38 }
+  draw_button(UI.rects.market_pivot, controls.pivot.label, controls.pivot.enabled,
+    point_in_rect(mx, my, rx, py + 612, half, 38), G.FONTS.tiny)
   UI.text(G.FONTS.tiny, ("Runway %s \194\183 Rung %d \194\183 Eq %d%% \194\183 Debt %d"):format(
     (GAME.runway or 99) >= 99 and "long" or tostring(GAME.runway), GAME.maturity_rung or 1, GAME.equity_pct or 100,
-    math.floor(require("game.meters").get("tech_debt") or 0)), ix, py + 634, G.C.text_dim, iw, "center")
+    math.floor(require("game.meters").get("tech_debt") or 0)), ix, py + 660, G.C.text_dim, iw, "center")
 end
 
 function UI.render()
@@ -510,7 +591,8 @@ function UI.render()
   UI.left_panel(GAME)                                   -- the shared Balatro-style counter column
 
   -- ===== RIGHT PLAY ZONE: labels, counts, controls =====
-  UI.text(G.FONTS.tiny, "FOUNDERS  " .. #G.jokers.cards .. "/5", G.jokers.T.x, G.jokers.T.y - 24, G.C.text_dim)
+  UI.text(G.FONTS.tiny, "FOUNDERS  " .. #G.jokers.cards .. "/" .. tostring(GAME.founder_slots or 5),
+    G.jokers.T.x, G.jokers.T.y - 24, G.C.text_dim)
   -- consumables slot (reserved: Tech Laws / Playbooks / Moonshots — P4)
   -- Track C B1: the consumable (Tech Law) inventory — real cards live in G.consumables (drawn by draw_all);
   -- the framed placeholder shows only while empty, the count always.
@@ -553,7 +635,10 @@ function UI.render()
   end
   -- product / app-type
   UI.text(G.FONTS.tiny, "PRODUCT  (shipped)", G.play.T.x, G.play.T.y - 24, G.C.text_dim)
-  if GAME.scoring_name then UI.text(G.FONTS.normal, GAME.scoring_name, G.play.T.x, G.play.T.y - 4, G.C.text, G.play.T.w, "center") end
+  if GAME.scoring_name then
+    UI.text(G.FONTS.normal, GAME.product_identity or GAME.scoring_name,
+      G.play.T.x, G.play.T.y - 4, G.C.text, G.play.T.w, "center")
+  end
   if selecting and n_sel > 0 then
     local selected = G.hand:highlighted()
     local preview = require("game.preview").evaluate(selected)
@@ -563,10 +648,18 @@ function UI.render()
       app.name, cov.distinct, stack_text, fit, rel.score) .. " · Base ARR " .. format_number(preview.arr),
       G.play.T.x, G.play.T.y + G.play.T.h + 10,
       rel.score < 7 and G.C.lose or G.C.text_dim, G.play.T.w, "center")
+    local compat_y = G.play.T.y + G.play.T.h + 31
+    if preview.ai_maturity then
+      local maturity = preview.ai_maturity
+      UI.text(G.FONTS.tiny, ("AI ladder %d/6 · %s · +%d Users · ×%.2f Rev"):format(
+        maturity.rung, maturity.name, maturity.users_bonus, maturity.rev_mult),
+        G.play.T.x, compat_y, G.C.arr, G.play.T.w, "center")
+      compat_y = compat_y + 21
+    end
     UI.text(G.FONTS.tiny, ("Compatibility: Chemistry ×%.2f · %d clash%s · %d substitute%s"):format(
       preview.chemistry, preview.clashes, preview.clashes == 1 and "" or "es",
       preview.substitutes, preview.substitutes == 1 and "" or "s"),
-      G.play.T.x, G.play.T.y + G.play.T.h + 31,
+      G.play.T.x, compat_y,
       preview.clashes > 0 and G.C.lose or G.C.text_dim, G.play.T.w, "center")
   end
   -- hand
@@ -633,18 +726,18 @@ function UI.render_market_select(W, H, GAME)
   local x0 = (W - (#choices * cw + math.max(0, #choices - 1) * gap)) / 2
   for i, market in ipairs(choices) do
     local x = x0 + (i - 1) * (cw + gap)
-    local rules = require("data.gameplay.market_rules").for_market(market)
+    local view = require("game.markets").view(market)
     pixel_rect(x, y, cw, ch, { 0.12, 0.14, 0.18, 1 }, { chamfer = 8, border = G.C.border, line_w = 2 })
     UI.text(G.FONTS.normal, market.name, x + 12, y + 24, G.C.arr, cw - 24, "center")
     UI.text(G.FONTS.tiny, (market.audience or "") .. "  ·  " .. (market.industry or ""),
       x + 12, y + 72, G.C.text_dim, cw - 24, "center")
-    UI.text(G.FONTS.small, (market.perk and market.perk.name) or "Market Perk",
+    UI.text(G.FONTS.small, (view.perk and view.perk.name) or "Market Perk",
       x + 18, y + 122, G.C.win, cw - 36, "center")
     lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text)
-    lg.printf((market.perk and market.perk.effect) or "Structured market perk", x + 28, y + 158, cw - 56, "center")
+    lg.printf((view.perk and view.perk.effect) or "Structured market perk", x + 28, y + 158, cw - 56, "center")
     lg.setColor(G.C.text_dim)
-    lg.printf(tostring(rules.starter_size or 24) .. "-card E" .. tostring(rules.start_era or 1)
-      .. " authored deck\nFit: " .. tostring(rules.scenario_id),
+    lg.printf(tostring(view.starter_size or 24) .. "-card E" .. tostring(view.start_era or 1)
+      .. " authored deck\nFit: " .. tostring(view.fit.label),
       x + 28, y + 232, cw - 56, "center")
     local b = { x = x + 55, y = y + ch - 72, w = cw - 110, h = 48 }
     UI.rects["market_pick_" .. i] = b
@@ -679,6 +772,11 @@ function UI.render_tech_draft(W, H, GAME)
     UI.rects["tech_pick_" .. i] = b
     draw_button(b, "Adopt (+1)", true, point_in_rect(mx, my, b.x, b.y, b.w, b.h))
   end
+  local controls = capital_controls(GAME, G.STATE)
+  local raise = { x = W / 2 - 120, y = H - 68, w = 240, h = 42 }
+  UI.rects.raise = raise
+  draw_button(raise, controls.raise.label, controls.raise.enabled,
+    point_in_rect(mx, my, raise.x, raise.y, raise.w, raise.h), G.FONTS.tiny)
 end
 
 -- hover tooltip: full ability text for the card under the cursor (founders) or tech-card desc.
@@ -727,7 +825,15 @@ function UI.draw_tooltip()
   local sub, body
   if founder then
     sub = Card.effect_brief(c, hovered) .. "   \194\183   " .. (c.rarity or "")   -- headline (live value for accumulators)
-    body = (c.ability_name or "")
+    local terms = Card.founder_terms(hovered, c)
+    local economics = ("Salary $%s (base $%s) \194\183 Effect %d%%"):format(
+      format_number(terms.effective_salary), format_number(terms.base_salary),
+      math.floor(terms.effect_scale * 100 + 0.5))
+    if terms.distilled then economics = economics .. " \194\183 Distilled" end
+    if terms.rental_salary_mult ~= 1 then
+      economics = economics .. (" \194\183 Rental \195\151%.2f"):format(terms.rental_salary_mult)
+    end
+    body = economics .. "\n" .. (c.ability_name or "")
     local ed = hovered.edition and Card.EDITIONS[hovered.edition]
     local sl = hovered.seal and Card.SEALS[hovered.seal]
     if ed then body = body .. "\n\226\156\166 " .. ed.label .. " edition: " .. (ed.desc or "") end
@@ -946,7 +1052,7 @@ function UI.render_shop(W, H, GAME)
   UI.left_panel(GAME, true)                              -- same left counter rail as play, with a SHOP badge
   -- shiny page title (top-centre) + a short founders label (the sell hint moved to the tooltip flow)
   UI.text(G.FONTS.big, "*  THE SHOP  *", 330, 2, G.C.arr, W - 330, "center")   -- ASCII stars: m5x7/m6x11 lack the fancy glyphs
-  UI.text(G.FONTS.tiny, "FOUNDERS  " .. #((G.jokers and G.jokers.cards) or {}) .. "/5",
+  UI.text(G.FONTS.tiny, "FOUNDERS  " .. #((G.jokers and G.jokers.cards) or {}) .. "/" .. tostring(GAME.founder_slots or 5),
     G.jokers and G.jokers.T.x or 352, (G.jokers and G.jokers.T.y or 24) - 24, G.C.text_dim)
 
   local sh = GAME.shop or { founders = {} }
@@ -1423,6 +1529,15 @@ function UI.draw_overlays()
       UI.text(G.FONTS.tiny, math.floor((a.margin or 0) * 100 + 0.5) .. "%", px0 + 500, ty, G.C.mult, 90, "left")
       ty = ty + 19
     end
+    ty = ty + 10
+    UI.text(G.FONTS.tiny, "AI SOLUTION LADDER  (highest evidence)", px0 + 30, ty, G.C.arr, 550, "left")
+    ty = ty + 22
+    for index, rung in ipairs(AIMaturity.list or {}) do
+      UI.text(G.FONTS.tiny, index .. ".  " .. rung.name, px0 + 30, ty, G.C.text, 300, "left")
+      UI.text(G.FONTS.tiny, ("+%d Users  ×%.2f Rev"):format(rung.users_bonus, rung.rev_mult),
+        px0 + 340, ty, G.C.users, 190, "left")
+      ty = ty + 19
+    end
     -- RIGHT: run facts
     local RS = require("game.runstate")
     local g = G.GAME or {}
@@ -1432,14 +1547,30 @@ function UI.draw_overlays()
       UI.text(G.FONTS.small, val, fx, fy + 14, col or G.C.text, 320, "left")
       fy = fy + 46
     end
-    fact("MARKET", (g.market and g.market.name) or "?", G.C.arr)
+    local market_view = Markets.view(g.market)
+    local market_state = Markets.active_state(g)
+    fact("MARKET", ((g.market and g.market.name) or "?") ..
+      (g.pending_market and (" → " .. g.pending_market.name .. " next blind") or ""), G.C.arr)
+    fact("FIT DEMAND", market_view and market_view.fit.label or "?")
+    fact("MARKET RULE", market_view and market_view.perk.effect or "?")
+    if market_view and (market_view.economy.free_distill_per_ante or 0) > 0 then
+      fact("MARKET STATUS", market_state.free_distill_ready and "Free Distill ready" or "Free Distill used this Ante",
+        market_state.free_distill_ready and G.C.win or G.C.text_dim)
+    end
     fact("STAKE", tostring(g.stake or 1) .. " \194\183 " .. (RS.STAGE_NAME[g.ante or 1] or ""))
     local boss_key = g.blind and g.blind.event
     local boss = boss_key and Bosses.rule(boss_key)
     fact("BOSS TELEGRAPH", boss and (boss.name .. ": " .. Bosses.describe(boss_key)) or "(see blind select)")
     fact("PAYROLL DUE", "-$" .. format_number(RS.payroll_due() or 0), G.C.mult)
-    fact("CLOSE REWARD", "+$" .. format_number((RS.BLIND_REWARD_UNITS[g.blind_idx or 1] or 0) *
-      require("game.economy").unit(g, RS.ANTE_BASE)), G.C.win)
+    local fixed_reward = (RS.BLIND_REWARD_UNITS[g.blind_idx or 1] or 0) * Economy.unit(g, RS.ANTE_BASE)
+    local close_projection = {}
+    for key, value in pairs(g) do close_projection[key] = value end
+    close_projection.ships_left = math.max(0, (g.ships_left or 0) - 1)
+    local early_reward = Economy.early_close_reward(close_projection, RS.ANTE_BASE)
+    local market_reward = Markets.high_fit_reward(g, RS.ANTE_BASE)
+    fact("CLOSE \194\183 BLIND + EARLY + MARKET/HEALTH",
+      ("+$%s \194\183 operating income separate"):format(
+        format_number(fixed_reward + early_reward + market_reward)), G.C.win)
     local vlist = {}
     for k in pairs(g.vouchers_owned or {}) do vlist[#vlist + 1] = (k:gsub("^v_", "")) end
     fact("INVESTMENTS", #vlist > 0 and table.concat(vlist, ", ") or "(none)")

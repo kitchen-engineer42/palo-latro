@@ -148,7 +148,14 @@ end
 G.FUNCS.distill = function()   -- halve a founder's Salary (pay-once → cheap recurring earner)
   if G.STATE ~= S.SELECTING_HAND then return end
   local c = selected_founder(); if not c or not c.center then return end
-  if Lifecycle.distill(c) then Audio.play("hire") end
+  if Lifecycle.distill(c) then
+    local Markets = require("game.markets")
+    if Markets.can_free_distill(G.GAME) then
+      c.ability.config._salary = 0
+      G.GAME.market_distill_used_ante = G.GAME.ante
+    end
+    Audio.play("hire")
+  end
 end
 
 G.FUNCS.promote = function()   -- automate a founder into the harness → climb the ladder, free the slot
@@ -164,11 +171,18 @@ G.FUNCS.market_pivot = function()   -- costed Market re-roll: abandon fit for a 
   local cost = Pricing.base_reroll(G.GAME, require("game.runstate").ANTE_BASE) * math.min(2, 1 + (G.GAME.market_pivots or 0))
   if (G.GAME.cash or 0) < cost then return end
   local choices = require("game.markets").offers(3, require("game.rng").fn("market"), true)
+  local Markets = require("game.markets")
+  local founder_count = #((G.jokers and G.jokers.cards) or {})
   local next_market
-  for _, m in ipairs(choices) do if not G.GAME.market or m.id ~= G.GAME.market.id then next_market = m; break end end
+  for _, m in ipairs(choices) do
+    if (not G.GAME.market or m.id ~= G.GAME.market.id) and Markets.can_queue(G.GAME, m, founder_count) then
+      next_market = m
+      break
+    end
+  end
   if not next_market then return end
+  if not Markets.queue(G.GAME, next_market, founder_count) then return end
   G.GAME.cash = G.GAME.cash - cost
-  require("game.markets").select(G.GAME, next_market)
   G.GAME.last_market_pivot_ante = G.GAME.ante
   G.GAME.market_pivots = (G.GAME.market_pivots or 0) + 1
   Audio.play("fire")
@@ -180,16 +194,24 @@ G.FUNCS.raise = function()     -- a priced round — Cash now for equity dilutio
   local equity_cost, cash_fraction = Economy.raise_terms(G.GAME)
   if (G.GAME.equity_pct or 0) <= equity_cost then return end
   G.GAME.valuation = G.GAME.run_best_arr or 0
-  G.GAME.cash = (G.GAME.cash or 0) + math.floor(G.GAME.valuation * cash_fraction)
+  local market_economy = require("data.gameplay.market_rules").for_market(G.GAME.market).economy or {}
+  G.GAME.cash = (G.GAME.cash or 0) + math.floor(G.GAME.valuation * cash_fraction
+    * (market_economy.raise_cash_mult or 1))
   G.GAME.equity_pct = (G.GAME.equity_pct or 100) - equity_cost
   G.GAME.raises_taken = (G.GAME.raises_taken or 0) + 1
   G.GAME.raise_available = false
   Audio.play("hire")
 end
 
--- hire the next not-in-row founder from the pool (cycling); up to 5 slots
+-- Debug hire still obeys the live Market capacity, including a queued
+-- destination's lower cap. This keeps a previously admitted pivot admissible.
 G.FUNCS.hire = function()
-  if G.STATE ~= S.SELECTING_HAND or #G.jokers.cards >= 5 then return end
+  local Markets = require("game.markets")
+  local cap = G.GAME.founder_slots or 5
+  if G.GAME.pending_market then
+    cap = math.min(cap, Markets.destination_founder_cap(G.GAME, G.GAME.pending_market) or cap)
+  end
+  if G.STATE ~= S.SELECTING_HAND or #G.jokers.cards >= cap then return end
   local pool = Centers.pool("Founder")
   if #pool == 0 then return end
   for _ = 1, #pool do

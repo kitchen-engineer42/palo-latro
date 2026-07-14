@@ -8,6 +8,10 @@ local Economy = {
   INTEREST_DIV = 5,
 }
 
+local function market_economy(g)
+  return require("data.gameplay.market_rules").for_market(g and g.market).economy or {}
+end
+
 function Economy.ante_base(g, ante_base)
   local ante = (g and g.ante) or 1
   return ante_base[ante] or ante_base[#ante_base]
@@ -37,13 +41,18 @@ function Economy.payroll_due(g, founders)
   local due = salary * target / Economy.SALARY_DIV
   local event = g and g.blind and g.blind.event
   if event then due = due * require("game.bosses").payroll_multiplier(event) end
+  due = due * (market_economy(g).salary_mult or 1)
   due = due - ((g and g.salary_relief) or 0) - ((g and g.passive_salary) or 0)
   return math.max(0, math.floor(due + 0.5))
 end
 
 function Economy.operating_income(g, arr, base_margin)
   local margin = Economy.margin(base_margin, g and g.margin_bonus)
-  return math.max(0, math.floor(margin * math.max(0, arr or 0) + 0.5)), margin
+  local market = market_economy(g)
+  if market.margin_cap then margin = math.min(margin, market.margin_cap) end
+  local income_mult = market.income_mult or 1
+  if g and g.blind and g.blind.is_boss then income_mult = income_mult * (market.boss_income_mult == nil and 1 or market.boss_income_mult) end
+  return math.max(0, math.floor(margin * math.max(0, arr or 0) * income_mult + 0.5)), margin
 end
 
 function Economy.interest(cash, max_payout)
@@ -53,7 +62,11 @@ end
 
 function Economy.early_close_reward(g, ante_base)
   local left = math.max(0, (g and g.ships_left) or 0)
-  return left * Economy.unit(g, ante_base)
+  local market = market_economy(g)
+  local ships = left * Economy.unit(g, ante_base) * (market.ship_reward_mult or 1)
+  local pivots = math.max(0, (g and g.pivots_left) or 0) * Economy.unit(g, ante_base)
+    * (market.pivot_reward_units or 0)
+  return math.floor(ships + pivots + 0.5)
 end
 
 function Economy.raise_terms(g)

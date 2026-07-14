@@ -143,8 +143,9 @@ end
 
 local function summary(category, source)
   if category == "markets" then
-    return (source.audience or "Any") .. " · " .. (source.industry or "Any"),
-      ((source.perk or {}).name or "Market Perk") .. ": " .. ((source.perk or {}).effect or "")
+    local view = require("game.markets").view(source)
+    return (source.audience or "Any") .. " · " .. (source.industry or "Any") .. " · " .. view.fit.label,
+      ((view.perk or {}).name or "Market Perk") .. ": " .. ((view.perk or {}).effect or "")
   elseif category == "founders" or category == "forms" then
     return (source.rarity or "Founder") .. " · Salary $" .. tostring(source.salary or 0),
       source.effect_brief or source.ability_name or source.hint or ""

@@ -51,6 +51,30 @@ function Deck.can_add(owned, center_or_key, market, amount)
   return count + (amount or 1) <= cap, cap, count
 end
 
+-- Market constraints are authored once and consumed by every acquisition path.
+-- Starter recipes are explicit historical givens; this filter governs future
+-- drafts/evaluations only, so a Market can begin with a legacy dependency and
+-- still refuse to offer it again.
+function Deck.candidate_allowed(center_or_key, market)
+  local center = type(center_or_key) == "table" and center_or_key
+    or (G and G.P_CENTERS and G.P_CENTERS[center_or_key])
+  if not center then return false, "Unknown Tech candidate" end
+  local constraints = MarketRules.for_market(market).constraints or {}
+  for _, key in ipairs(constraints.allowed_tech_keys or {}) do
+    if center.key == key then return true end
+  end
+  for _, key in ipairs(constraints.excluded_tech_keys or {}) do
+    if center.key == key then return false, "Tech is excluded by the current Market" end
+  end
+  local roles = {}
+  if center.sub_role then roles[center.sub_role] = true end
+  for _, layer in ipairs(center.layers or {}) do if layer.sub_role then roles[layer.sub_role] = true end end
+  for _, role in ipairs(constraints.excluded_sub_roles or {}) do
+    if roles[role] then return false, "Tech role is excluded by the current Market" end
+  end
+  return true
+end
+
 local function weighted_pick(candidates, copies, rules, rng)
   local total = 0
   local weights = {}
@@ -231,7 +255,8 @@ function Deck.draft_candidates(tech_pool, market, era, owned, count, rng)
   for _, entry in ipairs(owned or {}) do copies[entry.center_key] = (copies[entry.center_key] or 0) + 1 end
   for _, center in ipairs(tech_pool or {}) do
     local cap = is_anchor(center, rules) and rules.anchor_copy_cap or rules.copy_cap
-    if Eras.available(center, era) and (copies[center.key] or 0) < cap then candidates[#candidates + 1] = center end
+    if Eras.available(center, era) and Deck.candidate_allowed(center, market)
+        and (copies[center.key] or 0) < cap then candidates[#candidates + 1] = center end
   end
   table.sort(candidates, function(a, b) return a.key < b.key end)
   local out, seen = {}, {}

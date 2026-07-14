@@ -295,14 +295,16 @@ local function validate_gameplay(gameplay, catalog, r)
   if type(gameplay) ~= "table" then add(r, "gameplay", "must be a table"); return end
   local market_rules = gameplay.market_rules
   local rules = market_rules and market_rules.raw or {}
-  local scenarios, roles = {}, {}
+  local scenarios, roles, tech_keys, consumable_keys = {}, {}, {}, {}
   for _, fits in pairs((catalog.markets and catalog.markets.scenario_fit) or {}) do
     for scenario in pairs(fits) do scenarios[scenario] = true end
   end
   for _, tech in ipairs(catalog.techcards or {}) do
+    tech_keys[tech.key] = true
     if tech.sub_role then roles[tech.sub_role] = true end
     for _, spec in ipairs(tech.layers or {}) do if spec.sub_role then roles[spec.sub_role] = true end end
   end
+  for _, consumable in ipairs(catalog.consumables or {}) do consumable_keys[consumable.key] = true end
   local allowed_perks = { ships_per_blind=true, pivots_per_blind=true, founder_slots=true, hand_size=true,
     starting_cash_units=true, free_voucher=true }
   for _, market in ipairs((catalog.markets and catalog.markets.markets) or {}) do
@@ -315,9 +317,57 @@ local function validate_gameplay(gameplay, catalog, r)
       )
       if not starter_ok then r.errors[#r.errors + 1] = starter_error end
       if not scenarios[rule.scenario_id] then add(r, path .. ".scenario_id", "does not exist in scenario_fit") end
+      if type(rule.fit_label) ~= "string" or rule.fit_label == "" then add(r, path .. ".fit_label", "must be authored player text") end
+      if type(rule.perk) ~= "table" then add(r, path .. ".perk", "must be an authored display rule")
+      else
+        if type(rule.perk.name) ~= "string" or rule.perk.name == "" then add(r, path .. ".perk.name", "must be non-empty") end
+        if type(rule.perk.effect) ~= "string" or rule.perk.effect == "" then add(r, path .. ".perk.effect", "must be non-empty") end
+      end
       for i, op in ipairs(rule.perk_ops or {}) do
         if not allowed_perks[op.op] then add(r, path .. ".perk_ops[" .. i .. "].op", "unknown perk operation") end
         if not number(op.amount) then add(r, path .. ".perk_ops[" .. i .. "].amount", "must be a number") end
+      end
+      local score_allowed = { balance_lanes="boolean", compatibility_per_point="number",
+        revenue_cap="number", revenue_mult="number", reliability_bonus="number" }
+      for key, value in pairs(rule.score or {}) do
+        local expected = score_allowed[key]
+        if not expected then add(r, path .. ".score." .. tostring(key), "unknown score rule")
+        elseif type(value) ~= expected then add(r, path .. ".score." .. key, "must be a " .. expected)
+        elseif expected == "number" and value <= 0 then add(r, path .. ".score." .. key, "must be positive") end
+      end
+      local economy_allowed = { target_mult="number", salary_mult="number", raise_cash_mult="number",
+        no_interest="boolean", interest_cap="number", ship_reward_mult="number", pivot_reward_units="number",
+        high_fit_floor="number", high_fit_reward_units="number", boss_income_mult="number",
+        income_mult="number", ai_margin_bonus="number", free_distill_per_ante="number",
+        tech_eval_pack_discount="number", margin_cap="number" }
+      for key, value in pairs(rule.economy or {}) do
+        local expected = economy_allowed[key]
+        if not expected then add(r, path .. ".economy." .. tostring(key), "unknown economy rule")
+        elseif type(value) ~= expected then add(r, path .. ".economy." .. key, "must be a " .. expected)
+        elseif expected == "number" and value < 0 then add(r, path .. ".economy." .. key, "must be non-negative") end
+      end
+      local constraints = rule.constraints or {}
+      for _, field in ipairs({ "excluded_tech_keys", "allowed_tech_keys" }) do
+        local keys, seen_keys = constraints[field] or {}, {}
+        if not dense_array(keys) then add(r, path .. ".constraints." .. field, "must be a dense array")
+        else for i, key in ipairs(keys) do
+          if not tech_keys[key] then add(r, path .. ".constraints." .. field .. "[" .. i .. "]", "unknown Tech key") end
+          if seen_keys[key] then add(r, path .. ".constraints." .. field .. "[" .. i .. "]", "duplicate Tech key") end
+          seen_keys[key] = true
+        end end
+      end
+      local excluded_roles, seen_roles = constraints.excluded_sub_roles or {}, {}
+      if not dense_array(excluded_roles) then add(r, path .. ".constraints.excluded_sub_roles", "must be a dense array")
+      else for i, role in ipairs(excluded_roles) do
+        if not roles[role] then add(r, path .. ".constraints.excluded_sub_roles[" .. i .. "]", "unknown sub-role") end
+        if seen_roles[role] then add(r, path .. ".constraints.excluded_sub_roles[" .. i .. "]", "duplicate sub-role") end
+        seen_roles[role] = true
+      end end
+      local assets = rule.initial_assets or {}
+      if assets.consumable and not consumable_keys[assets.consumable] then add(r, path .. ".initial_assets.consumable", "unknown Consumable key") end
+      if assets.playbook and not require("game.apptypes").by_key[assets.playbook] then add(r, path .. ".initial_assets.playbook", "unknown App Type key") end
+      if assets.playbook_levels and (not number(assets.playbook_levels) or assets.playbook_levels < 1) then
+        add(r, path .. ".initial_assets.playbook_levels", "must be a positive number")
       end
     end
   end

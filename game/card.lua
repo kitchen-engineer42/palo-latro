@@ -147,6 +147,28 @@ function Card.face_tag(center, card)
   return (t and LABEL[t]) or "Special"
 end
 
+-- Canonical per-Founder economics for presentation/protocol consumers. Payroll due can still be
+-- modified globally by the Market, boss, target, and salary relief; this projection intentionally
+-- stops at the card's own live Salary (including Rental) and effect scale.
+function Card.founder_terms(card, center)
+  center = center or (card and card.center) or {}
+  local cfg = card and card.ability and card.ability.config or {}
+  local base_salary = center.salary or 0
+  local salary = cfg._salary
+  if salary == nil then
+    salary = base_salary
+    if cfg._distilled then salary = salary * 0.5 end
+  end
+  local rental_salary_mult = cfg._rental_salary_mult or 1
+  return {
+    base_salary = base_salary,
+    effective_salary = salary * rental_salary_mult,
+    effect_scale = cfg._effect_scale or 1,
+    distilled = cfg._distilled == true,
+    rental_salary_mult = rental_salary_mult,
+  }
+end
+
 -- Shared full-bleed founder face — the single source of truth used by BOTH the jokers row
 -- (Card:draw_body) and the immediate-mode shop offers (ui.lua), so they look identical.
 -- t = {x,y,w,h} target rect; center = founder center; opts = { card=<live Card or nil>, border=, line_w= }.
@@ -210,8 +232,20 @@ function Card.draw_founder_face(t, center, opts)
     draw_text(G.FONTS.normal, tag, t.x + 3, by + (bh - text_h(G.FONTS.normal)) / 2, Card.TAG_COL, t.w - 6, "center")
   end
 
-  if center and center.salary then                                   -- salary chip (top-left of the art)
-    chip(t.x + 5, t.y + 5, "$" .. center.salary, G.FONTS.tiny, { 0.08, 0.10, 0.15, 0.92 }, G.C.mult)
+  if center and center.salary then                                   -- live / base salary (top-left of the art)
+    local terms = Card.founder_terms(card, center)
+    local salary_label = "$" .. fmt1(terms.effective_salary)
+    if terms.effective_salary ~= terms.base_salary then
+      salary_label = salary_label .. " / $" .. fmt1(terms.base_salary)
+    end
+    local _, salary_h = chip(t.x + 5, t.y + 5, salary_label, G.FONTS.tiny,
+      { 0.08, 0.10, 0.15, 0.92 }, G.C.mult)
+    if card and (terms.distilled or terms.effect_scale ~= 1) then
+      local effect_pct = math.floor(terms.effect_scale * 100 + 0.5)
+      chip(t.x + 5, t.y + 8 + salary_h,
+        (terms.distilled and "DISTILLED " or "EFFECT ") .. effect_pct .. "%",
+        G.FONTS.tiny, { 0.08, 0.10, 0.15, 0.92 }, G.C.win)
+    end
   end
   local sl = seal and Card.SEALS[seal]                               -- seal stamp (top-right of the art)
   if sl then

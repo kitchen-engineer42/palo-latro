@@ -270,7 +270,11 @@ function Shop.pack_price(definition)
   elseif type(definition) == "string" then
     definition = Packs.get(definition)
   end
-  return Pricing.pack(G.GAME, RunState.ANTE_BASE, (definition or PACK).size)
+  definition = definition or PACK
+  local price = Pricing.pack(G.GAME, RunState.ANTE_BASE, definition.size)
+  local economy = MarketRules.for_market(G.GAME and G.GAME.market).economy or {}
+  if definition.family == "tech_evaluation" then price = price * (economy.tech_eval_pack_discount or 1) end
+  return math.max(1, math.floor(price + 0.5))
 end
 function Shop.pack_slots() return G.GAME.shop_pack_slots or 2 end
 

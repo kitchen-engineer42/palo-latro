@@ -19,6 +19,7 @@ local Guidance = require("game.guidance")
 local ScoreTrace = require("game.score_trace")
 local Centers = require("game.centers")
 local Bosses = require("game.bosses")
+local AIMaturity = require("game.ai_maturity")
 
 local Scoring = {}
 local MAX_USERS, MAX_REVENUE = 10000000, 100000
@@ -152,6 +153,7 @@ end
 function Scoring.evaluate_ship(played)
   local coverage = Coverage.analyze(played)
   local app = AppTypes.classify(played)
+  local ai_maturity = AIMaturity.evaluate(played, app)
   Profile.discover(app.key)
   local base = {
     cardarea = G.play, full_hand = played, scoring_hand = played,
@@ -159,6 +161,9 @@ function Scoring.evaluate_ship(played)
   }
   G.GAME.scoring_name = app.name
   G.GAME.this_app = app
+  G.GAME.this_ship_ai_backed = Coverage.has_layer(played, "AI", coverage)
+  G.GAME.last_ai_maturity = ai_maturity
+  G.GAME.product_identity = AIMaturity.identity(app, ai_maturity)
   G.GAME.this_ship_arr = 0
   -- delta tracking (B): count distinct App Types / Layers FIRST-seen this Ship (the "per NEW X" per-sources)
   G.GAME._new_app_types = 0
@@ -319,12 +324,16 @@ function Scoring.evaluate_ship(played)
     if jk.center and jk.center.effect and jk.center.effect.ke_complement then ke = ke + 1 end
   end
   ke = ke + coverage.knowledge_count
-  Meters.add("rung_progress", ndl)
+  -- Company maturity is earned by explicit automation effects (for example
+  -- Promote) and first-time Layer discoveries. Replaying the same broad hand
+  -- cannot farm this persistent meter.
+  Meters.add("rung_progress", G.GAME._new_layers or 0)
   G.GAME.maturity_rung = 1 + Meters.tier("rung_progress")
   if ke > 0 then Meters.add("knowledge_charge", ke) end
   local rung_lev = 1 + 0.08 * (G.GAME.maturity_rung - 1)
   local msg = (Meters.tier("knowledge_charge") >= 1) and (1 + 0.1 * Meters.tier("knowledge_charge")) or 1
-  local chem = 1 + math.min(0.02 * math.floor(Compat.complement_score(played)), 0.5)
+  local chem = 1 + math.min(Markets.compatibility_per_point(G.GAME.market)
+    * math.floor(Compat.complement_score(played)), 0.5)
   G.GAME._ndl = ndl
   if rung_lev ~= 1 or msg ~= 1 or chem ~= 1 then
     local systems_before = score_snap(S)
@@ -332,6 +341,31 @@ function Scoring.evaluate_ship(played)
     queue_score_feedback(nil, "Startup systems", systems_before, score_snap(S), "score_system", G.C.arr)
     juice("mult", S.mult, 0.14)
   end
+  local systems_trace = ScoreTrace.capture(G.GAME.score_trace, "systems", { chips = S.chips, mult = S.mult, chemistry = chem,
+    maturity = rung_lev, msg = msg })
+
+  -- AI maturity is a product-architecture refinement of an already-classified
+  -- AI App Type. It is evaluated from this hand's Tech evidence and never
+  -- changes `app`, `scoring_name`, or the persistent company maturity meter.
+  local maturity_before = score_snap(S)
+  S.chips, S.mult = AIMaturity.apply(S.chips, S.mult, ai_maturity)
+  if ai_maturity then
+    queue_score_feedback(nil, ai_maturity.name, maturity_before, score_snap(S), "score_system", G.C.arr)
+    if S.chips ~= maturity_before.chips then juice("chips", S.chips, 0.12) end
+    if S.mult ~= maturity_before.mult then juice("mult", S.mult, 0.12) end
+  end
+  local maturity_trace = { chips = S.chips, mult = S.mult, active = ai_maturity ~= nil }
+  if ai_maturity then
+    maturity_trace.key = ai_maturity.key
+    maturity_trace.name = ai_maturity.name
+    maturity_trace.rung = ai_maturity.rung
+    maturity_trace.users_bonus = ai_maturity.users_bonus
+    maturity_trace.rev_mult = ai_maturity.rev_mult
+    maturity_trace.identity = G.GAME.product_identity
+    maturity_trace.roles = ai_maturity.roles
+    maturity_trace.layers = ai_maturity.layers
+  end
+  ScoreTrace.capture(G.GAME.score_trace, "ai_maturity", maturity_trace)
 
   local stacks, best_stack = Archetypes.evaluate(played)
   G.GAME.last_stack_progress, G.GAME.last_named_stack = stacks, nil
@@ -342,8 +376,9 @@ function Scoring.evaluate_ship(played)
     G.GAME.last_named_stack = best_stack.key
     queue_score_feedback(nil, best_stack.name or "Named stack", stack_before, score_snap(S), "score_system", G.C.arr)
   end
-  ScoreTrace.capture(G.GAME.score_trace, "systems", { chips = S.chips, mult = S.mult, chemistry = chem,
-    maturity = rung_lev, msg = msg, stack = G.GAME.last_named_stack })
+  ScoreTrace.capture(G.GAME.score_trace, "named_stack", { chips = S.chips, mult = S.mult,
+    active = G.GAME.last_named_stack ~= nil, stack = G.GAME.last_named_stack })
+  systems_trace.stack = G.GAME.last_named_stack -- compatibility alias for older trace readers
 
   -- E5 Market fit (earned mult) + telegraphed boss event penalty
   local fit = Markets.fit_mult(played, G.GAME.market)
@@ -351,6 +386,7 @@ function Scoring.evaluate_ship(played)
   local evm = Bosses.score_multiplier(boss_key, played, { fit = fit })
   G.GAME.current_boss_margin_delta = Bosses.margin_delta(boss_key)
   G.GAME.last_fit = fit
+  G.GAME.market_best_fit = math.max(G.GAME.market_best_fit or 0, fit)
   if fit ~= 1 or evm ~= 1 then
     local fit_before = score_snap(S)
     S.mult = S.mult * fit * evm
@@ -359,6 +395,21 @@ function Scoring.evaluate_ship(played)
     juice("mult", S.mult, 0.14)
   end
 
+  local market_before, market_after, market_score_rule = Markets.apply_score_perk(S, G.GAME.market,
+    { max_users = MAX_USERS, max_revenue = MAX_REVENUE })
+  if market_before.chips ~= market_after.chips or market_before.mult ~= market_after.mult then
+    local perk = require("data.gameplay.market_rules").for_market(G.GAME.market).perk or {}
+    queue_score_feedback(nil, perk.name or "Market perk", market_before, market_after,
+      "score_system", G.C.arr)
+    juice("chips", S.chips, 0.14)
+    juice("mult", S.mult, 0.14)
+  end
+  ScoreTrace.capture(G.GAME.score_trace, "market_perk", {
+    before_chips = market_before.chips, before_mult = market_before.mult,
+    chips = S.chips, mult = S.mult,
+    balance_lanes = market_score_rule.balance_lanes == true,
+    revenue_mult = market_score_rule.revenue_mult, revenue_cap = market_score_rule.revenue_cap })
+
   -- blind modify_hand vs debuff_hand branch — identity stubs now (the branch exists)
   -- if G.GAME.blind and G.GAME.blind:debuff_hand(...) then ... else ... end
 
@@ -366,13 +417,15 @@ function Scoring.evaluate_ship(played)
   delay(0.18)
   local reliability = Reliability.evaluate(played, { boss = G.GAME.blind and G.GAME.blind.event,
     mitigation = G.GAME.reliability_bonus or 0 })
-  reliability.score = math.max(0, reliability.score + (G.GAME.reliability_stake_delta or 0))
+  reliability.score = math.max(0, reliability.score + (G.GAME.reliability_stake_delta or 0)
+    + Markets.reliability_bonus(G.GAME.market))
   reliability.multiplier = 0.50 + 0.05 * reliability.score
   S.chips, S.mult = math.min(MAX_USERS, S.chips), math.min(MAX_REVENUE, S.mult)
   local final_arr = math.floor(S.chips * S.mult * reliability.multiplier + 0.5)
   G.GAME.last_reliability, G.GAME.last_misfire = reliability, false
   G.GAME._final_arr = final_arr
-  ScoreTrace.finalize(G.GAME.score_trace, { chips = S.chips, mult = S.mult, fit = fit,
+  ScoreTrace.finalize(G.GAME.score_trace, { chips = S.chips, mult = S.mult, fit = fit, boss_mult = evm,
+    market = G.GAME.market and G.GAME.market.id,
     reliability = reliability.score, reliability_mult = reliability.multiplier, arr = final_arr })
   G.E_MANAGER:add_event(Event({ trigger = "immediate", blocking = true, func = function()
     local target = math.max(1, (G.GAME.blind and G.GAME.blind.target) or final_arr)

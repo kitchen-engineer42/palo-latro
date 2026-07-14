@@ -46,6 +46,8 @@ local function current_center(game, key)
   local center = type(key) == "table" and key or Centers.get(key)
   if not center or center.set ~= "TechCard" or center.signature then return nil, "invalid Tech option" end
   if not Eras.available(center, game and game.era) then return nil, "Tech option is stale for the current Era" end
+  local allowed, reason = Deck.candidate_allowed(center, game and game.market)
+  if not allowed then return nil, reason end
   return center
 end
 
@@ -68,6 +70,7 @@ function TechEvaluation.available_count(game)
   local total = 0
   for _, center in ipairs(Centers.pool("TechCard")) do
     if not center.signature and Eras.available(center, game and game.era)
+        and Deck.candidate_allowed(center, game and game.market)
         and Deck.can_add((game and game.master_deck) or {}, center, game and game.market) then
       total = total + 1
     end

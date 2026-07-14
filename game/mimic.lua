@@ -17,6 +17,8 @@ local Centers = require("game.centers")
 local Deck = require("game.deck")
 local TechLifecycle = require("game.tech_lifecycle")
 local TechEvaluation = require("game.tech_evaluation")
+local Markets = require("game.markets")
+local CardModel = require("game.card")
 
 local function finite(v)
   return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
@@ -108,7 +110,7 @@ local function card_view(card, area, index)
   local center = card.center or card
   local users = card.get_users and card:get_users() or card.base_users or center.base_users
   local cfg = card.ability and card.ability.config or {}
-  return {
+  local out = {
     id = card_id(card, area, index),
     key = card.center_key or center.key,
     name = center.name,
@@ -123,6 +125,15 @@ local function card_view(card, area, index)
     effect = center.effect_brief or center.ability_text or center.desc,
     sell_value = cfg._sell_basis and math.max(0, math.floor(cfg._sell_basis * 0.5)) or nil,
   }
+  if center.set == "Founder" then
+    local terms = CardModel.founder_terms(card, center)
+    out.base_salary = terms.base_salary
+    out.effective_salary = terms.effective_salary
+    out.effect_scale = terms.effect_scale
+    out.distilled = terms.distilled
+    out.rental_salary_mult = terms.rental_salary_mult
+  end
+  return out
 end
 
 local function area_view(cards, area)
@@ -259,6 +270,23 @@ local function ids(cards, area)
   return out
 end
 
+local function raise_terms(g)
+  local equity_cost, cash_fraction = Economy.raise_terms(g)
+  local market = Markets.view(g and g.market)
+  local raise_cash_mult = market and market.economy and market.economy.raise_cash_mult or 1
+  local cash = math.floor(((g and g.run_best_arr) or 0) * cash_fraction * raise_cash_mult)
+  return equity_cost, cash_fraction, raise_cash_mult, cash
+end
+
+local function add_raise_action(out, g)
+  local equity_cost, cash_fraction, raise_cash_mult, cash = raise_terms(g)
+  if g.raise_available and (g.equity_pct or 0) > equity_cost then
+    add_action(out, "raise", {}, nil,
+      ("cash=+$%d; equity=-%d%%; valuation=%d; cash_fraction=%.2f; market_mult=%.2f")
+        :format(cash, equity_cost, g.run_best_arr or 0, cash_fraction, raise_cash_mult))
+  end
+end
+
 function Mimic.legal_actions()
   local out, state = {}, G.STATE
   local g = G.GAME or {}
@@ -278,12 +306,19 @@ function Mimic.legal_actions()
       add_action(out, "pivot", { card_ids = { type = "array", min = 1, max = #hand_ids } }, hand_ids)
     end
     if (Meters.get("tech_debt") or 0) > 0 and (g.pivots_left or 0) > 0 then add_action(out, "refactor") end
-    local equity_cost = Economy.raise_terms(g)
-    if g.raise_available and (g.equity_pct or 0) > equity_cost then add_action(out, "raise") end
+    add_raise_action(out, g)
     local pivot_cost = Pricing.base_reroll(g, RunState.ANTE_BASE)
       * math.min(2, 1 + (g.market_pivots or 0))
-    if g.last_market_pivot_ante ~= g.ante and (g.cash or 0) >= pivot_cost then
-      add_action(out, "market_pivot", {}, nil, "cost=" .. tostring(pivot_cost))
+    local has_queueable_market = false
+    for _, market in ipairs(Markets.list) do
+      if (not g.market or market.id ~= g.market.id) and Markets.can_queue(g, market) then
+        has_queueable_market = true
+        break
+      end
+    end
+    if has_queueable_market and g.last_market_pivot_ante ~= g.ante and (g.cash or 0) >= pivot_cost then
+      add_action(out, "market_pivot", {}, nil,
+        "cost=$" .. tostring(pivot_cost) .. "; queues a legal non-current Market for the next blind")
     end
     local founder_ids = ids(G.jokers and G.jokers.cards, "founder")
     if #founder_ids > 0 then
@@ -295,7 +330,8 @@ function Mimic.legal_actions()
         if not cfg._distilled then distillable[#distillable + 1] = id end
       end
       if #fireable > 0 then add_action(out, "fire_founder", { founder_id = "string" }, fireable) end
-      if #distillable > 0 then add_action(out, "distill_founder", { founder_id = "string" }, distillable) end
+      if #distillable > 0 then add_action(out, "distill_founder", { founder_id = "string" }, distillable,
+        Markets.can_free_distill(g) and "Market upgrade: $0 Salary" or "Generic Distill: half Salary and effect") end
       add_action(out, "promote_founder", { founder_id = "string" }, founder_ids)
     end
     for i, c in ipairs((G.consumables and G.consumables.cards) or {}) do
@@ -335,8 +371,7 @@ function Mimic.legal_actions()
     local choices = {}
     for i, key in ipairs((g.tech_draft and g.tech_draft.choices) or {}) do choices[#choices + 1] = { index = i, key = key } end
     add_action(out, "choose_tech", { index = "integer" }, choices)
-    local equity_cost = Economy.raise_terms(g)
-    if g.raise_available and (g.equity_pct or 0) > equity_cost then add_action(out, "raise") end
+    add_raise_action(out, g)
   elseif state == G.STATES.SHOP then
     local sh = g.shop
     if sh and sh.pack_open then
@@ -389,8 +424,7 @@ function Mimic.legal_actions()
       for i, pack in ipairs((sh and sh.packs) or {}) do
         if pack and (g.cash or 0) >= Shop.pack_price(pack) then add_action(out, "open_pack", { index = i }) end
       end
-      local equity_cost = Economy.raise_terms(g)
-      if g.raise_available and (g.equity_pct or 0) > equity_cost then add_action(out, "raise") end
+      add_raise_action(out, g)
       if not g.founders_locked then
         local choices = {}
         for i, card in ipairs((G.jokers and G.jokers.cards) or {}) do
@@ -437,8 +471,11 @@ end
 local function public_state()
   local g = G.GAME or {}
   local markets = {}
-  for i, market in ipairs(g.market_choices or {}) do markets[#markets + 1] = {
-    index = i, id = market.id, name = market.name, perk = copy_plain(market.perk) } end
+  for i, market in ipairs(g.market_choices or {}) do
+    local view = Markets.view(market)
+    markets[#markets + 1] = { index = i, id = market.id, name = market.name,
+      perk = copy_plain(view.perk), rule = copy_plain(view) }
+  end
   local draft = {}
   for i, key in ipairs((g.tech_draft and g.tech_draft.choices) or {}) do draft[#draft + 1] = { index = i, key = key } end
   return {
@@ -453,10 +490,22 @@ local function public_state()
       equity_pct = g.equity_pct, runway = g.runway, ships_left = g.ships_left,
       pivots_left = g.pivots_left, cumulative_arr = g.cumulative_arr,
       this_blind_arr = g.this_blind_arr, this_ship_arr = g.this_ship_arr,
-      market = g.market and { id = g.market.id, name = g.market.name } or nil,
+      market = copy_plain(Markets.view(g.market)),
+      market_state = copy_plain(Markets.active_state(g)),
+      pending_market = copy_plain(Markets.view(g.pending_market)),
       blind = copy_plain(g.blind), meters = { tech_debt = Meters.get("tech_debt") or 0 },
       maturity_rung = g.maturity_rung, app_levels = copy_plain(g.app_levels), last_fit = g.last_fit,
+      last_ai_maturity = copy_plain(g.last_ai_maturity), product_identity = g.product_identity,
       consumable_slots = g.consumable_slots, founder_slots = g.founder_slots,
+      market_best_fit = g.market_best_fit, last_market_reward = g.last_market_reward,
+      settlement = {
+        income = g.last_income or 0,
+        efficiency = g.last_efficiency or 0,
+        blind_reward = g.last_blind_reward or 0,
+        interest = g.last_interest or 0,
+        payroll = g.last_payroll or 0,
+        market_reward = g.last_market_reward or 0,
+      },
     },
     hand = area_view(G.hand and G.hand.cards, "hand"),
     founders = area_view(G.jokers and G.jokers.cards, "founder"),

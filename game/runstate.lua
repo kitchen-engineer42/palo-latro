@@ -43,18 +43,26 @@ function RunState.blind_target(ante, blind_idx)
   local late = (G.GAME and G.GAME.late_target_mult) or 1.0
   local progress = math.max(0, math.min(1, ((ante or 1) - 1) / 7))
   stake_mult = stake_mult * (1 + (late - 1) * progress)
-  return math.floor(base * (RunState.BLIND_MULT[blind_idx] or 1.0) * stake_mult + 0.5)
+  local market_mult = ((MarketRules.for_market(G.GAME and G.GAME.market).economy or {}).target_mult) or 1
+  return math.floor(base * (RunState.BLIND_MULT[blind_idx] or 1.0) * stake_mult * market_mult + 0.5)
 end
 
 function RunState.apply_stake(g, stake)
   Stakes.apply(g, stake)
 end
 
+function RunState.era_for_ante(g, ante)
+  g = g or G.GAME
+  local path = g and g.initial_era_path
+  if not path then path = MarketRules.for_market(g and g.market).era_path end -- old-save fallback
+  return Eras.for_ante({ era_path = path }, ante)
+end
+
 -- set the current (ante, blind_idx): target from curve, reset per-blind counters, bump scope ids.
 function RunState.set_blind(ante, blind_idx)
   local g = G.GAME
   g.ante, g.blind_idx = ante, blind_idx
-  g.era = Eras.for_ante(MarketRules.for_market(g.market), ante)
+  g.era = RunState.era_for_ante(g, ante)
   g._bid = (g._bid or 0) + 1                             -- per-blind once-gate id
   if blind_idx == 1 then g._aid = (g._aid or 0) + 1 end  -- per-ante once-gate id (bumps each new ante)
   g.blind = {
@@ -68,7 +76,7 @@ function RunState.set_blind(ante, blind_idx)
     g.blind.event = (g.boss_sequence and g.boss_sequence[ante]) or ev[((ante - 1) % #ev) + 1]
   end
   g.cumulative_arr, g.this_blind_arr = 0, 0
-  g.best_ship_arr, g.best_ship_margin = 0, nil
+  g.best_ship_arr, g.best_ship_margin, g.market_best_fit = 0, nil, 0
   g.ships_left  = RunState.SHIPS_PER_BLIND + (g.ships_bonus or 0)     -- voucher: Extra Sprint
   g.pivots_left = RunState.PIVOTS_PER_BLIND + (g.pivots_bonus or 0)   -- voucher: DevOps
 end
@@ -76,11 +84,14 @@ end
 -- advance after a blind win → "won_run" (cleared the final boss) | "next" (a new blind is set).
 function RunState.advance()
   local g = G.GAME
+  local founder_count = #((G.jokers and G.jokers.cards) or {})
   if g.blind_idx < 3 then
+    Markets.commit_pending(g, founder_count)
     RunState.set_blind(g.ante, g.blind_idx + 1)
   elseif g.ante >= RunState.WIN_ANTE then
     return "won_run"
   else
+    Markets.commit_pending(g, founder_count)
     RunState.set_blind(g.ante + 1, 1)
   end
   return "next"
@@ -97,8 +108,9 @@ function RunState.settle_blind()
   g.last_payroll = RunState.payroll_due()
   g.cash = g.cash - g.last_payroll
   g.last_interest = 0
-  if g.cash > 0 then
-    g.last_interest = Economy.interest(g.cash, 5)
+  local market_economy = (MarketRules.for_market(g.market).economy or {})
+  if g.cash > 0 and not market_economy.no_interest then
+    g.last_interest = Economy.interest(g.cash, market_economy.interest_cap or 5)
     g.cash = g.cash + g.last_interest
   end
   g.runway = (g.last_payroll > 0) and math.floor(g.cash / g.last_payroll) or 99
@@ -149,6 +161,8 @@ function RunState.new(opts)
     hire_idx = 0, pivot_count = 0, discard_count = 0,
     -- SHOP scope + voucher run-modifiers -------------
     shop = nil, shop_founder_slots = 2, shop_pack_slots = 2, founder_slots = 5,
+    pending_market = nil, pending_market_founder_cap = nil, pending_market_assets = nil,
+    market_assets_granted = {}, market_best_fit = 0, initial_era_path = nil,
     ships_bonus = 0, pivots_bonus = 0, reroll_discount = 0, shop_discount = 0,
     vouchers_owned = {},
     -- Funding Stakes ladder ---------------------------------------
@@ -169,7 +183,8 @@ function RunState.new(opts)
     local market = Markets.by_id(opts.market_id)
     if market then
       Markets.select(G.GAME, market, { initial = true })
-      G.GAME.era = Eras.for_ante(MarketRules.for_market(market), G.GAME.ante)
+      G.GAME.era = RunState.era_for_ante(G.GAME, G.GAME.ante)
+      G.GAME.blind.target = RunState.blind_target(G.GAME.ante, G.GAME.blind_idx)
     end
   end
 end

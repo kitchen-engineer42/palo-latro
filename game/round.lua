@@ -38,6 +38,7 @@ function Round.start_run(opts)
   G.deck   = CardArea({ type = "deck",   T = { x = W - Card.W - 16, y = H - Card.H - 18, w = Card.W, h = Card.H } })
   G.consumables = CardArea({ type = "consumables", card_limit = G.GAME.consumable_slots or 2,
                              T = { x = W - 244, y = 24, w = 220, h = Card.H } })   -- Track C B1 (the reserved top-right region)
+  require("game.markets").fulfill_initial(G.GAME)
 
   if G.GAME.market then
     Profile.discover(G.GAME.market.id, false)
@@ -91,22 +92,31 @@ function G.GENERATE(kind, opts)
   elseif kind == "tech_card" and G.deck then
     local cands = {}
     for _, c in ipairs(Centers.pool("TechCard")) do
-      if not c.signature and (not opts.layer or c.layer == opts.layer) then cands[#cands + 1] = c end
+      if not c.signature and (not opts.layer or c.layer == opts.layer)
+          and Deck.candidate_allowed(c, G.GAME.market) then
+        cands[#cands + 1] = c
+      end
     end
     if #cands > 0 then
       local c = cands[RNG.int("generation", #cands)]
       local e = Round.master_add(c.key, { source = "generated" })         -- A3: persist into master_deck
-      G.deck:emplace(Card({ center = c, face_down = true, uid = e and e.uid,
-        source = e and e.source, acquired_ante = e and e.acquired_ante,
-        migrated_from = e and e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
+      if e then
+        G.deck:emplace(Card({ center = c, face_down = true, uid = e.uid,
+          source = e.source, acquired_ante = e.acquired_ante,
+          migrated_from = e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
+      end
     end
   elseif kind == "specific_tech_card" and opts.key and G.deck then       -- inject a signature Tech on hire
     local ce = Centers.get(opts.key)
     if ce then
-      local e = Round.master_add(opts.key, { source = "generated" })      -- A3: signature Tech persists while hired
-      G.deck:emplace(Card({ center = ce, face_down = true, uid = e and e.uid,
-        source = e and e.source, acquired_ante = e and e.acquired_ante,
-        migrated_from = e and e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
+      local e = Round.master_add(opts.key, {
+        source = "generated", signature_injection = ce.signature == true,
+      })                                                                 -- A3: signature Tech persists while hired
+      if e then
+        G.deck:emplace(Card({ center = ce, face_down = true, uid = e.uid,
+          source = e.source, acquired_ante = e.acquired_ante,
+          migrated_from = e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
+      end
     end
   elseif kind == "remove_tech_card" and opts.key then                    -- delete the signature Tech on fire
     Round.master_remove_key(opts.key)                                    -- A3: drop from the deck-of-record too
@@ -137,9 +147,11 @@ function G.GENERATE(kind, opts)
     end
     if src and src.center then
       local e = Round.master_add(src.center_key or src.center.key, { source = "copied" }) -- A3: the copy persists too
-      G.deck:emplace(Card({ center = src.center, face_down = true, uid = e and e.uid,
-        source = e and e.source, acquired_ante = e and e.acquired_ante,
-        migrated_from = e and e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
+      if e then
+        G.deck:emplace(Card({ center = src.center, face_down = true, uid = e.uid,
+          source = e.source, acquired_ante = e.acquired_ante,
+          migrated_from = e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
+      end
     end
   end
   -- founder_shop: the shop module is a later seam
@@ -183,9 +195,11 @@ function Round.select_market(market)
   local lesson = Guidance.current()
   if lesson and lesson.id == "welcome" then return false end
   require("game.markets").select(G.GAME, market, { initial = true })
+  require("game.markets").fulfill_initial(G.GAME)
   Profile.discover(market.id)
   Guidance.emit("market_selected", { market_id = market.id })
-  G.GAME.era = Eras.for_ante(require("data.gameplay.market_rules").for_market(market), G.GAME.ante)
+  G.GAME.era = RunState.era_for_ante(G.GAME, G.GAME.ante)
+  G.GAME.blind.target = RunState.blind_target(G.GAME.ante, G.GAME.blind_idx)
   Round.seed_master_deck()
   StateMachine.set_state(G.STATES.BLIND_SELECT)
   return true
@@ -223,6 +237,14 @@ function Round.master_add(center_key, props, game)
   local g = game or G.GAME
   if not (g and g.master_deck) then return nil end
   props = props or {}
+  local center = Centers.get(center_key)
+  if not center or center.set ~= "TechCard" then return nil, "Unknown Tech candidate" end
+  if center.signature then
+    if props.signature_injection ~= true then return nil, "Signature Tech requires explicit injection" end
+  else
+    local allowed, reason = Deck.candidate_allowed(center, g.market)
+    if not allowed then return nil, reason end
+  end
   local e = { uid = Round.next_uid(g), center_key = center_key,
               edition = props.edition, seal = props.seal, enh = props.enh,
               stickers = props.stickers, layer_override = props.layer_override,
@@ -311,7 +333,10 @@ function Round.cash_out_ship()
   g.overkill = math.max(0, (g.this_ship_arr or 0) - ((g.blind and g.blind.target) or 0))
   if (g.this_ship_arr or 0) >= (g.best_ship_arr or 0) then
     g.best_ship_arr = g.this_ship_arr or 0
-    g.best_ship_margin = ((g.this_app and g.this_app.margin) or RunState.DEFAULT_MARGIN) + (g.current_boss_margin_delta or 0)
+    g.best_ship_margin = ((g.this_app and g.this_app.margin) or RunState.DEFAULT_MARGIN)
+      + (g.current_boss_margin_delta or 0)
+      + require("game.markets").margin_bonus(g.this_app, g.market,
+        { ai_backed = g.this_ship_ai_backed == true })
   end
   g.last_income = 0
   g.cash = g.cash + (g.pending_dollars or 0)
@@ -335,8 +360,9 @@ function Round.cash_out_ship()
     Scoring.fire_hook("blind_won")
     g.last_income = Economy.operating_income(g, g.best_ship_arr, g.best_ship_margin)
     g.last_efficiency = Economy.early_close_reward(g, RunState.ANTE_BASE)
+    g.last_market_reward = require("game.markets").high_fit_reward(g, RunState.ANTE_BASE)
     g.last_blind_reward = (RunState.BLIND_REWARD_UNITS[g.blind_idx] or 0) * Economy.unit(g, RunState.ANTE_BASE)
-    g.cash = g.cash + g.last_income + g.last_efficiency + g.last_blind_reward
+    g.cash = g.cash + g.last_income + g.last_efficiency + g.last_market_reward + g.last_blind_reward
     g.best_ship_arr, g.best_ship_margin = 0, nil
     local bankrupt = RunState.settle_blind()
     Guidance.emit("blind_settled", { payroll = g.last_payroll, cash = g.cash, bankrupt = bankrupt })
