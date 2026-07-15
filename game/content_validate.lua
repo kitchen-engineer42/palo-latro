@@ -764,6 +764,14 @@ local function validate_per(value, path, r, meter_names, owner)
   end
 end
 
+local function validate_counter_state(spec, path, r)
+  if type(spec) == "table"
+      and (spec.per == "counter" or spec.inc_per == "counter")
+      and not text(spec.state) then
+    add(r, path .. ".state", "is required when per is counter")
+  end
+end
+
 validate_gate = function(g, path, r, meter_names, owner, depth)
   if type(g) ~= "table" then add(r, path, "gate must be a table"); return end
   only_fields(g, { g=true, layer=true, names=true, per=true, op=true, val=true,
@@ -786,6 +794,7 @@ validate_gate = function(g, path, r, meter_names, owner, depth)
     if not dense_array(g.names) or #g.names == 0 then add(r, path .. ".names", "must be a non-empty array") end
   elseif kind == "count" then
     validate_per(g.per, path .. ".per", r, meter_names, owner)
+    validate_counter_state(g, path, r)
     if not COMPARATORS[g.op] then add(r, path .. ".op", "unknown comparator " .. tostring(g.op)) end
     if not number(g.val) then add(r, path .. ".val", "must be a finite number") end
     if (g.per == "cards_of_layer" or g.per == "cards_of_layer_in_hand" or g.per == "deck_layer_count")
@@ -840,10 +849,11 @@ local function validate_bounded_scale(spec, path, r, meter_names, owner, opts)
     return
   end
   if type(spec) ~= "table" then add(r, path, "must be an integer or bounded scale table"); return end
-  only_fields(spec, { base=true, coef=true, per=true, cap=true, floor=true, round=true }, path, r)
+  only_fields(spec, { base=true, coef=true, per=true, state=true, cap=true, floor=true, round=true }, path, r)
   local base_ok = required_number(spec.base, path .. ".base", r, opts.base_minimum or 0)
   local coef_ok = required_number(spec.coef, path .. ".coef", r, 0)
   validate_per(spec.per, path .. ".per", r, meter_names, owner)
+  validate_counter_state(spec, path, r)
   if opts.per and spec.per ~= opts.per then add(r, path .. ".per", "must be " .. opts.per) end
   if spec.round ~= nil then
     if spec.round ~= "floor" then add(r, path .. ".round", "must be floor") end
@@ -1067,6 +1077,7 @@ local function validate_op(op, path, r, meter_names, owner)
   end
   if op.per == "running_arr" and op.stage == nil then add(r, path .. ".stage", "is required for running_arr") end
   if op.inc_per ~= nil then validate_per(op.inc_per, path .. ".inc_per", r, meter_names, owner) end
+  validate_counter_state(op, path, r)
   validate_number_fields(op, { "base", "coef", "max", "pct", "cap", "floor" }, path, r)
 
   if op.k == "scale" or op.k == "acc" or op.k == "arm" then
@@ -1197,9 +1208,10 @@ local function validate_dsl(dsl, path, r, owner)
     end
     if spec.retrigger ~= nil then
       if type(spec.retrigger) == "table" then
-        only_fields(spec.retrigger, { base=true, coef=true, per=true }, spec_path .. ".retrigger", r)
+        only_fields(spec.retrigger, { base=true, coef=true, per=true, state=true }, spec_path .. ".retrigger", r)
         validate_number_fields(spec.retrigger, { "base", "coef" }, spec_path .. ".retrigger", r)
         validate_per(spec.retrigger.per, spec_path .. ".retrigger.per", r, meter_names, owner)
+        validate_counter_state(spec.retrigger, spec_path .. ".retrigger", r)
       elseif not number(spec.retrigger) then add(r, spec_path .. ".retrigger", "must be a number or scale table") end
     end
     if spec.retrigger_target ~= nil and not ({ highest=true, marked=true })[spec.retrigger_target] then

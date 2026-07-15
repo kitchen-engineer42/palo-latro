@@ -175,7 +175,14 @@ G.FOUNDER_CALC = function(card, ctx)
   end
   local repetitions = effect and effect.jokers and effect.jokers.repetitions
   if repetitions then
-    effect.jokers.repetitions = math.max(0, math.min(Founders.MAX_RETRIGGERS, math.floor(repetitions)))
+    repetitions = math.max(0, math.min(Founders.MAX_RETRIGGERS, math.floor(repetitions)))
+    if scale and scale < 1 then
+      local c = cfg(card)
+      local scaled = repetitions * math.max(0, scale) + (tonumber(c._scaled_retrigger_carry) or 0)
+      repetitions = math.floor(scaled)
+      c._scaled_retrigger_carry = scaled - repetitions
+    end
+    effect.jokers.repetitions = repetitions
   end
   return effect
 end

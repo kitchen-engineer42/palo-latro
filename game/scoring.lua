@@ -150,6 +150,9 @@ local function collect_reps(card, base)
     local e = eval_card(jk, ctx(base, { repetition = true, other_card = card }))
     if e.jokers and e.jokers.repetitions then reps = reps + e.jokers.repetitions end
   end
+  each_automated(ctx(base, { repetition = true, other_card = card }), function(e)
+    if e.jokers and e.jokers.repetitions then reps = reps + e.jokers.repetitions end
+  end)
   return reps
 end
 

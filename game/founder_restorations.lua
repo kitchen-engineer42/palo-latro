@@ -8,6 +8,7 @@ local MANIFESTS = {
   "data.gameplay.founder_restorations",
   "data.gameplay.founder_restorations_cards",
   "data.gameplay.founder_restorations_compat",
+  "data.gameplay.founder_restorations_remaining",
 }
 
 function Restorations.apply(founders)
