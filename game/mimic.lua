@@ -23,6 +23,11 @@ local Consumables = require("game.consumables")
 local Moonshots = require("game.moonshots")
 local FounderActions = require("game.founder_actions")
 local CompatSuppression = require("game.compat_suppression")
+local Preview = require("game.preview")
+
+local MAX_SHIP_PREVIEWS = 5
+local MAX_SHIP_PREVIEW_EVALUATIONS = 8192
+local MAX_AUDIT_EVENTS = 512
 
 local function roadmap_pack(kind)
   return kind == "tech_law" or kind == "moonshot"
@@ -649,6 +654,137 @@ local function targeting_view()
   }
 end
 
+local function new_audit()
+  return {
+    schema_version = 1,
+    counters = {
+      events_dropped = 0,
+      lead = { eligible_states = 0, skipped = 0 },
+      consumable = { usable_states = 0, usable_options = 0, used = 0, sold = 0,
+        acquired = 0 },
+      tech_evaluation = { decision_states = 0, adopt_options = 0, migrate_options = 0,
+        adopted = 0, migrated = 0 },
+      founder_activation = { eligible_states = 0, options = 0, activated = 0 },
+      negotiation = { answer_states = 0, answer_options = 0, answers = 0,
+        continued = 0, standard_terms = 0, walked_away = 0, completed = 0 },
+      market = { choice_states = 0, choice_options = 0, selected = 0,
+        pivot_eligible_states = 0, pivoted = 0 },
+      shop = { decision_states = 0, buyable_founder_options = 0,
+        openable_pack_options = 0, founders_bought = 0, packs_opened = 0,
+        pack_options_picked = 0, packs_skipped = 0, rerolled = 0,
+        vouchers_bought = 0, consumables_bought = 0, left = 0 },
+    },
+    events = {},
+    _captured_steps = {},
+  }
+end
+
+local function audit_state()
+  return Mimic._session and Mimic._session.audit
+end
+
+local function audit_view()
+  local audit = audit_state()
+  if not audit then return nil end
+  return {
+    schema_version = audit.schema_version,
+    counters = copy_plain(audit.counters),
+    events = copy_plain(audit.events),
+  }
+end
+
+local function audit_append(event)
+  local audit = audit_state()
+  if not audit then return end
+  if #audit.events >= MAX_AUDIT_EVENTS then
+    audit.counters.events_dropped = audit.counters.events_dropped + 1
+    return
+  end
+  audit.events[#audit.events + 1] = event
+end
+
+local function compact_ship_preview(cards, preview)
+  local layers = {}
+  for _, layer in ipairs(Coverage.CORE_ORDER) do
+    if preview.coverage.counts[layer] then layers[#layers + 1] = layer end
+  end
+  return {
+    card_ids = cards.ids,
+    size = #cards.ids,
+    arr = preview.arr,
+    app = { key = preview.app and preview.app.key, name = preview.app and preview.app.name },
+    coverage = { distinct = preview.coverage.distinct, layers = layers },
+    fit = preview.fit,
+    reliability = {
+      score = preview.reliability.score,
+      max = preview.reliability.max,
+      multiplier = preview.reliability.multiplier,
+    },
+  }
+end
+
+local function preview_precedes(a, b)
+  if a.arr ~= b.arr then return a.arr > b.arr end
+  if a.reliability.score ~= b.reliability.score then
+    return a.reliability.score > b.reliability.score
+  end
+  if a.coverage.distinct ~= b.coverage.distinct then
+    return a.coverage.distinct > b.coverage.distinct
+  end
+  if a.size ~= b.size then return a.size < b.size end
+  return table.concat(a.card_ids, "\0") < table.concat(b.card_ids, "\0")
+end
+
+local function ship_preview_view()
+  local g, hand = G.GAME or {}, (G.hand and G.hand.cards) or {}
+  if G.STATE ~= G.STATES.SELECTING_HAND or (g.ships_left or 0) <= 0 or #hand == 0 then
+    return nil
+  end
+  local max_cards = math.min(g.select_max or 5, #hand)
+  local candidates, evaluated, truncated = {}, 0, false
+  local chosen, chosen_index = {}, {}
+
+  local function evaluate_choice()
+    if evaluated >= MAX_SHIP_PREVIEW_EVALUATIONS then truncated = true; return false end
+    evaluated = evaluated + 1
+    local selected, held, selected_ids = {}, {}, {}
+    for i, card in ipairs(hand) do
+      if chosen_index[i] then
+        selected[#selected + 1] = card
+        selected_ids[#selected_ids + 1] = card_id(card, "hand", i)
+      else
+        held[#held + 1] = card
+      end
+    end
+    local preview = Preview.evaluate(selected, { held_cards = held })
+    candidates[#candidates + 1] = compact_ship_preview({ ids = selected_ids }, preview)
+    return true
+  end
+
+  local function combinations(wanted, start_at)
+    if #chosen == wanted then return evaluate_choice() end
+    local remaining = wanted - #chosen
+    for i = start_at, #hand - remaining + 1 do
+      chosen[#chosen + 1], chosen_index[i] = i, true
+      local keep_going = combinations(wanted, i + 1)
+      chosen_index[i], chosen[#chosen] = nil, nil
+      if not keep_going then return false end
+    end
+    return true
+  end
+
+  for size = 1, max_cards do
+    if not combinations(size, 1) then break end
+  end
+  table.sort(candidates, preview_precedes)
+  local items = {}
+  for i = 1, math.min(MAX_SHIP_PREVIEWS, #candidates) do
+    candidates[i].rank = i
+    items[i] = candidates[i]
+  end
+  return { limit = MAX_SHIP_PREVIEWS, evaluated = evaluated, truncated = truncated, items = items }
+end
+
 local function public_state()
   local g = G.GAME or {}
   local markets = {}
@@ -708,8 +844,265 @@ local function public_state()
     targeting = targeting_view(),
     shop = shop_view(),
     score_trace = copy_plain(g.score_trace),
+    ship_previews = ship_preview_view(),
+    audit = audit_view(),
     legal_actions = Mimic.legal_actions(),
   }
+end
+
+local function action_specs(observation, id)
+  local out = {}
+  for _, spec in ipairs(observation.legal_actions or {}) do
+    if spec.id == id then out[#out + 1] = spec end
+  end
+  return out
+end
+
+local function action_option_count(observation, id)
+  local total = 0
+  for _, spec in ipairs(action_specs(observation, id)) do
+    total = total + (spec.choices and #spec.choices or 1)
+  end
+  return total
+end
+
+local function audit_capture_opportunity(observation)
+  local audit = audit_state()
+  if not audit or audit._captured_steps[observation.step] then return end
+  audit._captured_steps[observation.step] = true
+  local counters, event = audit.counters, {
+    kind = "opportunity", step = observation.step, phase = observation.phase,
+    ante = observation.run and observation.run.ante,
+    blind_index = observation.run and observation.run.blind_index,
+  }
+  local relevant = false
+
+  local market_choices = action_option_count(observation, "choose_market")
+  if market_choices > 0 then
+    counters.market.choice_states = counters.market.choice_states + 1
+    counters.market.choice_options = counters.market.choice_options + market_choices
+    event.market = { choices = market_choices }
+    relevant = true
+  end
+  if action_option_count(observation, "market_pivot") > 0 then
+    counters.market.pivot_eligible_states = counters.market.pivot_eligible_states + 1
+    event.market = event.market or {}
+    event.market.pivot = true
+    relevant = true
+  end
+
+  if action_option_count(observation, "skip_blind") > 0 then
+    counters.lead.eligible_states = counters.lead.eligible_states + 1
+    local lead = observation.run and observation.run.leads and observation.run.leads.current
+    event.lead = lead and { key = lead.key, name = lead.name } or { available = true }
+    relevant = true
+  end
+
+  local usable = action_option_count(observation, "use_consumable")
+  if usable > 0 then
+    counters.consumable.usable_states = counters.consumable.usable_states + 1
+    counters.consumable.usable_options = counters.consumable.usable_options + usable
+    event.consumable = { usable = usable, owned = #(observation.consumables or {}) }
+    relevant = true
+  end
+
+  local adopt = action_option_count(observation, "adopt_pack_option")
+  local migrate = action_option_count(observation, "migrate_pack_option")
+  if adopt + migrate > 0 then
+    counters.tech_evaluation.decision_states = counters.tech_evaluation.decision_states + 1
+    counters.tech_evaluation.adopt_options = counters.tech_evaluation.adopt_options + adopt
+    counters.tech_evaluation.migrate_options = counters.tech_evaluation.migrate_options + migrate
+    event.tech_evaluation = { adopt = adopt, migrate = migrate }
+    relevant = true
+  end
+
+  local activations = action_option_count(observation, "activate_founder")
+  if activations > 0 then
+    counters.founder_activation.eligible_states = counters.founder_activation.eligible_states + 1
+    counters.founder_activation.options = counters.founder_activation.options + activations
+    event.founder_activation = { options = activations }
+    relevant = true
+  end
+
+  local answers = action_option_count(observation, "answer_founder_negotiation")
+  if answers > 0 then
+    counters.negotiation.answer_states = counters.negotiation.answer_states + 1
+    counters.negotiation.answer_options = counters.negotiation.answer_options + answers
+    local negotiation = observation.shop and observation.shop.founder_negotiation
+    event.negotiation = {
+      choices = answers,
+      round = negotiation and negotiation.round,
+      rounds = negotiation and negotiation.rounds,
+      question_id = negotiation and negotiation.question and negotiation.question.id,
+    }
+    relevant = true
+  end
+
+  if observation.phase == "SHOP" then
+    local founder_buys = action_option_count(observation, "buy_founder")
+    local pack_opens = action_option_count(observation, "open_pack")
+    counters.shop.decision_states = counters.shop.decision_states + 1
+    counters.shop.buyable_founder_options = counters.shop.buyable_founder_options + founder_buys
+    counters.shop.openable_pack_options = counters.shop.openable_pack_options + pack_opens
+    event.shop = {
+      founder_buys = founder_buys,
+      pack_opens = pack_opens,
+      reroll = action_option_count(observation, "reroll_shop") > 0,
+      voucher = action_option_count(observation, "buy_voucher") > 0,
+      consumable = action_option_count(observation, "buy_consumable") > 0,
+      leave = action_option_count(observation, "leave_shop") > 0,
+    }
+    relevant = true
+  end
+  if relevant then audit_append(event) end
+end
+
+local function find_by(array, field, value)
+  for _, item in ipairs(array or {}) do if item[field] == value then return item end end
+end
+
+local function action_event(before, after, action, category)
+  return {
+    kind = "action", category = category, action = action.id, step = after.step,
+    from_phase = before.phase, to_phase = after.phase,
+    ante = before.run and before.run.ante,
+    blind_index = before.run and before.run.blind_index,
+  }
+end
+
+local function audit_record_action(action, before, after)
+  local audit = audit_state()
+  if not audit then return end
+  local counters, id, event = audit.counters, action.id
+  local before_consumables, after_consumables = #(before.consumables or {}), #(after.consumables or {})
+  if after_consumables > before_consumables then
+    counters.consumable.acquired = counters.consumable.acquired
+      + (after_consumables - before_consumables)
+  end
+
+  if id == "choose_market" then
+    counters.market.selected = counters.market.selected + 1
+    event = action_event(before, after, action, "market")
+    local choice = before.market_choices and before.market_choices[action.index]
+    event.market = choice and { id = choice.id, name = choice.name } or nil
+  elseif id == "market_pivot" then
+    counters.market.pivoted = counters.market.pivoted + 1
+    event = action_event(before, after, action, "market")
+    local pending = after.run and after.run.pending_market
+    event.market = pending and { id = pending.id, name = pending.name } or nil
+    event.cash_before, event.cash_after = before.run.cash, after.run.cash
+  elseif id == "skip_blind" then
+    counters.lead.skipped = counters.lead.skipped + 1
+    event = action_event(before, after, action, "lead")
+    local lead = before.run and before.run.leads and before.run.leads.current
+    event.lead = lead and { key = lead.key, name = lead.name } or nil
+    event.skips_before = before.run and before.run.skips_run
+    event.skips_after = after.run and after.run.skips_run
+  elseif id == "use_consumable" or id == "sell_consumable" then
+    local used = id == "use_consumable"
+    counters.consumable[used and "used" or "sold"] =
+      counters.consumable[used and "used" or "sold"] + 1
+    event = action_event(before, after, action, "consumable")
+    local card = find_by(before.consumables, "id", action.consumable_id)
+    event.consumable = card and { id = card.id, key = card.key, kind = card.kind } or nil
+    event.target_ids = copy_plain(action.target_ids)
+    event.layer = action.layer
+    event.inventory_before, event.inventory_after = before_consumables, after_consumables
+  elseif id == "adopt_pack_option" or id == "migrate_pack_option"
+      or (id == "pick_pack_option" and before.shop and before.shop.pack_open
+        and before.shop.pack_open.kind == "tech_evaluation") then
+    local migrated = id == "migrate_pack_option"
+    counters.tech_evaluation[migrated and "migrated" or "adopted"] =
+      counters.tech_evaluation[migrated and "migrated" or "adopted"] + 1
+    event = action_event(before, after, action, "tech_evaluation")
+    local pack = before.shop and before.shop.pack_open
+    local option = pack and find_by(pack.options, "index", action.index)
+    event.option = option and { index = option.index, key = option.key, name = option.name } or nil
+    event.target_uid = action.target_uid
+    event.deck_before, event.deck_after = before.deck.count, after.deck.count
+  elseif id == "activate_founder" then
+    counters.founder_activation.activated = counters.founder_activation.activated + 1
+    event = action_event(before, after, action, "founder_activation")
+    local founder = find_by(before.founders, "id", action.founder_id)
+    event.founder = founder and { id = founder.id, key = founder.key, name = founder.name } or nil
+    event.target_uid = action.target_uid
+    event.cash_before, event.cash_after = before.run.cash, after.run.cash
+  elseif id == "answer_founder_negotiation" then
+    counters.negotiation.answers = counters.negotiation.answers + 1
+    event = action_event(before, after, action, "negotiation")
+    local prior = before.shop and before.shop.founder_negotiation
+    local current = after.shop and after.shop.founder_negotiation
+    event.round = prior and prior.round
+    event.question_id = prior and prior.question and prior.question.id
+    event.choice_id = action.choice_id
+    event.rapport_before, event.rapport_after = prior and prior.rapport, current and current.rapport
+    event.projected_salary_after = current and current.projected_salary
+  elseif id == "continue_founder_negotiation" or id == "accept_standard_terms"
+      or id == "walk_away_from_negotiation" then
+    local field = id == "continue_founder_negotiation" and "continued"
+      or id == "accept_standard_terms" and "standard_terms" or "walked_away"
+    counters.negotiation[field] = counters.negotiation[field] + 1
+    local prior = before.shop and before.shop.founder_negotiation
+    local current = after.shop and after.shop.founder_negotiation
+    if prior and not current and id ~= "walk_away_from_negotiation" then
+      counters.negotiation.completed = counters.negotiation.completed + 1
+    end
+    event = action_event(before, after, action, "negotiation")
+    event.round = prior and prior.round
+    event.rapport = prior and prior.rapport
+    event.projected_salary = prior and prior.projected_salary
+    event.completed = prior ~= nil and current == nil and id ~= "walk_away_from_negotiation"
+  elseif id == "buy_founder" then
+    counters.shop.founders_bought = counters.shop.founders_bought + 1
+    event = action_event(before, after, action, "shop")
+    local offer = before.shop and find_by(before.shop.founders, "index", action.index)
+    event.offer = offer and { index = offer.index, offer_id = offer.offer_id,
+      key = offer.key, name = offer.name, price = offer.price } or nil
+    event.cash_before, event.cash_after = before.run.cash, after.run.cash
+  elseif id == "open_pack" then
+    counters.shop.packs_opened = counters.shop.packs_opened + 1
+    event = action_event(before, after, action, "shop")
+    local pack = before.shop and find_by(before.shop.packs, "index", action.index)
+    event.pack = pack and { index = pack.index, offer_id = pack.offer_id, key = pack.key,
+      name = pack.name, family = pack.family, price = pack.price } or nil
+    event.cash_before, event.cash_after = before.run.cash, after.run.cash
+  elseif id == "pick_pack_option" then
+    counters.shop.pack_options_picked = counters.shop.pack_options_picked + 1
+    event = action_event(before, after, action, "shop")
+    local pack = before.shop and before.shop.pack_open
+    local option = pack and find_by(pack.options, "index", action.index)
+    event.pack = pack and { key = pack.key, name = pack.name, kind = pack.kind } or nil
+    event.option = option and { index = option.index, key = option.key, name = option.name } or nil
+    event.inventory_before, event.inventory_after = before_consumables, after_consumables
+  elseif id == "skip_pack" then
+    counters.shop.packs_skipped = counters.shop.packs_skipped + 1
+    event = action_event(before, after, action, "shop")
+    local pack = before.shop and before.shop.pack_open
+    event.pack = pack and { key = pack.key, name = pack.name, kind = pack.kind } or nil
+  elseif id == "reroll_shop" then
+    counters.shop.rerolled = counters.shop.rerolled + 1
+    event = action_event(before, after, action, "shop")
+    event.cost = before.shop and before.shop.reroll_cost
+    event.revision_before = before.shop and before.shop.revision
+    event.revision_after = after.shop and after.shop.revision
+    event.cash_before, event.cash_after = before.run.cash, after.run.cash
+  elseif id == "buy_voucher" then
+    counters.shop.vouchers_bought = counters.shop.vouchers_bought + 1
+    event = action_event(before, after, action, "shop")
+    event.voucher = before.shop and copy_plain(before.shop.voucher)
+    event.cash_before, event.cash_after = before.run.cash, after.run.cash
+  elseif id == "buy_consumable" then
+    counters.shop.consumables_bought = counters.shop.consumables_bought + 1
+    event = action_event(before, after, action, "shop")
+    local offer = before.shop and before.shop.consumable
+    event.consumable = offer and { key = offer.key, name = offer.name, price = offer.price } or nil
+    event.inventory_before, event.inventory_after = before_consumables, after_consumables
+    event.cash_before, event.cash_after = before.run.cash, after.run.cash
+  elseif id == "leave_shop" then
+    counters.shop.left = counters.shop.left + 1
+    event = action_event(before, after, action, "shop")
+  end
+  if event then audit_append(event) end
 end
 
 function Mimic.observe()
@@ -982,6 +1375,9 @@ apply_internal = function(action, recover)
   end
   G.GAME._mimic_step = (G.GAME._mimic_step or 0) + 1
   if Mimic._session then Mimic._session.actions[#Mimic._session.actions + 1] = copy_plain(action) end
+  local after = public_state()
+  audit_record_action(action, before, after)
+  audit_capture_opportunity(after)
   return Mimic.observe()
 end
 
@@ -996,7 +1392,8 @@ function Mimic.start(opts)
   Round.start_run({ seed = assert(opts.seed, "mimic start requires a seed"), stake = opts.stake or 1,
     market_id = opts.market_id })
   G.GAME._mimic_step = 0
-  Mimic._session = { opts = copy_plain(opts), actions = {} }
+  Mimic._session = { opts = copy_plain(opts), actions = {}, audit = new_audit() }
+  audit_capture_opportunity(public_state())
   return Mimic.observe()
 end
 
