@@ -11,6 +11,7 @@ local Deck = require("game.deck")
 local LAYERS = { Frontend=true, Backend=true, Data=true, Infra=true, AI=true, Knowledge=true }
 local ERAS = { E1=true, E2=true, E3=true, E4=true, E5=true }
 local RARITIES = { Common=true, Uncommon=true, Rare=true, Legendary=true }
+local OFFER_RARITIES = { Common=true, Uncommon=true, Rare=true }
 local HOOKS = {
   joker_main=true, before=true, individual=true, after=true, held=true, repetition=true,
   setting_blind=true, first_hand_drawn=true, pre_cash_out=true, end_of_round=true,
@@ -26,13 +27,14 @@ local RESET_HOOKS = {
 local OPS = {
   scale=true, acc=true, grant=true, clear_clash=true, gen=true, meter=true,
   gamble=true, delete_card=true, clash_tax=true, arm=true,
-  x_add=true, score_floor=true, state=true, spend=true,
+  x_add=true, score_floor=true, state=true, spend=true, mutate=true, offer=true,
 }
 local GATES = {
   layer_present=true, card_layer=true, app_type_in=true, count=true, ante=true, overkill=true,
   is_boss_blind=true, market=true, has_group=true, ["and"]=true, ["or"]=true, ["not"]=true,
   arr_ratio=true, all_distinct_layers=true, market_fit=true, state=true, event=true,
-  previous_arr_ratio=true,
+  previous_arr_ratio=true, played_covers_deck_layers=true,
+  marked_card_played=true, card_mark=true,
 }
 local COMPARATORS = { [">="]=true, ["<="]=true, ["=="]=true, [">"]=true, ["<"]=true }
 local PER_SOURCES = {
@@ -45,7 +47,29 @@ local PER_SOURCES = {
   last_hand_distinct_layers=true, distinct_markets_seen_run=true, cards_of_layer_in_hand=true,
   salary_due=true, blind_target=true, target_shortfall=true, final_arr=true,
   cash_spent_round=true, founders_hired_round=true, pivots_round=true, counter=true,
+  card_mark_age=true, same_layer_count=true, other_card_users=true,
+  cards_in_repeated_layers=true, singleton_cards=true, founder_count=true,
 }
+
+local MUTATE_MODES = {
+  swap_top=true, copy=true, generate=true, mark=true, age_mark=true,
+  clear_mark=true, buff=true, score_users=true,
+}
+local MUTATE_FROM = {
+  hand=true, last_ship=true, last_pivot=true, scoring_hand=true,
+  tech_pool=true, master_deck=true,
+}
+local MUTATE_TO = { hand=true, deck=true, next_hand=true, master_deck=true, score=true }
+local MUTATE_SELECT = {
+  target=true, random=true, highest_users=true, lowest_base_users=true,
+  random_non_signature=true, random_scoring_layer=true, each_seen_layer=true, marked=true,
+}
+local MUTATE_TARGETS = { tech_uid=true, relationship_bet=true }
+local MUTATE_COMPARE = { higher_users=true, relationship_bet=true }
+local MUTATE_ENHANCEMENTS = { fresh_if_empty=true }
+local OFFER_KINDS = { founder=true, pack=true }
+local OFFER_TIMINGS = { next_shop=true, current_or_next=true }
+local OFFER_DURATIONS = { once=true, run=true }
 
 local TECH_LAW_RARITIES = { common=true, uncommon=true, rare=true }
 local TECH_LAW_PRICE_UNITS = { common=1, uncommon=2, rare=3 }
@@ -738,7 +762,8 @@ end
 validate_gate = function(g, path, r, meter_names, owner, depth)
   if type(g) ~= "table" then add(r, path, "gate must be a table"); return end
   only_fields(g, { g=true, layer=true, names=true, per=true, op=true, val=true,
-    group=true, attr=true, value=true, gs=true, g1=true, state=true, field=true, stage=true }, path, r)
+    group=true, attr=true, value=true, gs=true, g1=true, state=true, field=true, stage=true,
+    target=true }, path, r)
   depth = depth or 1
   if depth > 12 then add(r, path, "gate nesting exceeds limit"); return end
   local kind = gate_kind(g, path, r)
@@ -779,17 +804,187 @@ validate_gate = function(g, path, r, meter_names, owner, depth)
     if not COMPARATORS[g.op] then add(r, path .. ".op", "unknown comparator " .. tostring(g.op)) end
     if not number(g.val) then add(r, path .. ".val", "must be a finite number") end
   elseif kind == "event" then
+    only_fields(g, { g=true, field=true, op=true, val=true, value=true }, path, r)
     if not text(g.field) then add(r, path .. ".field", "is required") end
     if g.op ~= nil then
       if not COMPARATORS[g.op] then add(r, path .. ".op", "unknown comparator " .. tostring(g.op)) end
       if not number(g.val) then add(r, path .. ".val", "must be a finite number") end
+      if g.value ~= nil then add(r, path .. ".value", "cannot be combined with op") end
     elseif g.value == nil then add(r, path .. ".value", "is required when op is absent") end
+    if g.op == nil and g.val ~= nil then add(r, path .. ".val", "requires op") end
+  elseif kind == "played_covers_deck_layers" then
+    only_fields(g, { g=true }, path, r)
+  elseif kind == "marked_card_played" or kind == "card_mark" then
+    only_fields(g, { g=true, target=true }, path, r)
+    if g.target ~= "relationship_bet" then
+      add(r, path .. ".target", "must name relationship_bet")
+    end
   end
 end
 
 local function validate_number_fields(op, fields, path, r)
   for _, field in ipairs(fields) do
     if op[field] ~= nil and not number(op[field]) then add(r, path .. "." .. field, "must be a finite number") end
+  end
+end
+
+local function validate_bounded_scale(spec, path, r, meter_names, owner, opts)
+  opts = opts or {}
+  if number(spec) then
+    required_integer(spec, path, r, opts.minimum or 0, opts.maximum)
+    return
+  end
+  if type(spec) ~= "table" then add(r, path, "must be an integer or bounded scale table"); return end
+  only_fields(spec, { base=true, coef=true, per=true, cap=true, floor=true, round=true }, path, r)
+  local base_ok = required_number(spec.base, path .. ".base", r, opts.base_minimum or 0)
+  local coef_ok = required_number(spec.coef, path .. ".coef", r, 0)
+  validate_per(spec.per, path .. ".per", r, meter_names, owner)
+  if opts.per and spec.per ~= opts.per then add(r, path .. ".per", "must be " .. opts.per) end
+  if spec.round ~= nil then
+    if spec.round ~= "floor" then add(r, path .. ".round", "must be floor") end
+  elseif not opts.round_optional then
+    add(r, path .. ".round", "must be floor")
+  end
+  if spec.floor ~= nil then required_integer(spec.floor, path .. ".floor", r, opts.minimum or 0, opts.maximum) end
+  local cap_ok
+  if spec.cap ~= nil then
+    cap_ok = required_integer(spec.cap, path .. ".cap", r, opts.minimum or 0, opts.maximum)
+  elseif opts.require_cap then
+    add(r, path .. ".cap", "is required to bound the scale")
+  end
+  local first_value = base_ok and coef_ok and (spec.base + (spec.per == "ante" and spec.coef or 0)) or nil
+  if first_value and opts.minimum ~= nil and first_value < opts.minimum then
+    add(r, path, "starts below the minimum " .. tostring(opts.minimum))
+  end
+  if base_ok and opts.maximum and spec.base > opts.maximum then add(r, path .. ".base", "exceeds the maximum") end
+  if cap_ok and base_ok and spec.base > spec.cap then add(r, path .. ".base", "must not exceed cap") end
+  if cap_ok and number(spec.floor) and spec.floor > spec.cap then add(r, path .. ".floor", "must not exceed cap") end
+  if coef_ok and spec.coef > 0 and spec.cap == nil and not opts.implicit_bound then
+    add(r, path .. ".cap", "is required for a growing scale")
+  end
+end
+
+local function validate_mutate(op, path, r, meter_names, owner)
+  only_fields(op, { k=true, gate=true, mode=true, from=true, select=true, to=true,
+    amount=true, preserve=true, enhancement=true, users=true, compare=true, target=true }, path, r)
+  if not MUTATE_MODES[op.mode] then add(r, path .. ".mode", "unknown mutation mode " .. tostring(op.mode)); return end
+  if not MUTATE_FROM[op.from] then add(r, path .. ".from", "unknown mutation source " .. tostring(op.from)) end
+  if op.select ~= nil and not MUTATE_SELECT[op.select] then add(r, path .. ".select", "unknown mutation selector") end
+  if op.to ~= nil and not MUTATE_TO[op.to] then add(r, path .. ".to", "unknown mutation destination") end
+  if op.target ~= nil and not MUTATE_TARGETS[op.target] then add(r, path .. ".target", "unknown mutation target") end
+  if op.compare ~= nil and not MUTATE_COMPARE[op.compare] then add(r, path .. ".compare", "unknown mutation comparison") end
+  if op.enhancement ~= nil and not MUTATE_ENHANCEMENTS[op.enhancement] then add(r, path .. ".enhancement", "unknown mutation Enhancement policy") end
+  if op.preserve ~= nil and type(op.preserve) ~= "boolean" then add(r, path .. ".preserve", "must be boolean") end
+  if op.users ~= nil then required_number(op.users, path .. ".users", r, 0, 1000) end
+
+  local mode = op.mode
+  if mode == "swap_top" then
+    if op.from ~= "hand" or op.select ~= "target" or op.to ~= "hand" or op.target ~= "tech_uid"
+        or op.compare ~= "higher_users" then
+      add(r, path, "swap_top requires hand/target/hand, target tech_uid, and higher_users comparison")
+    end
+    if op.amount ~= nil or op.preserve ~= nil or op.enhancement ~= nil or op.users ~= nil then
+      add(r, path, "swap_top cannot carry amount, preserve, enhancement, or users")
+    end
+  elseif mode == "copy" then
+    if not ({ last_ship=true, last_pivot=true, scoring_hand=true })[op.from]
+        or not ({ random=true, highest_users=true, lowest_base_users=true })[op.select]
+        or not ({ deck=true, hand=true })[op.to] then
+      add(r, path, "copy requires a played/Pivot snapshot, ranked selector, and deck or hand destination")
+    end
+    validate_bounded_scale(op.amount, path .. ".amount", r, meter_names, owner,
+      { minimum=1, maximum=5 })
+    if op.preserve ~= true then add(r, path .. ".preserve", "must be true for a copy") end
+    if op.enhancement ~= nil and op.enhancement ~= "fresh_if_empty" then
+      add(r, path .. ".enhancement", "must be fresh_if_empty")
+    end
+    if op.from == "last_ship" and (op.select ~= "random" or op.to ~= "deck") then
+      add(r, path, "last_ship copy must select random and go to deck")
+    elseif op.from == "last_pivot" and (op.select ~= "highest_users" or op.to ~= "hand") then
+      add(r, path, "last_pivot copy must select highest_users and go to hand")
+    elseif op.from == "scoring_hand" and (not ({ highest_users=true, lowest_base_users=true })[op.select]
+        or op.to ~= "deck") then
+      add(r, path, "scoring_hand copy must select highest/lowest-base Users and go to deck")
+    end
+    if op.enhancement ~= nil and op.from ~= "last_ship" then
+      add(r, path .. ".enhancement", "is only valid when graduating a last_ship copy")
+    end
+    if op.compare ~= nil or op.target ~= nil or op.users ~= nil then add(r, path, "copy has incompatible fields") end
+  elseif mode == "generate" then
+    if op.from ~= "tech_pool" or not ({ random_non_signature=true, random_scoring_layer=true,
+        each_seen_layer=true })[op.select] or not ({ deck=true, next_hand=true })[op.to] then
+      add(r, path, "generate requires tech_pool, a generation selector, and deck or next_hand")
+    end
+    validate_bounded_scale(op.amount, path .. ".amount", r, meter_names, owner,
+      { minimum=1, maximum=5 })
+    if op.select == "random_non_signature" and op.to ~= "next_hand" then
+      add(r, path, "random_non_signature generation must go to next_hand")
+    elseif (op.select == "random_scoring_layer" or op.select == "each_seen_layer") and op.to ~= "deck" then
+      add(r, path, op.select .. " generation must go to deck")
+    end
+    if op.preserve ~= nil or op.enhancement ~= nil or op.compare ~= nil or op.target ~= nil or op.users ~= nil then
+      add(r, path, "generate has incompatible fields")
+    end
+  elseif mode == "mark" then
+    if op.from ~= "master_deck" or op.select ~= "target" or op.target ~= "tech_uid"
+        or op.compare ~= "relationship_bet" then
+      add(r, path, "mark requires a targeted master-deck Tech and relationship_bet mark")
+    end
+    if op.to ~= nil or op.amount ~= nil or op.preserve ~= nil or op.enhancement ~= nil or op.users ~= nil then
+      add(r, path, "mark has incompatible fields")
+    end
+  elseif mode == "age_mark" or mode == "clear_mark" then
+    if op.from ~= "master_deck" or op.select ~= "marked" or op.target ~= "relationship_bet" then
+      add(r, path, mode .. " requires the marked relationship_bet master-deck Tech")
+    end
+    if mode == "age_mark" then required_integer(op.amount, path .. ".amount", r, 1, 1)
+    elseif op.amount ~= nil then add(r, path .. ".amount", "is not valid for clear_mark") end
+    if op.to ~= nil or op.preserve ~= nil or op.enhancement ~= nil or op.users ~= nil or op.compare ~= nil then
+      add(r, path, mode .. " has incompatible fields")
+    end
+  elseif mode == "buff" then
+    if op.from ~= "hand" or op.select ~= "random" or op.to ~= "master_deck" then
+      add(r, path, "buff requires a random hand Tech and master_deck destination")
+    end
+    required_integer(op.amount, path .. ".amount", r, 1, 1)
+    required_number(op.users, path .. ".users", r, 0.000001, 1000)
+    if op.preserve ~= nil or op.enhancement ~= nil or op.compare ~= nil or op.target ~= nil then
+      add(r, path, "buff has incompatible fields")
+    end
+  elseif mode == "score_users" then
+    if op.from ~= "hand" or op.select ~= "highest_users" or op.to ~= "score" then
+      add(r, path, "score_users requires highest-Users cards from hand into score")
+    end
+    validate_bounded_scale(op.amount, path .. ".amount", r, meter_names, owner,
+      { minimum=1, per="rounds_held", implicit_bound=true })
+    if op.preserve ~= nil or op.enhancement ~= nil or op.users ~= nil or op.compare ~= nil or op.target ~= nil then
+      add(r, path, "score_users has incompatible fields")
+    end
+  end
+end
+
+local function validate_offer(op, path, r, meter_names, owner)
+  only_fields(op, { k=true, gate=true, kind=true, timing=true, count=true, rarity=true,
+    free=true, discount=true, pack_key=true, options=true, duration=true, pinned=true }, path, r)
+  if not OFFER_KINDS[op.kind] then add(r, path .. ".kind", "unknown offer kind " .. tostring(op.kind)); return end
+  if not OFFER_TIMINGS[op.timing] then add(r, path .. ".timing", "must be next_shop or current_or_next") end
+  if op.duration ~= nil and not OFFER_DURATIONS[op.duration] then add(r, path .. ".duration", "must be once or run") end
+  if op.count ~= nil then required_integer(op.count, path .. ".count", r, 1, 3) end
+  if op.free ~= nil then required_boolean(op.free, path .. ".free", r) end
+  if op.pinned ~= nil then required_boolean(op.pinned, path .. ".pinned", r) end
+  if op.discount ~= nil then required_number(op.discount, path .. ".discount", r, 0, 1) end
+  if op.free == true and number(op.discount) and op.discount > 0 then add(r, path, "free and discount are mutually exclusive") end
+  if op.kind == "founder" then
+    if op.rarity ~= nil and not OFFER_RARITIES[op.rarity] then add(r, path .. ".rarity", "unsupported direct-offer rarity") end
+    if op.pack_key ~= nil or op.options ~= nil then add(r, path, "Founder offers cannot carry pack_key or options") end
+  else
+    if op.pack_key ~= "hiring" then add(r, path .. ".pack_key", "must name the hiring pack") end
+    if op.rarity ~= nil then add(r, path .. ".rarity", "is only valid for Founder offers") end
+    if op.discount ~= nil then add(r, path .. ".discount", "is not supported for packs") end
+    if op.options ~= nil then
+      validate_bounded_scale(op.options, path .. ".options", r, meter_names, owner,
+        { minimum=2, maximum=6, per="ante", require_cap=type(op.options) == "table", round_optional=true })
+    end
   end
 end
 
@@ -800,9 +995,28 @@ local function validate_op(op, path, r, meter_names, owner)
     cap=true, floor=true, amount=true, field=true, what=true, state=true, key=true, group=true,
     step=true, when=true, reset_on=true, mode=true, kind=true, layer=true, which=true,
     name=true, p=true, win=true, lose=true, n=true, guaranteed=true, margin=true,
-    overcut=true, stage=true,
+    overcut=true, stage=true, from=true, select=true, to=true, preserve=true,
+    enhancement=true, users=true, compare=true, target=true, timing=true, count=true,
+    rarity=true, free=true, discount=true, pack_key=true, options=true, duration=true, pinned=true,
   }, path, r)
   if not text(op.k) or not OPS[op.k] then add(r, path .. ".k", "unknown operation " .. tostring(op.k)); return end
+  if op.k ~= "mutate" then
+    for _, field in ipairs({ "from", "select", "to", "preserve", "enhancement", "users", "compare" }) do
+      if op[field] ~= nil then add(r, path .. "." .. field, "is only valid for mutate") end
+    end
+    if op.target ~= nil and not (op.k == "scale" and op.per == "card_mark_age") then
+      add(r, path .. ".target", "is only valid for mutate or card_mark_age scale")
+    end
+  end
+  if op.k ~= "offer" then
+    for _, field in ipairs({ "timing", "count", "rarity", "free", "discount", "pack_key",
+        "options", "duration", "pinned" }) do
+      if op[field] ~= nil then add(r, path .. "." .. field, "is only valid for offer") end
+    end
+  end
+  if op.per == "card_mark_age" and not (op.k == "scale" and op.target == "relationship_bet") then
+    add(r, path .. ".per", "card_mark_age is only valid for a relationship_bet scale")
+  end
   if op.gate ~= nil then validate_gate(op.gate, path .. ".gate", r, meter_names, owner) end
   if op.per ~= nil and op.k ~= "clash_tax" then validate_per(op.per, path .. ".per", r, meter_names, owner) end
   if op.stage ~= nil and not ({ pre_after=true, pre_market=true, final=true })[op.stage] then
@@ -815,6 +1029,9 @@ local function validate_op(op, path, r, meter_names, owner)
   if op.k == "scale" or op.k == "acc" or op.k == "arm" then
     if not ({ chips=true, mult=true, x_mult=true, x_chips=true, dollars=true })[op.field] then
       add(r, path .. ".field", "unknown score field " .. tostring(op.field))
+    end
+    if op.per == "card_mark_age" and op.target ~= "relationship_bet" then
+      add(r, path .. ".target", "card_mark_age requires relationship_bet")
     end
   end
   if op.k == "x_add" then
@@ -860,8 +1077,14 @@ local function validate_op(op, path, r, meter_names, owner)
     if op.amount ~= nil and op.amount ~= "all" and not number(op.amount) then add(r, path .. ".amount", "must be a number or all") end
   elseif op.k == "gen" then
     if not ({ tech_card=true, remove_card=true, copy_card=true, hand_size=true })[op.kind] then add(r, path .. ".kind", "unknown generation kind " .. tostring(op.kind)) end
-    if op.amount ~= nil and not number(op.amount) then add(r, path .. ".amount", "must be a finite number") end
-    if op.layer ~= nil and not LAYERS[op.layer] then add(r, path .. ".layer", "unknown Layer") end
+    if op.amount ~= nil and (not number(op.amount) or op.amount < 0) then add(r, path .. ".amount", "must be a non-negative finite number") end
+    if op.layer ~= nil and not LAYERS[op.layer] and op.layer ~= "random_seen" then add(r, path .. ".layer", "unknown Layer") end
+    if op.layer == "random_seen" and op.kind ~= "tech_card" then add(r, path .. ".layer", "random_seen requires tech_card") end
+    if op.layer ~= nil and op.kind ~= "tech_card" then add(r, path .. ".layer", "is only valid for tech_card") end
+  elseif op.k == "mutate" then
+    validate_mutate(op, path, r, meter_names, owner)
+  elseif op.k == "offer" then
+    validate_offer(op, path, r, meter_names, owner)
   elseif op.k == "meter" then
     if not text(op.name) then add(r, path .. ".name", "meter name is required") end
     if op.amount ~= nil and not number(op.amount) then add(r, path .. ".amount", "must be a finite number") end
@@ -904,15 +1127,24 @@ local function validate_dsl(dsl, path, r, owner)
     end
     if spec.retrigger ~= nil then
       if type(spec.retrigger) == "table" then
+        only_fields(spec.retrigger, { base=true, coef=true, per=true }, spec_path .. ".retrigger", r)
         validate_number_fields(spec.retrigger, { "base", "coef" }, spec_path .. ".retrigger", r)
         validate_per(spec.retrigger.per, spec_path .. ".retrigger.per", r, meter_names, owner)
       elseif not number(spec.retrigger) then add(r, spec_path .. ".retrigger", "must be a number or scale table") end
     end
-    if spec.retrigger_target ~= nil and spec.retrigger_target ~= "highest" then add(r, spec_path .. ".retrigger_target", "unknown target") end
+    if spec.retrigger_target ~= nil and not ({ highest=true, marked=true })[spec.retrigger_target] then
+      add(r, spec_path .. ".retrigger_target", "unknown target")
+    end
+    if spec.retrigger_target == "marked"
+        and not (type(spec.gate) == "table" and spec.gate.g == "card_mark"
+          and spec.gate.target == "relationship_bet") then
+      add(r, spec_path .. ".retrigger_target", "marked requires a relationship_bet card_mark gate")
+    end
     if spec.hook == "activated" or spec.hook == "post_resolution" then
       for i, op in ipairs(spec.ops or {}) do
         if type(op) == "table" and ((op.k == "scale" and op.field ~= "dollars")
-            or op.k == "x_add" or op.k == "score_floor" or op.k == "gamble" or op.k == "clash_tax") then
+            or op.k == "x_add" or op.k == "score_floor" or op.k == "gamble" or op.k == "clash_tax"
+            or (op.k == "mutate" and op.mode == "score_users")) then
           add(r, spec_path .. ".ops[" .. i .. "]", spec.hook .. " cannot mutate an absent score")
         end
       end
@@ -936,20 +1168,53 @@ local function validate_dsl(dsl, path, r, owner)
   if dsl.passive ~= nil then
     if type(dsl.passive) ~= "table" then add(r, path .. ".passive", "must be a table")
     else
-      if not ({ hand_size=true, founder_slots=true, salary=true })[dsl.passive.what] then add(r, path .. ".passive.what", "unknown passive target") end
-      if not number(dsl.passive.amount) then add(r, path .. ".passive.amount", "must be a finite number") end
+      local passive = dsl.passive
+      if passive.what == "pack_option_bonus" then
+        only_fields(passive, { what=true, family=true, base=true, coef=true, per=true,
+          round=true, cap=true }, path .. ".passive", r)
+        if passive.family ~= "tech_evaluation" then add(r, path .. ".passive.family", "must be tech_evaluation") end
+        required_number(passive.base, path .. ".passive.base", r, 0, 2)
+        required_number(passive.coef, path .. ".passive.coef", r, 0.000001, 2)
+        validate_per(passive.per, path .. ".passive.per", r, meter_names, owner)
+        if passive.per ~= "founder_count" then add(r, path .. ".passive.per", "must be founder_count") end
+        if passive.round ~= "floor" then add(r, path .. ".passive.round", "must be floor") end
+        required_integer(passive.cap, path .. ".passive.cap", r, 1, 2)
+      else
+        only_fields(passive, { what=true, amount=true }, path .. ".passive", r)
+        if not ({ hand_size=true, founder_slots=true, salary=true })[passive.what] then add(r, path .. ".passive.what", "unknown passive target") end
+        if not number(passive.amount) then add(r, path .. ".passive.amount", "must be a finite number") end
+      end
     end
   end
   if dsl.action ~= nil then
     if type(dsl.action) ~= "table" then add(r, path .. ".action", "must be a table")
     else
-      only_fields(dsl.action, { label=true, description=true }, path .. ".action", r)
+      only_fields(dsl.action, { label=true, description=true, target=true }, path .. ".action", r)
       if not text(dsl.action.label) then add(r, path .. ".action.label", "is required") end
       if dsl.action.description ~= nil and not text(dsl.action.description) then add(r, path .. ".action.description", "must be non-empty text") end
+      if dsl.action.target ~= nil and dsl.action.target ~= "tech_uid" then
+        add(r, path .. ".action.target", "must be tech_uid")
+      end
       local found = false
       for _, clause in ipairs(dsl.clauses or {}) do if clause.hook == "activated" then found = true end end
       if dsl.hook == "activated" then found = true end
       if not found then add(r, path .. ".action", "requires an activated clause") end
+      if dsl.action.target == "tech_uid" then
+        local targeted, bounded = false, false
+        local function scan(spec)
+          if type(spec) ~= "table" or spec.hook ~= "activated" then return end
+          for _, op in ipairs(spec.ops or {}) do
+            if type(op) == "table" and op.k == "mutate" and op.select == "target"
+                and op.target == "tech_uid" then
+              targeted = true
+              bounded = spec.once == true and (spec.once_scope == "run" or spec.once_scope == "blind")
+            end
+          end
+        end
+        scan(dsl); for _, clause in ipairs(dsl.clauses or {}) do scan(clause) end
+        if not targeted then add(r, path .. ".action.target", "requires a targeted activated mutation") end
+        if targeted and not bounded then add(r, path .. ".action.target", "targeted mutation must be bounded once per run or blind") end
+      end
     end
   end
 end

@@ -8,6 +8,10 @@
 local Meters = require("game.meters")
 local Coverage = require("game.coverage")
 local RNG = require("game.rng")
+local DeckTransactions = require("game.deck_transactions")
+local TechMutation = require("game.tech_mutation")
+local ShopDirectives = require("game.shop_directives")
+local Centers = require("game.centers")
 
 local Interp = {}
 
@@ -42,6 +46,37 @@ local function count_group(group, card)
 end
 local function distinct_sub_roles(ctx)
   return coverage(ctx).subrole_count
+end
+
+local function effective_users(card)
+  return (card and card.get_users and card:get_users()) or (card and card.base_users) or 0
+end
+
+local function same_layer_count(ctx)
+  local subject = ctx.other_card
+  if not subject then return 0 end
+  local analysis, wanted = coverage(ctx), {}
+  for _, layer in ipairs(Coverage.layers_for(subject, analysis)) do wanted[layer] = true end
+  local count = 0
+  for _, card in ipairs(ctx.scoring_hand or {}) do
+    for _, layer in ipairs(Coverage.layers_for(card, analysis)) do
+      if wanted[layer] then count = count + 1; break end
+    end
+  end
+  return count
+end
+
+local function repeated_layer_shape(ctx)
+  local analysis = coverage(ctx)
+  local repeated, singleton = 0, 0
+  for _, card in ipairs(ctx.scoring_hand or {}) do
+    local is_repeated = false
+    for _, layer in ipairs(Coverage.layers_for(card, analysis)) do
+      if (analysis.counts[layer] or 0) >= 2 then is_repeated = true; break end
+    end
+    if is_repeated then repeated = repeated + 1 else singleton = singleton + 1 end
+  end
+  return repeated, singleton
 end
 
 local HELP = {
@@ -107,6 +142,15 @@ local function help(name, ctx, card, gate)
   end
   if name == "run_best_arr" then return (G.GAME and G.GAME.run_best_arr) or 0 end
   if name == "founders_hired_this_run" then return (G.GAME and G.GAME.founders_hired_run) or #((G.jokers and G.jokers.cards) or {}) end
+  if name == "founder_count" then return #((G.jokers and G.jokers.cards) or {}) end
+  if name == "same_layer_count" then return same_layer_count(ctx) end
+  if name == "other_card_users" then return effective_users(ctx.other_card) end
+  if name == "cards_in_repeated_layers" then return repeated_layer_shape(ctx) end
+  if name == "singleton_cards" then local _, n = repeated_layer_shape(ctx); return n end
+  if name == "card_mark_age" then
+    local _, mark = TechMutation.marked_entry(G.GAME, card, gate and gate.target)
+    return mark and math.max(0, tonumber(mark.age) or 0) or 0
+  end
   if name == "last_hand_distinct_layers" then return (G.GAME and G.GAME._last_hand_ndl) or 0 end
   if name == "distinct_markets_seen_run" then
     local n = 0; for _ in pairs((G.GAME and G.GAME.markets_seen_run) or {}) do n = n + 1 end; return math.max(1, n)
@@ -208,6 +252,33 @@ local function eval_gate(g, ctx, card)
     local value = ctx[g.field]
     if g.op then return compare(g.op, tonumber(value), g.val) end
     return value == g.value
+  elseif k == "played_covers_deck_layers" then
+    local required = {}
+    for _, entry in ipairs((G.GAME and G.GAME.master_deck) or {}) do
+      local center = Centers.get(entry.center_key)
+      if center then
+        local proxy = {
+          center=center, layer=center.layer, layer_override=entry.layer_override,
+          enhancement=entry.enhancement or entry.enh, modifier_state=entry.modifier_state,
+          stickers=entry.stickers, config=entry.config,
+        }
+        for _, layer in ipairs(Coverage.card_options(proxy)) do required[layer] = true end
+      end
+    end
+    local analysis = coverage(ctx)
+    local any = false
+    for layer in pairs(required) do
+      any = true
+      if not analysis.counts[layer] then return false end
+    end
+    return any
+  elseif k == "marked_card_played" then
+    local entry = TechMutation.marked_entry(G.GAME, card, g.target)
+    if not entry then return false end
+    for _, played in ipairs(ctx.scoring_hand or {}) do if played.uid == entry.uid then return true end end
+    return false
+  elseif k == "card_mark" then
+    return TechMutation.card_has_mark(ctx.other_card, card, g.target)
   end
   -- Unknown gates are invalid data. Preserve an explicit indeterminate result
   -- so compositional gates (especially `not`) fail closed instead of turning a
@@ -229,7 +300,99 @@ local function op_value(op, ctx, card)
   return value
 end
 
-local function run_op(op, ctx, card, eff)
+local function scalable_value(value, ctx, card, default)
+  local spec = type(value) == "table" and value or nil
+  local result
+  if spec then result = (spec.base or 0) + (spec.coef or 0) * (spec.per and help(spec.per, ctx, card, spec) or 0)
+  elseif value ~= nil then result = value
+  else result = default or 0 end
+  if spec and spec.floor ~= nil then result = math.max(spec.floor, result) end
+  if spec and spec.cap ~= nil then result = math.min(spec.cap, result) end
+  if spec and spec.round == "floor" then result = math.floor(result)
+  elseif spec and spec.round == "ceil" then result = math.ceil(result) end
+  return result
+end
+
+local DECK_GENERATION = {
+  tech_card = true,
+  specific_tech_card = true,
+  remove_tech_card = true,
+  remove_card = true,
+  copy_card = true,
+}
+
+-- Resolve every deck-generating operation in a Founder clause before any of
+-- that clause's dependent score/economy/state operations run. Fractional
+-- Distill carry is also staged and only published after a successful commit.
+local function prepare_deck_generation(spec, ctx, card)
+  local operations, carry_updates, pending_carry = {}, {}, {}
+  local has_deck_generation = false
+  for _, op in ipairs(spec.ops or {}) do
+    local gate = not op.gate or eval_gate(op.gate, ctx, card)
+    if op.k == "gen" and DECK_GENERATION[op.kind] and gate == true then
+      has_deck_generation = true
+      local amount = op.per and ((op.base or 0) + (op.coef or 1) * help(op.per, ctx, card, op))
+        or (op.amount or 1)
+      if type(amount) ~= "number" or amount ~= amount or amount == math.huge or amount == -math.huge then
+        return nil, "Founder generation amount must be finite"
+      end
+      local scale = effect_scale(card)
+      if scale < 1 then
+        local carry_key = "_scaled_gen_" .. table.concat({ op.kind or "x", op.layer or "", op.which or "" }, "_")
+        local current = pending_carry[carry_key]
+        if current == nil then current = cfg(card)[carry_key] or 0 end
+        amount = amount * scale + current
+        local whole = math.floor(amount)
+        pending_carry[carry_key] = amount - whole
+        carry_updates[carry_key] = pending_carry[carry_key]
+        amount = whole
+      else
+        amount = math.floor(amount)
+      end
+      if amount >= 1 then
+        local layer, layers = op.layer, nil
+        if layer == "random_seen" then
+          layer, layers = nil, {}
+          for _, candidate in ipairs(Coverage.CORE_ORDER) do
+            if G.GAME.layers_seen_run and G.GAME.layers_seen_run[candidate] then
+              layers[#layers + 1] = candidate
+            end
+          end
+          if #layers == 0 then return nil, "Founder generation has no previously used Layer" end
+        end
+        local operation, reason = DeckTransactions.operation_from_generate(op.kind, {
+          layer = layer, layers = layers, amount = amount, key = op.key, which = op.which,
+        })
+        if not operation then return nil, reason end
+        operations[#operations + 1] = operation
+      end
+    end
+  end
+  return {
+    has_deck_generation = has_deck_generation,
+    operations = operations,
+    carry_updates = carry_updates,
+  }
+end
+
+local function prepare_mutation(spec, ctx, card)
+  local found
+  for index, op in ipairs(spec.ops or {}) do
+    if op.k == "mutate" and (not op.gate or eval_gate(op.gate, ctx, card) == true) then
+      if found then return nil, "Founder clauses support one atomic Tech mutation" end
+      local amount = scalable_value(op.amount, ctx, card, 1)
+      if type(amount) ~= "number" or amount ~= amount or amount == math.huge or amount == -math.huge then
+        return nil, "Founder mutation amount must be finite"
+      end
+      local prepared, reason = TechMutation.prepare(op, ctx, card, math.max(0, math.floor(amount)))
+      if not prepared then return nil, reason end
+      found = { index=index, prepared=prepared }
+    end
+  end
+  return found or false
+end
+
+local function run_op(op, ctx, card, eff, deck_generation_committed, mutation_result)
   local k = op.k
   if k == "scale" then
     local count = op.per and help(op.per, ctx, card, op) or 1
@@ -309,7 +472,8 @@ local function run_op(op, ctx, card, eff)
         or (op.amount or 1)  -- 1.5a: scalable
       G.GAME._clashes_active = math.max(0, (G.GAME._clashes_active or 0) - math.floor(amt))
     end
-  elseif k == "gen" and G.GENERATE then                      -- generation: create cards mid-run (E3); amount scalable (E)
+  elseif k == "gen" and G.GENERATE and not (deck_generation_committed and DECK_GENERATION[op.kind]) then
+                                                                  -- generation: create cards mid-run (E3); amount scalable (E)
     local amt = op.per and ((op.base or 0) + (op.coef or 1) * help(op.per, ctx, card, op)) or (op.amount or 1)
     local scale = effect_scale(card)
     if scale < 1 then
@@ -319,6 +483,22 @@ local function run_op(op, ctx, card, eff)
       c[carry_key] = amt - math.floor(amt)
     end
     if amt >= 1 then G.GENERATE(op.kind, { layer = op.layer, amount = math.floor(amt), key = op.key, which = op.which }) end
+  elseif k == "mutate" then
+    if mutation_result and mutation_result.chips then add_field(eff, "chips", mutation_result.chips) end
+  elseif k == "offer" and G.GAME then
+    local options = op.options and scalable_value(op.options, ctx, card)
+    if options then options = math.max(2, math.min(6, math.floor(options))) end
+    local row, reason = ShopDirectives.enqueue(G.GAME, {
+      kind=op.kind, timing=op.timing, duration=op.duration, count=op.count or 1,
+      rarity=op.rarity, free=op.free, pinned=op.pinned, discount=op.discount,
+      pack_key=op.pack_key, options=options,
+      source_key=card.center_key or (card.center and card.center.key),
+      source_id=cfg(card)._founder_id or card.ID,
+      label=op.label,
+    })
+    if row and row.timing == "current_or_next" and G.GAME.shop then
+      require("game.shop").apply_directives("current")
+    end
   elseif k == "meter" and G.GAME then                        -- reputation/identity meters (E4)
     Meters.add(op.name, (op.amount or 0) + (op.per and (op.coef or 1) * help(op.per, ctx, card, op) or 0))
   elseif k == "gamble" then                                  -- stake-or-spike ×mult (Rocket-Boy/Thiel)
@@ -423,6 +603,9 @@ local function run_spec(card, ctx, spec, spec_id)
           if effective_users(oc) > effective_users(best) then best = oc end
         end
         if ctx.other_card ~= best then return nil end
+      elseif spec.retrigger_target == "marked" and not TechMutation.card_has_mark(ctx.other_card, card,
+          spec.gate and spec.gate.target) then
+        return nil
       end
       if reps and reps >= 1 then return { jokers = { repetitions = math.min(2, reps) } } end
     end
@@ -434,16 +617,43 @@ local function run_spec(card, ctx, spec, spec_id)
   if not eval_gate(spec.gate, ctx, card) then return nil end
 
   local c = cfg(card)
+  local once_token
   if spec.once then
-    local key = once_key(spec, spec_id)
+    once_token = once_key(spec, spec_id)
     c._once = c._once or {}
-    if c._once[key] then return nil end
-    c._once[key] = true
+    if c._once[once_token] then return nil end
   end
 
+  local prepared = prepare_deck_generation(spec, ctx, card)
+  if not prepared then return nil end
+  local prepared_mutation = prepare_mutation(spec, ctx, card)
+  if prepared_mutation == nil then return nil end
+  local deck_result
+  if #prepared.operations > 0 then
+    local plan = DeckTransactions.plan(G.GAME, { ops = prepared.operations })
+    if not plan then return nil end
+    deck_result = DeckTransactions.commit(G.GAME, plan)
+    if not deck_result.ok then return nil end
+  elseif prepared.has_deck_generation then
+    deck_result = { ok=true, requested=0, applied=0, changes={}, added_uids={}, removed_uids={} }
+  end
+  local mutation_result
+  if prepared_mutation then
+    mutation_result = TechMutation.commit(prepared_mutation.prepared)
+    if not mutation_result.ok then return nil end
+    if mutation_result.mutation_upgraded ~= nil then
+      ctx.mutation_upgraded = mutation_result.mutation_upgraded
+    end
+  end
+  for key, value in pairs(prepared.carry_updates) do c[key] = value end
+  if once_token then c._once[once_token] = true end
+
   local eff = {}
-  for _, op in ipairs(spec.ops or {}) do
-    if not op.gate or eval_gate(op.gate, ctx, card) then run_op(op, ctx, card, eff) end   -- 1.5a: per-op gate (multi-clause)
+  for index, op in ipairs(spec.ops or {}) do
+    if not op.gate or eval_gate(op.gate, ctx, card) then
+      local result = prepared_mutation and prepared_mutation.index == index and mutation_result or nil
+      run_op(op, ctx, card, eff, deck_result ~= nil, result)
+    end
   end
   return eff
 end
@@ -506,6 +716,11 @@ function Interp.apply_passive(card)
   elseif p.what == "salary" then
     G.GAME.passive_salary = (G.GAME.passive_salary or 0) + requested
     applied = requested
+  elseif p.what == "pack_option_bonus" then
+    G.GAME.pack_option_passives = G.GAME.pack_option_passives or {}
+    G.GAME.pack_option_passives[id] = {
+      family=p.family, base=p.base, coef=p.coef, per=p.per, round=p.round, cap=p.cap,
+    }
   end
   -- Store the actual bounded delta so removal is the exact inverse even when
   -- applying a negative modifier at the minimum hand/slot size.
@@ -518,7 +733,10 @@ function Interp.revert_passive(card)
   local amt = rec.amount or 0
   if rec.what == "hand_size" then G.GAME.hand_size = math.max(1, (G.GAME.hand_size or 8) - amt)
   elseif rec.what == "founder_slots" then G.GAME.founder_slots = math.max(1, (G.GAME.founder_slots or 5) - amt)
-  elseif rec.what == "salary" then G.GAME.passive_salary = (G.GAME.passive_salary or 0) - amt end
+  elseif rec.what == "salary" then G.GAME.passive_salary = (G.GAME.passive_salary or 0) - amt
+  elseif rec.what == "pack_option_bonus" and G.GAME.pack_option_passives then
+    G.GAME.pack_option_passives[id] = nil
+  end
   G.GAME._passives[id] = nil
 end
 

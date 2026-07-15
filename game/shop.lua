@@ -24,6 +24,7 @@ local TechLaws = require("game.tech_laws")
 local Moonshots = require("game.moonshots")
 local FounderNegotiation = require("game.founder_negotiation")
 local FounderEvents = require("game.founder_events")
+local ShopDirectives = require("game.shop_directives")
 local Markets = require("game.markets")
 local random = RNG.fn("shop")
 local pack_random = RNG.fn("packs")
@@ -33,8 +34,20 @@ local law_pack_random = RNG.fn("tech_law_pack")
 local moonshot_pack_random = RNG.fn("moonshot_pack")
 local moonshot_special_random = RNG.fn("moonshot_special")
 local moonshot_payload_random = RNG.fn("moonshot_payload")
+local directive_random = RNG.fn("shop_directives")
 
 local Shop = {}
+local MAX_FOUNDER_OFFERS, MAX_PACK_OFFERS = 5, 5
+
+local function next_sequence(field)
+  G.GAME[field] = (G.GAME[field] or 0) + 1
+  return G.GAME[field]
+end
+
+local function next_offer_id(kind)
+  return table.concat({ kind, tostring(G.GAME.shop and G.GAME.shop.shop_id or 0),
+    tostring(next_sequence("_shop_offer_sequence")) }, ":")
+end
 
 local function negotiation_pending()
   return G.GAME and FounderNegotiation.normalize(G.GAME) ~= nil
@@ -208,33 +221,131 @@ local function roll_one(excluded, rng)
   return false
 end
 
+local function make_founder_offer(center, opts)
+  opts = opts or {}
+  local offer = {}; for key, value in pairs(center) do offer[key] = value end
+  offer.center = center
+  offer.offer_id = next_offer_id("founder")
+  offer.edition = opts.edition
+  if opts.roll_modifier ~= false and offer.edition == nil then
+    offer.edition = Packs.roll_modifier(RNG.fn("modifier"))
+  end
+  local price = Shop.price(center) + (offer.edition and Pricing.base_reroll(G.GAME, RunState.ANTE_BASE) or 0)
+  if opts.free then price = 0
+  elseif opts.discount then price = math.max(0, math.floor(price * (1 - opts.discount) + 0.5)) end
+  offer.buy_price = price
+  offer.sell_basis = opts.free and 0 or price
+  offer.stake_mod = opts.stake_mod
+    or (opts.roll_stake == false and nil or Stakes.roll_offer_mod(G.GAME, RNG.fn("modifier")))
+  offer.pinned = opts.pinned == true
+  offer.directive_id = opts.directive_id
+  offer.directive_source = opts.source_key
+  return offer
+end
+
 function Shop.slots() return G.GAME.shop_founder_slots or 2 end
 function Shop.founder_cap() return effective_founder_cap(G.GAME) end
 
 -- (re)roll the whole founder offer row.
 local function roll_offers()
   local sh = G.GAME.shop
+  local pinned, seen = {}, {}
+  for _, offer in ipairs(sh.founders or {}) do
+    if offer and offer.pinned then
+      pinned[#pinned + 1] = offer
+      seen[(offer.center or offer).key] = true
+    end
+  end
   sh.founders = {}
-  local seen = {}
   for i = 1, Shop.slots() do
     local center = roll_one(seen)
     if center then
       seen[center.key] = true
-      local offer = {}; for k, v in pairs(center) do offer[k] = v end
-      offer.center, offer.offer_id = center, (G.GAME.ante or 1) .. ":" .. (G.GAME.blind_idx or 1) .. ":" .. i .. ":" .. center.key
-      offer.edition = Packs.roll_modifier(RNG.fn("modifier"))
-      offer.buy_price = Shop.price(center) + (offer.edition and Pricing.base_reroll(G.GAME, RunState.ANTE_BASE) or 0)
-      offer.sell_basis = offer.buy_price
-      offer.stake_mod = Stakes.roll_offer_mod(G.GAME, RNG.fn("modifier"))
-      sh.founders[i] = offer
+      sh.founders[i] = make_founder_offer(center)
     else sh.founders[i] = false end
   end
+  for _, offer in ipairs(pinned) do
+    if #sh.founders < MAX_FOUNDER_OFFERS then sh.founders[#sh.founders + 1] = offer end
+  end
+end
+
+local function available_founders(rarity, excluded)
+  if rarity then return eligible(rarity, excluded) end
+  local out = {}
+  for _, tier in ipairs({ "Common", "Uncommon", "Rare" }) do
+    for _, center in ipairs(eligible(tier, excluded)) do out[#out + 1] = center end
+  end
+  table.sort(out, function(a, b) return a.key < b.key end)
+  return out
+end
+
+local function materialize_directive(row)
+  local sh = G.GAME.shop
+  if row.kind == "pack" then
+    local definition = Packs.get(row.pack_key)
+    local occupied, slots, highest = 0, {}, 0
+    for index = 1, MAX_PACK_OFFERS do
+      if sh.packs[index] then occupied = occupied + 1 else slots[#slots + 1] = index end
+      if sh.packs[index] ~= nil then highest = index end
+    end
+    if not definition or occupied + row.count > MAX_PACK_OFFERS then return false end
+    local prepared = {}
+    for _ = 1, row.count do
+      local pack = {}; for key, value in pairs(definition) do pack[key] = value end
+      pack.offer_id = next_offer_id("pack")
+      pack.directive_id, pack.directive_source = row.id, row.source_key
+      pack.pinned = row.pinned
+      if row.free then pack.price_override = 0 end
+      if row.options then pack.options = row.options end
+      prepared[#prepared + 1] = pack
+    end
+    for _, pack in ipairs(prepared) do
+      local index = table.remove(slots, 1) or (highest + 1)
+      sh.packs[index], highest = pack, math.max(highest, index)
+    end
+    return true, { kind="pack", count=#prepared, offer_ids=(function()
+      local ids = {}; for _, pack in ipairs(prepared) do ids[#ids + 1] = pack.offer_id end; return ids end)() }
+  end
+
+  local seen = {}
+  for _, offer in ipairs(sh.founders or {}) do if offer then seen[(offer.center or offer).key] = true end end
+  local pool = available_founders(row.rarity, seen)
+  local room = MAX_FOUNDER_OFFERS - #sh.founders
+  for _, offer in ipairs(sh.founders) do if not offer then room = room + 1 end end
+  if #pool < row.count or room < row.count then return false end
+  local prepared = {}
+  for _ = 1, row.count do
+    local index = directive_random(#pool)
+    local center = table.remove(pool, index)
+    seen[center.key] = true
+    prepared[#prepared + 1] = make_founder_offer(center, {
+      free=row.free, discount=row.discount, pinned=row.pinned,
+      directive_id=row.id, source_key=row.source_key,
+    })
+  end
+  local slots = {}
+  for index, offer in ipairs(sh.founders) do if not offer then slots[#slots + 1] = index end end
+  for _, offer in ipairs(prepared) do
+    local index = table.remove(slots, 1) or (#sh.founders + 1)
+    sh.founders[index] = offer
+  end
+  local ids = {}; for _, offer in ipairs(prepared) do ids[#ids + 1] = offer.offer_id end
+  return true, { kind="founder", count=#prepared, offer_ids=ids }
+end
+
+function Shop.apply_directives(phase)
+  local sh = G.GAME and G.GAME.shop
+  if not sh then return {} end
+  local applied = ShopDirectives.apply(G.GAME, sh, phase or "current", materialize_directive)
+  if #applied > 0 then sh.revision = (sh.revision or 1) + 1 end
+  return applied
 end
 
 function Shop.enter()
   local voucher = false
   if G.GAME.voucher_offer_ante ~= G.GAME.ante then voucher = roll_voucher(); G.GAME.voucher_offer_ante = G.GAME.ante end
-  G.GAME.shop = { founders = {}, rerolls = 0, reroll_cost = Shop.reroll_cost(0),
+  G.GAME.shop = { shop_id = next_sequence("_shop_sequence"), revision = 1,
+                  founders = {}, rerolls = 0, reroll_cost = Shop.reroll_cost(0),
                   voucher = voucher, voucher_free = voucher and G.GAME.free_voucher_pending or false,
                   consumable = roll_consumable(), packs = {}, pack_open = nil }
   if G.GAME.shop.voucher_free then G.GAME.free_voucher_pending = false end
@@ -242,9 +353,19 @@ function Shop.enter()
   local seen = {}
   for i = 1, (G.GAME.shop_pack_slots or 2) do
     local pack = Packs.roll_shop(pack_shop_random, seen)
-    if pack then seen[pack.key] = true; G.GAME.shop.packs[i] = pack end
+    if pack then
+      seen[pack.key] = true
+      local offer = {}; for key, value in pairs(pack) do offer[key] = value end
+      offer.offer_id = next_offer_id("pack")
+      G.GAME.shop.packs[i] = offer
+    end
   end
   require("game.leads").on_shop_enter(G.GAME, G.GAME.shop)
+  -- Leads predate offer identities; normalize anything they injected before
+  -- Founder directives add their own pinned offers.
+  for _, offer in ipairs(G.GAME.shop.founders) do if offer and not offer.offer_id then offer.offer_id = next_offer_id("founder") end end
+  for _, pack in ipairs(G.GAME.shop.packs) do if pack and not pack.offer_id then pack.offer_id = next_offer_id("pack") end end
+  Shop.apply_directives("enter")
   FounderEvents.fire("shop_entered", { shop = G.GAME.shop })
   local discovered = {}
   for _, offer in ipairs(G.GAME.shop.founders) do
@@ -282,31 +403,42 @@ function Shop.reroll()
   if not sh or (G.GAME.cash or 0) < sh.reroll_cost then return false end
   if not FounderEvents.spend(G.GAME, sh.reroll_cost, "reroll") then return false end
   sh.rerolls = sh.rerolls + 1
+  sh.revision = (sh.revision or 1) + 1
   sh.reroll_cost = Shop.reroll_cost(sh.rerolls)
   roll_offers()
   Audio.play("select", nil, 0.5)
   return true
 end
 
-function Shop.buy(idx)
+function Shop.buy(idx, expected_offer_id, expected_revision, expected_shop_id)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
+  if not sh then return false end
+  if expected_shop_id ~= nil and expected_shop_id ~= sh.shop_id then return false, "Stale Shop identity" end
+  if expected_revision ~= nil and expected_revision ~= sh.revision then return false, "Stale Shop revision" end
   local offer = sh and sh.founders[idx]
   if not offer then return false end
+  if expected_offer_id ~= nil and expected_offer_id ~= offer.offer_id then return false, "Stale Founder offer" end
   if #G.jokers.cards >= Shop.founder_cap() then
     Guidance.emit("founder_slots_full", { slots = Shop.founder_cap() })
     return false
   end
+  local offered_key = (offer.center or offer).key
+  local c = type(offered_key) == "string" and Centers.get(offered_key)
+  if not (c and c.set == "Founder") or (c.rarity == "Legendary" and not c.signature) then
+    return false, "Invalid Founder offer"
+  end
   local cost = Shop.price(offer)
   if cost > 0 and (G.GAME.cash or 0) < cost then return false end
   if not FounderEvents.spend(G.GAME, cost, "founder", { center_key = (offer.center or offer).key }) then return false end
-  local c = offer.center or offer
   local jk = Card({ center = c, T = { x = G.jokers.T.x, y = G.jokers.T.y } })
   G.jokers:emplace(jk)
   if jk.juice_up then jk:juice_up(0.5) end                     -- the new hire pops as it joins the row
   maybe_edition(jk, offer.edition)
   Lifecycle.acquire(jk, { source = "shop", sell_basis = offer.sell_basis, stake_mod = offer.stake_mod })
   sh.founders[idx] = false                                     -- bought slot empties
+  sh.revision = (sh.revision or 1) + 1
+  Shop.apply_directives("current")
   Profile.discover(c.key)
   Guidance.emit("founder_bought", { founder = c.key, salary = c.salary or 0 })
   Audio.play("hire")
@@ -331,6 +463,24 @@ function Shop.pack_price(definition)
 end
 function Shop.pack_slots() return G.GAME.shop_pack_slots or 2 end
 
+function Shop.pack_option_bonus(family)
+  local total = 0
+  for _, spec in pairs((G.GAME and G.GAME.pack_option_passives) or {}) do
+    if spec.family == family then
+      local per = spec.per == "founder_count" and #((G.jokers and G.jokers.cards) or {}) or 0
+      local value = (spec.base or 0) + (spec.coef or 0) * per
+      if spec.round == "floor" then value = math.floor(value) end
+      total = total + math.max(0, math.min(spec.cap or 2, value))
+    end
+  end
+  return math.min(2, math.floor(total))
+end
+
+function Shop.pack_effective_options(definition)
+  if not definition then return 0 end
+  return math.min(6, (definition.options or 0) + Shop.pack_option_bonus(definition.family))
+end
+
 local function emplace_founder(c, sell_basis, edition, source_i, source_count, acquire_opts)
   local sx, sy = G.jokers.T.x, G.jokers.T.y
   if not G.SETTINGS.reduced_motion and source_i and source_count then
@@ -354,11 +504,16 @@ local function emplace_founder(c, sell_basis, edition, source_i, source_count, a
   return jk
 end
 
-function Shop.open_pack(idx)
+function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop_id)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
   if not sh or not sh.packs[idx] then return false end
-  local definition = sh.packs[idx]
+  local offered = sh.packs[idx]
+  if expected_shop_id ~= nil and expected_shop_id ~= sh.shop_id then return false, "Stale Shop identity" end
+  if expected_revision ~= nil and expected_revision ~= sh.revision then return false, "Stale Shop revision" end
+  if expected_offer_id ~= nil and expected_offer_id ~= offered.offer_id then return false, "Stale pack offer" end
+  local definition = {}; for key, value in pairs(offered) do definition[key] = value end
+  definition.options = Shop.pack_effective_options(offered)
   local cost = Shop.pack_price(definition)
   if cost > 0 and (G.GAME.cash or 0) < cost then return false end
   local tech_options

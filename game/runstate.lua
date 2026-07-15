@@ -14,8 +14,66 @@ local RNG = require("game.rng")
 local Leads = require("game.leads")
 local TechLaws = require("game.tech_laws")
 local Consumables = require("game.consumables")
+local ShopDirectives = require("game.shop_directives")
 
 local RunState = {}
+
+local function bounded_integer(value, minimum)
+  value = tonumber(value)
+  if not value or value ~= value or value == math.huge or value == -math.huge then return minimum or 0 end
+  return math.max(minimum or 0, math.floor(value))
+end
+
+local function normalize_uid_array(value)
+  local out = {}
+  if type(value) ~= "table" then return out end
+  for _, uid in ipairs(value) do
+    if type(uid) == "number" and uid == uid and uid ~= math.huge and uid ~= -math.huge
+        and uid == math.floor(uid) and uid >= 1 then out[#out + 1] = uid end
+  end
+  return out
+end
+
+local function normalize_card_offer_state(g)
+  g.last_ship_uids = normalize_uid_array(g.last_ship_uids)
+  g.last_pivot_uids = normalize_uid_array(g.last_pivot_uids)
+  g.next_hand_uids = normalize_uid_array(g.next_hand_uids)
+  g._deck_revision = bounded_integer(g._deck_revision, 0)
+  g._deck_uid = bounded_integer(g._deck_uid, 0)
+  for _, entry in ipairs(type(g.master_deck) == "table" and g.master_deck or {}) do
+    if type(entry) == "table" then g._deck_uid = math.max(g._deck_uid, bounded_integer(entry.uid, 0)) end
+  end
+  g._shop_sequence = bounded_integer(g._shop_sequence, 0)
+  g._shop_offer_sequence = bounded_integer(g._shop_offer_sequence, 0)
+  if type(g.pack_option_passives) ~= "table" then g.pack_option_passives = {} end
+  if type(g.shop) ~= "table" then g.shop = nil; return end
+
+  local sh = g.shop
+  local shop_id = bounded_integer(sh.shop_id, 0)
+  if shop_id < 1 then g._shop_sequence = g._shop_sequence + 1; shop_id = g._shop_sequence end
+  g._shop_sequence, sh.shop_id = math.max(g._shop_sequence, shop_id), shop_id
+  sh.revision = math.max(1, bounded_integer(sh.revision, 1))
+  local seen = {}
+  local function normalize_offers(field, kind)
+    if type(sh[field]) ~= "table" then sh[field] = {}; return end
+    for index, offer in pairs(sh[field]) do
+      if type(index) ~= "number" or index < 1 or index ~= math.floor(index)
+          or (offer ~= false and type(offer) ~= "table") then
+        sh[field][index] = nil
+      elseif offer then
+        local id = offer.offer_id
+        if type(id) ~= "string" or id == "" or seen[id] then
+          g._shop_offer_sequence = g._shop_offer_sequence + 1
+          id = table.concat({ kind, tostring(shop_id), tostring(g._shop_offer_sequence) }, ":")
+          offer.offer_id = id
+        end
+        seen[id] = true
+      end
+    end
+  end
+  normalize_offers("founders", "founder")
+  normalize_offers("packs", "pack")
+end
 
 local function normalize_moonshot_state(g)
   local source = type(g.moonshot_state) == "table" and g.moonshot_state or {}
@@ -167,9 +225,10 @@ function RunState.new(opts)
     meters = {},                                          -- threshold-counter primitive (meters.lua)
     layers_seen_run = {}, app_types_shipped_run = {},     -- run sets (E3)
     run_best_arr = 0,
-    master_deck = {}, _deck_uid = 0, _deck_seeded = false, deck_thinned = {},   -- persistent run-owned tech deck (Track C A)
+    master_deck = {}, _deck_uid = 0, _deck_revision = 0, _deck_seeded = false, deck_thinned = {},   -- persistent run-owned tech deck (Track C A)
     consumables = {}, consumable_slots = 2, consumable_next_id = 0,              -- consumable inventory (Track C B)
     tech_law_state = {}, last_ship_app_key = nil, last_ship_coverage = 0,
+    last_ship_uids = {}, last_pivot_uids = {}, next_hand_uids = {},
     moonshot_state = { viral_moment_uses = 0, blitzscale_uses = 0 },
     last_shipped_app_key = nil, last_shipped_distinct_layers = 0,
     -- maturity / equity seams (E4) -------------------------------------------
@@ -177,6 +236,8 @@ function RunState.new(opts)
     equity_pct = 100, valuation = 0, ipo_value = 0, automated_founders = {}, raises_taken = 0, last_raise_ante = 0,
     founder_next_id = 0,
     founder_negotiation_seen = {}, founder_negotiation_next_id = 0,
+    shop_directives = { next_id=1, queue={}, history={} },
+    _shop_sequence = 0, _shop_offer_sequence = 0,
     app_levels = {}, tech_drafts_taken = 0,
     -- BLIND / ROUND scope (filled by set_blind / scoring) --------------------
     blind = nil, blind_idx = 1,
@@ -188,7 +249,7 @@ function RunState.new(opts)
     this_ship_arr = 0, previous_ship_arr = nil, last_ship_arr = nil, scoring_name = nil, this_app = nil,
     _new_app_types = 0, _new_layers = 0, _running_arr = 0, _armed_buffs = {},   -- ability primitives (B/A/D)
     founders_hired_run = 0, founders_hired_round = 0, cash_spent_round = 0, pivots_round = 0,
-    markets_seen_run = {}, _last_hand_ndl = 0, _passives = {}, passive_salary = 0,   -- ability primitives (1.5a/b)
+    markets_seen_run = {}, _last_hand_ndl = 0, _passives = {}, pack_option_passives = {}, passive_salary = 0,   -- ability primitives (1.5a/b)
     pending_dollars = 0,
     hire_idx = 0, pivot_count = 0, discard_count = 0,
     -- SHOP scope + voucher run-modifiers -------------
@@ -230,6 +291,8 @@ function RunState.serialize()
   TechLaws.normalize(g)
   normalize_moonshot_state(g)
   Consumables.normalize(g)
+  ShopDirectives.normalize(g)
+  normalize_card_offer_state(g)
   for k, v in pairs(g) do
     if k ~= "score" and k ~= "this_app" then out[k] = v end
   end
@@ -237,11 +300,11 @@ function RunState.serialize()
 end
 
 function RunState.deserialize(t)
-  G.GAME = t
+  G.GAME = type(t) == "table" and t or {}
   -- The current authored ruleset owns normalization from older plain-data run
   -- snapshots. Consumable normalization below safely drops malformed payloads.
   G.GAME.ruleset_version = MarketRules.ruleset_version
-  G.GAME.master_deck = G.GAME.master_deck or {}
+  G.GAME.master_deck = type(G.GAME.master_deck) == "table" and G.GAME.master_deck or {}
   G.GAME.lead_offers = G.GAME.lead_offers or {}
   G.GAME.lead_queue = G.GAME.lead_queue or {}
   G.GAME.lead_history = G.GAME.lead_history or {}
@@ -257,6 +320,8 @@ function RunState.deserialize(t)
   TechLaws.normalize(G.GAME)
   normalize_moonshot_state(G.GAME)
   Consumables.normalize(G.GAME)
+  ShopDirectives.normalize(G.GAME)
+  normalize_card_offer_state(G.GAME)
   require("game.founder_negotiation").normalize(G.GAME)
   require("game.founder_lifecycle").normalize_ids(G.GAME)
   if G.consumables then Consumables.rehydrate(G.GAME) end

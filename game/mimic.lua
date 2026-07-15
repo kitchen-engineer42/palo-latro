@@ -159,7 +159,11 @@ local function card_view(card, area, index)
     out.rental_salary_mult = terms.rental_salary_mult
     out.state = CardModel.founder_state_rows(center, card)
     out.action = FounderActions.descriptor(card)
-    if out.action then out.action.available = FounderActions.can_activate(card) end
+    if out.action then
+      out.action.target_uids = FounderActions.available_targets(card)
+      local target = out.action.target and out.action.target_uids[1] or nil
+      out.action.available = FounderActions.can_activate(card, target)
+    end
   elseif center.set == "TechCard" then
     out.layer = CardModel.tech_layer_label(card, center)
     out.edition = card.edition -- compatibility-only; not a Block 6 Tech modifier
@@ -274,12 +278,17 @@ local function shop_view()
   for i, offer in ipairs(sh.founders or {}) do
     if offer then
       founders[#founders + 1] = { index = i, key = offer.key, name = offer.name,
-        rarity = offer.rarity, edition = offer.edition, price = Shop.price(offer) }
+        rarity = offer.rarity, edition = offer.edition, price = Shop.price(offer),
+        offer_id = offer.offer_id, pinned = offer.pinned == true,
+        free = Shop.price(offer) == 0, directive_source = offer.directive_source }
     end
   end
   for i, pack in ipairs(sh.packs or {}) do
     if pack then packs[#packs + 1] = { index = i, key = pack.key, name = pack.name,
-      family = pack.family, size = pack.size, price = Shop.pack_price(pack) } end
+      family = pack.family, size = pack.size, price = Shop.pack_price(pack),
+      offer_id = pack.offer_id, pinned = pack.pinned == true,
+      effective_options = Shop.pack_effective_options(pack),
+      free = Shop.pack_price(pack) == 0, directive_source = pack.directive_source } end
   end
   local open
   if sh.pack_open then
@@ -316,6 +325,8 @@ local function shop_view()
     end
   end
   return {
+    shop_id = sh.shop_id,
+    revision = sh.revision,
     founders = founders,
     rerolls = sh.rerolls,
     reroll_cost = sh.reroll_cost,
@@ -381,6 +392,32 @@ local function add_consumable_actions(out, g)
   end
 end
 
+local function founder_activation_choices(cards)
+  local plain, targeted = {}, {}
+  for i, card in ipairs(cards or {}) do
+    local founder_id = card_id(card, "founder", i)
+    local descriptor = FounderActions.descriptor(card)
+    if descriptor and descriptor.target == "tech_uid" then
+      for _, target_uid in ipairs(FounderActions.available_targets(card)) do
+        if FounderActions.can_activate(card, target_uid) then
+          targeted[#targeted + 1] = { founder_id=founder_id, target_uid=target_uid }
+        end
+      end
+    elseif FounderActions.can_activate(card) then
+      plain[#plain + 1] = { founder_id=founder_id }
+    end
+  end
+  return plain, targeted
+end
+
+local function add_founder_activation_action(out, cards)
+  local plain, targeted = founder_activation_choices(cards)
+  if #plain > 0 then add_action(out, "activate_founder", { founder_id="string" }, plain) end
+  if #targeted > 0 then
+    add_action(out, "activate_founder", { founder_id="string", target_uid="integer" }, targeted)
+  end
+end
+
 local function lead_action_effect(lead)
   if not lead then return "claim Lead" end
   local name = tostring(lead.name or lead.key or "Lead")
@@ -435,13 +472,12 @@ function Mimic.legal_actions()
     end
     local founder_ids = ids(G.jokers and G.jokers.cards, "founder")
     if #founder_ids > 0 then
-      local fireable, distillable, activatable = {}, {}, {}
+      local fireable, distillable = {}, {}
       for i, card in ipairs(G.jokers.cards) do
         local cfg = card.ability and card.ability.config or {}
         local id = card_id(card, "founder", i)
         if not g.founders_locked and not cfg._unsellable then fireable[#fireable + 1] = id end
         if require("game.founder_lifecycle").can_distill(card) then distillable[#distillable + 1] = id end
-        if FounderActions.can_activate(card) then activatable[#activatable + 1] = id end
       end
       if #fireable > 0 then add_action(out, "fire_founder", { founder_id = "string" }, fireable) end
       if #distillable > 0 then add_action(out, "distill_founder", { founder_id = "string" }, distillable,
@@ -453,7 +489,7 @@ function Mimic.legal_actions()
         end
       end
       if #promotable > 0 then add_action(out, "promote_founder", { founder_id = "string" }, promotable) end
-      if #activatable > 0 then add_action(out, "activate_founder", { founder_id = "string" }, activatable) end
+      add_founder_activation_action(out, G.jokers.cards)
     end
     add_consumable_actions(out, g)
   elseif state == G.STATES.TARGET_SELECT then
@@ -538,21 +574,23 @@ function Mimic.legal_actions()
         if #choices > 0 then add_action(out, "pick_pack_option", { index = "integer" }, choices) end
       end
       add_action(out, "skip_pack")
-      local fireable, activatable = {}, {}
+      local fireable = {}
       for i, card in ipairs((G.jokers and G.jokers.cards) or {}) do
         local cfg = card.ability and card.ability.config or {}
         local id = card_id(card, "founder", i)
         if not g.founders_locked and not cfg._unsellable then fireable[#fireable + 1] = id end
-        if FounderActions.can_activate(card) then activatable[#activatable + 1] = id end
       end
       if #fireable > 0 then add_action(out, "fire_founder", { founder_id = "string" }, fireable) end
-      if #activatable > 0 then add_action(out, "activate_founder", { founder_id = "string" }, activatable) end
+      add_founder_activation_action(out, G.jokers.cards)
     else
       add_consumable_actions(out, g)
       for i, offer in ipairs((sh and sh.founders) or {}) do
         local price = offer and Shop.price(offer)
         if offer and #((G.jokers and G.jokers.cards) or {}) < Shop.founder_cap()
-            and (price == 0 or (g.cash or 0) >= price) then add_action(out, "buy_founder", { index = i }) end
+            and (price == 0 or (g.cash or 0) >= price) then
+          add_action(out, "buy_founder", { index=i, shop_id=sh.shop_id,
+            shop_revision=sh.revision, offer_id=offer.offer_id })
+        end
       end
       if sh and (g.cash or 0) >= (sh.reroll_cost or math.huge) then add_action(out, "reroll_shop") end
       if sh and sh.voucher and (g.cash or 0) >= Shop.voucher_price(sh.voucher) then add_action(out, "buy_voucher") end
@@ -560,18 +598,13 @@ function Mimic.legal_actions()
           and (g.cash or 0) >= Shop.consumable_price(sh.consumable) then add_action(out, "buy_consumable") end
       for i, pack in ipairs((sh and sh.packs) or {}) do
         local price = pack and Shop.pack_price(pack)
-        if pack and (price == 0 or (g.cash or 0) >= price) then add_action(out, "open_pack", { index = i }) end
-      end
-      add_raise_action(out, g)
-      local activatable = {}
-      for i, card in ipairs((G.jokers and G.jokers.cards) or {}) do
-        if FounderActions.can_activate(card) then
-          activatable[#activatable + 1] = card_id(card, "founder", i)
+        if pack and (price == 0 or (g.cash or 0) >= price) then
+          add_action(out, "open_pack", { index=i, shop_id=sh.shop_id,
+            shop_revision=sh.revision, offer_id=pack.offer_id })
         end
       end
-      if #activatable > 0 then
-        add_action(out, "activate_founder", { founder_id = "string" }, activatable)
-      end
+      add_raise_action(out, g)
+      add_founder_activation_action(out, G.jokers and G.jokers.cards)
       if not g.founders_locked then
         local choices = {}
         for i, card in ipairs((G.jokers and G.jokers.cards) or {}) do
@@ -767,7 +800,7 @@ local function dispatch(action)
     local before_count = #G.jokers.cards
     local fn = id == "fire_founder" and "fire" or id == "distill_founder" and "distill"
       or id == "activate_founder" and "activate_founder" or "promote"
-    local activated = G.FUNCS[fn]()
+    local activated = G.FUNCS[fn](id == "activate_founder" and action.target_uid or nil)
     if id == "activate_founder" then return activated and true or nil, "founder activation failed" end
     if id == "distill_founder" then return cfg._distilled and true or nil, "founder distillation failed" end
     return #G.jokers.cards < before_count and true or nil, "founder removal failed"
@@ -837,13 +870,19 @@ local function dispatch(action)
     return Round.choose_tech(i) and true or nil, "tech selection failed"
   elseif id == "buy_founder" then
     local i, err = index_arg(action, g.shop and g.shop.founders); if not i then return nil, err end
-    return Shop.buy(i) and true or nil, "founder purchase failed"
+    if type(action.offer_id) ~= "string" or type(action.shop_id) ~= "number"
+        or type(action.shop_revision) ~= "number" then return nil, "Founder offer tokens are required" end
+    return Shop.buy(i, action.offer_id, action.shop_revision, action.shop_id)
+      and true or nil, "founder purchase failed"
   elseif id == "reroll_shop" then return Shop.reroll() and true or nil, "shop reroll failed"
   elseif id == "buy_voucher" then return Shop.redeem() and true or nil, "voucher purchase failed"
   elseif id == "buy_consumable" then return Shop.buy_consumable() and true or nil, "consumable purchase failed"
   elseif id == "open_pack" then
     local i, err = index_arg(action, g.shop and g.shop.packs); if not i then return nil, err end
-    return Shop.open_pack(i) and true or nil, "pack open failed"
+    if type(action.offer_id) ~= "string" or type(action.shop_id) ~= "number"
+        or type(action.shop_revision) ~= "number" then return nil, "Pack offer tokens are required" end
+    return Shop.open_pack(i, action.offer_id, action.shop_revision, action.shop_id)
+      and true or nil, "pack open failed"
   elseif id == "pick_pack_option" then
     local i, err = index_arg(action, g.shop and g.shop.pack_open and g.shop.pack_open.options); if not i then return nil, err end
     return Shop.pack_pick(i) and true or nil, "pack pick failed"

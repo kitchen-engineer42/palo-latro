@@ -6,6 +6,7 @@ local Restorations = {}
 
 local MANIFESTS = {
   "data.gameplay.founder_restorations",
+  "data.gameplay.founder_restorations_cards",
 }
 
 function Restorations.apply(founders)

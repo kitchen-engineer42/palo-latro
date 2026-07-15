@@ -161,6 +161,10 @@ end
 -- Fixed traversal (mirrors the runtime contract). Logical chips/mult are computed in S; the display
 -- (G.GAME.score.*) is tweened to follow, serialized by the blocking event queue.
 function Scoring.evaluate_ship(played)
+  G.GAME.last_ship_uids = {}
+  for _, card in ipairs(played or {}) do
+    if card.uid then G.GAME.last_ship_uids[#G.GAME.last_ship_uids + 1] = card.uid end
+  end
   local coverage = Coverage.analyze(played)
   local app = AppTypes.classify(played)
   local ai_maturity = AIMaturity.evaluate(played, app)

@@ -30,6 +30,27 @@ local function roadmap_pack(kind)
   return kind == "tech_law" or kind == "moonshot"
 end
 
+local function shop_founder_layout(shop, width)
+  local slots = math.max(Shop.slots(), #(shop and shop.founders or {}))
+  local play_x, right_pad, side_card, gap = 352, 20, Card.W + 14, slots > 2 and 10 or 30
+  local available = width - play_x - right_pad - side_card
+  local card_w = math.min(160, math.floor((available - math.max(0, slots - 1) * gap) / math.max(1, slots)))
+  card_w = math.max(104, card_w)
+  local card_h = math.floor(card_w * 206 / 160 + 0.5)
+  local total = slots * card_w + math.max(0, slots - 1) * gap + side_card
+  local x0 = play_x + math.max(0, (width - play_x - right_pad - total) / 2)
+  return slots, card_w, card_h, gap, x0
+end
+
+local function shop_pack_layout(packs, width)
+  local count, play_x, gap = #(packs or {}), 352, 12
+  local available = width - play_x - 20
+  local item_w = count > 0 and math.min(220,
+    math.floor((available - math.max(0, count - 1) * gap) / count)) or 220
+  local total = count * item_w + math.max(0, count - 1) * gap
+  return item_w, play_x + math.max(0, (available - total) / 2), gap
+end
+
 -- One geometry projection feeds retained input targets and the immediate-mode
 -- term sheet. The modal deliberately starts to the right of the 332px run rail.
 local function founder_negotiation_geometry(W, H, view)
@@ -376,7 +397,7 @@ function UI.prepare()
         local total, gap, activate_w, fire_w = 154, 6, 88, 60
         local x = founder.VT.x + (founder.VT.w - total) / 2
         add("activate_founder", { x=x, y=y, w=activate_w, h=28 },
-          FounderActions.can_activate(founder), scope)
+          FounderActions.can_activate(founder, FounderActions.selected_target_uid(founder)), scope)
         add("fire", { x=x + activate_w + gap, y=y, w=fire_w, h=28 }, true, scope)
       else
         add("fire", { x = founder.VT.x + (founder.VT.w - 100) / 2,
@@ -425,8 +446,8 @@ function UI.prepare()
         end
       end
     else
-      local slots, cw, ch, gap, y0 = Shop.slots(), 160, 206, 30, 312
-      local x0 = (W - (Shop.slots() * cw + (Shop.slots() - 1) * gap)) / 2
+      local slots, cw, ch, gap, x0 = shop_founder_layout(sh, W)
+      local y0 = 312
       for i = 1, slots do
         local offer = sh.founders and sh.founders[i]
         if offer then
@@ -452,12 +473,13 @@ function UI.prepare()
         add("shop_redeem", { x = vx + vw - 108, y = vy + 12, w = 96, h = 30 },
           (GAME.cash or 0) >= Shop.voucher_price(sh.voucher))
       end
-      local packs, pw = sh.packs or {}, 220
-      local px0, py = (W - (#packs * pw + (#packs - 1) * 24)) / 2, y0 + ch + 174
+      local packs = sh.packs or {}
+      local pw, px0, pack_gap = shop_pack_layout(packs, W)
+      local py = y0 + ch + 174
       for i = 1, #packs do
         local pack = packs[i]
         local price = pack and Shop.pack_price(pack) or math.huge
-        add("shop_open_pack_" .. i, { x = px0 + (i - 1) * (pw + 24), y = py, w = pw, h = 44 },
+        add("shop_open_pack_" .. i, { x = px0 + (i - 1) * (pw + pack_gap), y = py, w = pw, h = 44 },
           pack and (price == 0 or (GAME.cash or 0) >= price))
       end
     end
@@ -503,7 +525,7 @@ function UI.prepare()
         local total, gap, activate_w, fire_w = 154, 6, 88, 60
         local x = founder.VT.x + (founder.VT.w - total) / 2
         add("activate_founder", { x=x, y=y, w=activate_w, h=30 },
-          FounderActions.can_activate(founder))
+          FounderActions.can_activate(founder, FounderActions.selected_target_uid(founder)))
         add("fire", { x=x + activate_w + gap, y=y, w=fire_w, h=30 }, true)
       else
         add("fire", { x = founder.VT.x + (founder.VT.w - 90) / 2,
@@ -881,7 +903,8 @@ function UI.render()
   if fsel then
     local descriptor = FounderActions.descriptor(fsel)
     if descriptor then
-      draw_button(UI.rects.activate_founder, descriptor.label, FounderActions.can_activate(fsel),
+      draw_button(UI.rects.activate_founder, descriptor.label,
+        FounderActions.can_activate(fsel, FounderActions.selected_target_uid(fsel)),
         UI.rects.activate_founder and point_in_rect(mx, my, UI.rects.activate_founder.x,
           UI.rects.activate_founder.y, UI.rects.activate_founder.w, UI.rects.activate_founder.h), G.FONTS.tiny)
     end
@@ -1417,7 +1440,8 @@ function UI.render_shop(W, H, GAME)
   if selF and selF.center then
     local descriptor = FounderActions.descriptor(selF)
     if descriptor then
-      draw_button(UI.rects.activate_founder, descriptor.label, FounderActions.can_activate(selF),
+      draw_button(UI.rects.activate_founder, descriptor.label,
+        FounderActions.can_activate(selF, FounderActions.selected_target_uid(selF)),
         UI.rects.activate_founder and point_in_rect(mx, my, UI.rects.activate_founder.x,
           UI.rects.activate_founder.y, UI.rects.activate_founder.w, UI.rects.activate_founder.h), G.FONTS.tiny)
     end
@@ -1641,9 +1665,8 @@ function UI.render_shop(W, H, GAME)
 
   draw_consumable_controls()
 
-  local slots = Shop.slots()
-  local cw, ch, gap, y0 = 160, 206, 30, 312            -- offers as founder faces (square art + banner; buy below)
-  local x0 = (W - (slots * cw + (slots - 1) * gap)) / 2
+  local slots, cw, ch, gap, x0 = shop_founder_layout(sh, W)
+  local y0 = 312                                        -- offers as founder faces (square art + banner; buy below)
   local hovc, hovx, hovy                               -- hovered offer → full-detail tooltip
   for i = 1, slots do
     local c = sh.founders[i]
@@ -1709,15 +1732,16 @@ function UI.render_shop(W, H, GAME)
   local packs = sh.packs or {}
   local np = #packs
   if np > 0 then
-    local pw = 220
-    local px0 = (W - (np * pw + (np - 1) * 24)) / 2
+    local pw, px0, pack_gap = shop_pack_layout(packs, W)
     local py = y0 + ch + 174
     for i = 1, np do
-      local x = px0 + (i - 1) * (pw + 24)
+      local x = px0 + (i - 1) * (pw + pack_gap)
       local r = { x = x, y = py, w = pw, h = 44 }
       UI.rects["shop_open_pack_" .. i] = r
       local pp = packs[i] and Shop.pack_price(packs[i]) or 0
-      local lbl = packs[i] and ((packs[i].name or "Pack") .. " $" .. pp) or "(opened)"
+      local bonus = packs[i] and math.max(0,
+        Shop.pack_effective_options(packs[i]) - (packs[i].options or 0)) or 0
+      local lbl = packs[i] and ((packs[i].name or "Pack") .. (bonus > 0 and (" +" .. bonus) or "") .. " $" .. pp) or "(opened)"
       draw_button(r, lbl, packs[i] and (pp == 0 or (GAME.cash or 0) >= pp),
         point_in_rect(mx, my, r.x, r.y, r.w, r.h), np >= 3 and G.FONTS.tiny or nil)
       local cvr = packs[i] and G.PACK_ART and (G.PACK_ART[packs[i].art_key]

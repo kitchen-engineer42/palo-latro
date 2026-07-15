@@ -18,6 +18,7 @@ local Guidance = require("game.guidance")
 local TechLifecycle = require("game.tech_lifecycle")
 local TechModifiers = require("game.tech_modifiers")
 local Leads = require("game.leads")
+local DeckTransactions = require("game.deck_transactions")
 
 local Round = {}
 
@@ -80,84 +81,28 @@ end
 -- generation API (E3): a founder `gen` op creates cards / modifies hand size mid-run.
 function G.GENERATE(kind, opts)
   opts = opts or {}
-  if kind == "tech_card" or kind == "specific_tech_card" or kind == "remove_card" or kind == "copy_card" then
-    local amount = math.max(0, math.floor(opts.amount == nil and 1 or opts.amount))
-    if amount ~= 1 then
-      for _ = 1, amount do
-        local one = {}; for k, v in pairs(opts) do one[k] = v end; one.amount = 1
-        G.GENERATE(kind, one)
-      end
-      return
-    end
-  end
   if kind == "hand_size" then
-    G.GAME.hand_size = math.max(1, (G.GAME.hand_size or 8) + (opts.amount or 1))
-  elseif kind == "tech_card" and G.deck then
-    local cands = {}
-    for _, c in ipairs(Centers.pool("TechCard")) do
-      if not c.signature and (not opts.layer or c.layer == opts.layer)
-          and Deck.candidate_allowed(c, G.GAME.market) then
-        cands[#cands + 1] = c
-      end
+    local amount = tonumber(opts.amount == nil and 1 or opts.amount)
+    if not amount or amount ~= amount or amount == math.huge or amount == -math.huge then
+      return { ok=false, reason="Hand-size generation amount must be finite", requested=0,
+        applied=0, changes={}, added_uids={}, removed_uids={} }
     end
-    if #cands > 0 then
-      local c = cands[RNG.int("generation", #cands)]
-      local e = Round.master_add(c.key, { source = "generated" })         -- A3: persist into master_deck
-      if e then
-        G.deck:emplace(Card({ center = c, face_down = true, uid = e.uid,
-          source = e.source, acquired_ante = e.acquired_ante,
-          migrated_from = e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
-      end
-    end
-  elseif kind == "specific_tech_card" and opts.key and G.deck then       -- inject a signature Tech on hire
-    local ce = Centers.get(opts.key)
-    if ce then
-      local e = Round.master_add(opts.key, {
-        source = "generated", signature_injection = ce.signature == true,
-      })                                                                 -- A3: signature Tech persists while hired
-      if e then
-        G.deck:emplace(Card({ center = ce, face_down = true, uid = e.uid,
-          source = e.source, acquired_ante = e.acquired_ante,
-          migrated_from = e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
-      end
-    end
-  elseif kind == "remove_tech_card" and opts.key then                    -- delete the signature Tech on fire
-    Round.master_remove_key(opts.key)                                    -- A3: drop from the deck-of-record too
-    for _, area in ipairs({ G.deck, G.hand, G.play }) do
-      if area and area.cards then
-        for i = #area.cards, 1, -1 do
-          if area.cards[i].center_key == opts.key then
-            local c = area.cards[i]; area:remove_card(c, true); c:remove()
-          end
-        end
-      end
-    end
-  elseif kind == "remove_card" and G.deck then                           -- 1.5c: remove one DECK card by `which`
-    local t
-    for _, c in ipairs(G.deck.cards) do
-      if not t then t = c
-      elseif opts.which == "highest" and c:get_users() > t:get_users() then t = c
-      elseif opts.which ~= "highest" and c:get_users() < t:get_users() then t = c end -- default: lowest effective Users
-    end
-    if t then Round.master_remove_uid(t.uid); G.deck:remove_card(t, true); if t.remove then t:remove() end end
-  elseif kind == "copy_card" and G.deck then                             -- 1.5c: duplicate one DECK card (by `which`)
-    local src
-    for _, c in ipairs(G.deck.cards) do
-      if not src then src = c
-      elseif opts.which == "highest" and c:get_users() > src:get_users() then src = c
-      elseif opts.which == "cheapest" and (c.base_users or 0) < (src.base_users or 0) then src = c
-      elseif opts.which ~= "highest" and opts.which ~= "cheapest" and c:get_users() < src:get_users() then src = c end
-    end
-    if src and src.center then
-      local e = Round.master_add(src.center_key or src.center.key, { source = "copied" }) -- A3: the copy persists too
-      if e then
-        G.deck:emplace(Card({ center = src.center, face_down = true, uid = e.uid,
-          source = e.source, acquired_ante = e.acquired_ante,
-          migrated_from = e.migrated_from, T = { x = G.deck.T.x, y = G.deck.T.y } }))
-      end
-    end
+    amount = math.floor(amount)
+    local before = G.GAME.hand_size or 8
+    G.GAME.hand_size = math.max(1, before + amount)
+    local applied = G.GAME.hand_size - before
+    return { ok=true, requested=amount, applied=applied, added_uids={}, removed_uids={},
+      changes={{ kind="hand_size", amount=applied }} }
   end
-  -- founder_shop: the shop module is a later seam
+
+  -- Backward-compatible public adapter: callers keep the historical generation
+  -- vocabulary while the authoritative mutation is now one planned transaction.
+  local tx_opts = {}; for key, value in pairs(opts) do tx_opts[key] = value end
+  if kind == "specific_tech_card" then
+    local center = tx_opts.key and Centers.get(tx_opts.key)
+    if center and center.signature then tx_opts.signature_injection = true end
+  end
+  return DeckTransactions.generate(kind, tx_opts, G.GAME)
 end
 
 -- Track C A1: the run owns a persistent deck-of-record (master_deck). Seed it once from the TechCard pool
@@ -328,7 +273,16 @@ end
 
 function Round.deal_to_full()
   while #G.hand.cards < G.GAME.hand_size and #G.deck.cards > 0 do
-    local c = G.deck.cards[#G.deck.cards]
+    local c
+    local queued = G.GAME.next_hand_uids or {}
+    while #queued > 0 and not c do
+      local uid = table.remove(queued, 1)
+      for _, candidate in ipairs(G.deck.cards) do
+        if candidate.uid == uid then c = candidate; break end
+      end
+    end
+    G.GAME.next_hand_uids = queued
+    c = c or G.deck.cards[#G.deck.cards]
     G.deck:remove_card(c, true)
     c.face_down = false                              -- flip face-up when drawn into hand
     G.hand:emplace(c)

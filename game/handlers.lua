@@ -62,6 +62,10 @@ G.FUNCS.pivot = function()
   if G.STATE ~= S.SELECTING_HAND or G.GAME.pivots_left <= 0 then return end
   local sel = G.hand:highlighted()
   if #sel < 1 then return end
+  G.GAME.last_pivot_uids = {}
+  for _, card in ipairs(sel) do
+    if card.uid then G.GAME.last_pivot_uids[#G.GAME.last_pivot_uids + 1] = card.uid end
+  end
   G.GAME.last_tech_modifier_discard = require("game.tech_modifiers").on_discard(sel)
   local full_hand_discarded = #sel == #G.hand.cards
   for _, c in ipairs(sel) do
@@ -149,12 +153,14 @@ local function selected_founder()
   for _, c in ipairs(G.jokers.cards) do if c.selected then return c end end
 end
 
-G.FUNCS.activate_founder = function()
+G.FUNCS.activate_founder = function(target_uid)
   if G.STATE ~= S.SELECTING_HAND and G.STATE ~= S.SHOP then return end
   if G.STATE == S.SHOP and Shop.negotiation_pending() then return end
   local card = selected_founder()
   if not card then return end
-  local ok = require("game.founder_actions").activate(card)
+  local Actions = require("game.founder_actions")
+  target_uid = target_uid or Actions.selected_target_uid(card)
+  local ok = Actions.activate(card, target_uid)
   if ok then Audio.play("hire") end
   return ok
 end
@@ -271,11 +277,15 @@ end
 G.FUNCS.shop_buy_1 = function() if G.STATE == S.SHOP then Shop.buy(1) end end
 G.FUNCS.shop_buy_2 = function() if G.STATE == S.SHOP then Shop.buy(2) end end
 G.FUNCS.shop_buy_3 = function() if G.STATE == S.SHOP then Shop.buy(3) end end
+G.FUNCS.shop_buy_4 = function() if G.STATE == S.SHOP then Shop.buy(4) end end
+G.FUNCS.shop_buy_5 = function() if G.STATE == S.SHOP then Shop.buy(5) end end
 G.FUNCS.shop_reroll = function() if G.STATE == S.SHOP then Shop.reroll() end end
 G.FUNCS.shop_redeem = function() if G.STATE == S.SHOP then Shop.redeem() end end
 G.FUNCS.shop_open_pack_1 = function() if G.STATE == S.SHOP then Shop.open_pack(1) end end
 G.FUNCS.shop_open_pack_2 = function() if G.STATE == S.SHOP then Shop.open_pack(2) end end
 G.FUNCS.shop_open_pack_3 = function() if G.STATE == S.SHOP then Shop.open_pack(3) end end
+G.FUNCS.shop_open_pack_4 = function() if G.STATE == S.SHOP then Shop.open_pack(4) end end
+G.FUNCS.shop_open_pack_5 = function() if G.STATE == S.SHOP then Shop.open_pack(5) end end
 G.FUNCS.pack_pick_1 = function() if G.STATE == S.SHOP then Shop.pack_pick(1) end end
 G.FUNCS.pack_pick_2 = function() if G.STATE == S.SHOP then Shop.pack_pick(2) end end
 G.FUNCS.pack_pick_3 = function() if G.STATE == S.SHOP then Shop.pack_pick(3) end end
