@@ -12,6 +12,8 @@ local DeckTransactions = require("game.deck_transactions")
 local TechMutation = require("game.tech_mutation")
 local ShopDirectives = require("game.shop_directives")
 local Centers = require("game.centers")
+local CompatSuppression = require("game.compat_suppression")
+local Compat = require("game.compat")
 
 local Interp = {}
 
@@ -392,6 +394,59 @@ local function prepare_mutation(spec, ctx, card)
   return found or false
 end
 
+-- Persistent compatibility rewrites use the same prepare/commit boundary as
+-- deck and card mutations. Selection is deterministic and the plan carries the
+-- suppression revision, so no Founder-local once token is consumed unless its
+-- run-state transition can actually publish.
+local function prepare_suppression(spec, ctx, card)
+  local found
+  for index, op in ipairs(spec.ops or {}) do
+    if op.k == "suppress_clash_edge" and (not op.gate or eval_gate(op.gate, ctx, card) == true) then
+      if found then return nil, "Founder clauses support one compatibility rewrite" end
+      if not (G and G.GAME) then return nil, "Compatibility run is unavailable" end
+      local source_key = card.center_key or (card.center and card.center.key)
+      local source_id = cfg(card)._founder_id or card.ID
+      local candidates, request
+      if op.mode == "deck_outstanding" then
+        candidates = CompatSuppression.deck_candidates(G.GAME)
+        request = { candidate_edges=candidates, amount=op.amount, cap=op.cap,
+          source_key=source_key, source_id=source_id }
+      elseif op.mode == "trigger_card_prior" then
+        local trigger = ctx.other_card
+        if not (trigger and trigger.uid) then return nil, "Compatibility trigger Tech is unavailable" end
+        if CompatSuppression.source_seen(G.GAME, source_key, source_id, trigger.uid) then
+          return nil, "Compatibility trigger Tech was already seen"
+        end
+        candidates = CompatSuppression.played_candidates(G.GAME, ctx.scoring_hand, { trigger_uid=trigger.uid })
+        request = { candidate_edges=candidates, amount=op.amount, seen_uids={trigger.uid},
+          source_key=source_key, source_id=source_id }
+      elseif op.mode == "cross_layer_hand" then
+        candidates = CompatSuppression.played_candidates(G.GAME, ctx.scoring_hand, { cross_layer=true })
+        request = { candidate_edges=candidates, amount=op.amount, fire_run=true,
+          source_key=source_key, source_id=source_id }
+      else
+        return nil, "Unknown compatibility rewrite mode"
+      end
+      local plan, reason = CompatSuppression.plan(G.GAME, request)
+      if not plan then return nil, reason end
+      found = { index=index, op=op, plan=plan }
+    end
+  end
+  return found or false
+end
+
+local function publish_suppression(prepared, ctx)
+  if not prepared then return false end
+  local result = CompatSuppression.commit(G.GAME, prepared.plan)
+  if not result.ok then return nil, result.reason end
+  if prepared.op.immediate == true and type(ctx.scoring_hand) == "table" then
+    local remaining = #Compat.clashes(ctx.scoring_hand, G.GAME)
+    local active = tonumber(G.GAME._clashes_active)
+    G.GAME._clashes_active = math.min(active or remaining, remaining)
+  end
+  return result
+end
+
 local function run_op(op, ctx, card, eff, deck_generation_committed, mutation_result)
   local k = op.k
   if k == "scale" then
@@ -472,6 +527,8 @@ local function run_op(op, ctx, card, eff, deck_generation_committed, mutation_re
         or (op.amount or 1)  -- 1.5a: scalable
       G.GAME._clashes_active = math.max(0, (G.GAME._clashes_active or 0) - math.floor(amt))
     end
+  elseif k == "suppress_clash_edge" then
+    -- Prepared and committed once for the whole clause before ordinary ops.
   elseif k == "gen" and G.GENERATE and not (deck_generation_committed and DECK_GENERATION[op.kind]) then
                                                                   -- generation: create cards mid-run (E3); amount scalable (E)
     local amt = op.per and ((op.base or 0) + (op.coef or 1) * help(op.per, ctx, card, op)) or (op.amount or 1)
@@ -628,6 +685,8 @@ local function run_spec(card, ctx, spec, spec_id)
   if not prepared then return nil end
   local prepared_mutation = prepare_mutation(spec, ctx, card)
   if prepared_mutation == nil then return nil end
+  local prepared_suppression = prepare_suppression(spec, ctx, card)
+  if prepared_suppression == nil then return nil end
   local deck_result
   if #prepared.operations > 0 then
     local plan = DeckTransactions.plan(G.GAME, { ops = prepared.operations })
@@ -645,6 +704,8 @@ local function run_spec(card, ctx, spec, spec_id)
       ctx.mutation_upgraded = mutation_result.mutation_upgraded
     end
   end
+  local suppression_result = publish_suppression(prepared_suppression, ctx)
+  if suppression_result == nil then return nil end
   for key, value in pairs(prepared.carry_updates) do c[key] = value end
   if once_token then c._once[once_token] = true end
 

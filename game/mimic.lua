@@ -22,6 +22,7 @@ local Leads = require("game.leads")
 local Consumables = require("game.consumables")
 local Moonshots = require("game.moonshots")
 local FounderActions = require("game.founder_actions")
+local CompatSuppression = require("game.compat_suppression")
 
 local function roadmap_pack(kind)
   return kind == "tech_law" or kind == "moonshot"
@@ -683,6 +684,7 @@ local function public_state()
       consumable_slots = g.consumable_slots, founder_slots = g.founder_slots,
       tech_law_state = copy_plain(g.tech_law_state),
       moonshot_state = copy_plain(g.moonshot_state),
+      compatibility = copy_plain(CompatSuppression.view(g)),
       last_ship_app_key = g.last_ship_app_key,
       last_ship_coverage = g.last_ship_coverage,
       market_best_fit = g.market_best_fit, last_market_reward = g.last_market_reward,

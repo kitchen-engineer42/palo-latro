@@ -28,6 +28,7 @@ local OPS = {
   scale=true, acc=true, grant=true, clear_clash=true, gen=true, meter=true,
   gamble=true, delete_card=true, clash_tax=true, arm=true,
   x_add=true, score_floor=true, state=true, spend=true, mutate=true, offer=true,
+  suppress_clash_edge=true,
 }
 local GATES = {
   layer_present=true, card_layer=true, app_type_in=true, count=true, ante=true, overkill=true,
@@ -70,6 +71,10 @@ local MUTATE_ENHANCEMENTS = { fresh_if_empty=true }
 local OFFER_KINDS = { founder=true, pack=true }
 local OFFER_TIMINGS = { next_shop=true, current_or_next=true }
 local OFFER_DURATIONS = { once=true, run=true }
+local CLASH_EDGE_MODES = {
+  deck_outstanding=true, trigger_card_prior=true, cross_layer_hand=true,
+}
+local CLASH_EDGE_ONCE_PER = { tech_uid=true, run=true }
 
 local TECH_LAW_RARITIES = { common=true, uncommon=true, rare=true }
 local TECH_LAW_PRICE_UNITS = { common=1, uncommon=2, rare=3 }
@@ -988,6 +993,37 @@ local function validate_offer(op, path, r, meter_names, owner)
   end
 end
 
+local function validate_suppress_clash_edge(op, path, r)
+  only_fields(op, { k=true, mode=true, select=true, amount=true, cap=true,
+    once_per=true, immediate=true }, path, r)
+  if not CLASH_EDGE_MODES[op.mode] then
+    add(r, path .. ".mode", "unknown clash-edge source " .. tostring(op.mode))
+    return
+  end
+  if op.select ~= "pair_key" then
+    add(r, path .. ".select", "must use deterministic pair_key order")
+  end
+  required_integer(op.amount, path .. ".amount", r, 1, 1)
+  if op.once_per ~= nil and not CLASH_EDGE_ONCE_PER[op.once_per] then
+    add(r, path .. ".once_per", "must be tech_uid or run")
+  end
+  if op.immediate ~= nil then required_boolean(op.immediate, path .. ".immediate", r) end
+
+  if op.mode == "deck_outstanding" then
+    required_integer(op.cap, path .. ".cap", r, 24, 24)
+    if op.once_per ~= nil then add(r, path .. ".once_per", "is not valid for deck_outstanding") end
+    if op.immediate ~= nil then add(r, path .. ".immediate", "is not valid for deck_outstanding") end
+  elseif op.mode == "trigger_card_prior" then
+    if op.once_per ~= "tech_uid" then add(r, path .. ".once_per", "must be tech_uid") end
+    if op.immediate ~= true then add(r, path .. ".immediate", "must be true") end
+    if op.cap ~= nil then add(r, path .. ".cap", "is not valid for trigger_card_prior") end
+  elseif op.mode == "cross_layer_hand" then
+    if op.once_per ~= "run" then add(r, path .. ".once_per", "must be run") end
+    if op.immediate ~= true then add(r, path .. ".immediate", "must be true") end
+    if op.cap ~= nil then add(r, path .. ".cap", "is not valid for cross_layer_hand") end
+  end
+end
+
 local function validate_op(op, path, r, meter_names, owner)
   if type(op) ~= "table" then add(r, path, "operation must be a table"); return end
   only_fields(op, {
@@ -998,11 +1034,14 @@ local function validate_op(op, path, r, meter_names, owner)
     overcut=true, stage=true, from=true, select=true, to=true, preserve=true,
     enhancement=true, users=true, compare=true, target=true, timing=true, count=true,
     rarity=true, free=true, discount=true, pack_key=true, options=true, duration=true, pinned=true,
+    once_per=true, immediate=true,
   }, path, r)
   if not text(op.k) or not OPS[op.k] then add(r, path .. ".k", "unknown operation " .. tostring(op.k)); return end
   if op.k ~= "mutate" then
     for _, field in ipairs({ "from", "select", "to", "preserve", "enhancement", "users", "compare" }) do
-      if op[field] ~= nil then add(r, path .. "." .. field, "is only valid for mutate") end
+      if op[field] ~= nil and not (op.k == "suppress_clash_edge" and field == "select") then
+        add(r, path .. "." .. field, "is only valid for mutate")
+      end
     end
     if op.target ~= nil and not (op.k == "scale" and op.per == "card_mark_age") then
       add(r, path .. ".target", "is only valid for mutate or card_mark_age scale")
@@ -1013,6 +1052,10 @@ local function validate_op(op, path, r, meter_names, owner)
         "options", "duration", "pinned" }) do
       if op[field] ~= nil then add(r, path .. "." .. field, "is only valid for offer") end
     end
+  end
+  if op.k ~= "suppress_clash_edge" then
+    if op.once_per ~= nil then add(r, path .. ".once_per", "is only valid for suppress_clash_edge") end
+    if op.immediate ~= nil then add(r, path .. ".immediate", "is only valid for suppress_clash_edge") end
   end
   if op.per == "card_mark_age" and not (op.k == "scale" and op.target == "relationship_bet") then
     add(r, path .. ".per", "card_mark_age is only valid for a relationship_bet scale")
@@ -1075,6 +1118,8 @@ local function validate_op(op, path, r, meter_names, owner)
       add(r, path .. ".amount", "legacy scalable tables are not allowed; use per/base/coef")
     end
     if op.amount ~= nil and op.amount ~= "all" and not number(op.amount) then add(r, path .. ".amount", "must be a number or all") end
+  elseif op.k == "suppress_clash_edge" then
+    validate_suppress_clash_edge(op, path, r)
   elseif op.k == "gen" then
     if not ({ tech_card=true, remove_card=true, copy_card=true, hand_size=true })[op.kind] then add(r, path .. ".kind", "unknown generation kind " .. tostring(op.kind)) end
     if op.amount ~= nil and (not number(op.amount) or op.amount < 0) then add(r, path .. ".amount", "must be a non-negative finite number") end
@@ -1123,7 +1168,32 @@ local function validate_dsl(dsl, path, r, owner)
     if spec.gate ~= nil then validate_gate(spec.gate, spec_path .. ".gate", r, meter_names, owner) end
     if spec.ops ~= nil then
       if not dense_array(spec.ops) then add(r, spec_path .. ".ops", "must be an array")
-      else for i, op in ipairs(spec.ops) do validate_op(op, spec_path .. ".ops[" .. i .. "]", r, meter_names, owner) end end
+      else
+        local compatibility_rewrites = 0
+        for i, op in ipairs(spec.ops) do
+          validate_op(op, spec_path .. ".ops[" .. i .. "]", r, meter_names, owner)
+          if type(op) == "table" and op.k == "suppress_clash_edge" then
+            compatibility_rewrites = compatibility_rewrites + 1
+            local required_hook = ({ deck_outstanding="blind_won",
+              trigger_card_prior="individual", cross_layer_hand="before" })[op.mode]
+            if required_hook and spec.hook ~= required_hook then
+              add(r, spec_path .. ".hook", op.mode .. " requires " .. required_hook)
+            end
+          end
+        end
+        if compatibility_rewrites > 0 and #spec.ops ~= 1 then
+          add(r, spec_path .. ".ops", "persistent compatibility rewrites must be isolated in their clause")
+        end
+        if compatibility_rewrites > 0 then
+          if spec.gate ~= nil then add(r, spec_path .. ".gate", "persistent compatibility rewrites own their exact trigger") end
+          if spec.once ~= nil or spec.once_scope ~= nil or spec.once_id ~= nil then
+            add(r, spec_path .. ".once", "persistent compatibility rewrites own their lifecycle")
+          end
+          if spec.retrigger ~= nil or spec.retrigger_target ~= nil then
+            add(r, spec_path .. ".retrigger", "persistent compatibility rewrites cannot retrigger")
+          end
+        end
+      end
     end
     if spec.retrigger ~= nil then
       if type(spec.retrigger) == "table" then

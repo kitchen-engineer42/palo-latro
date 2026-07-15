@@ -21,6 +21,7 @@ local Centers = require("game.centers")
 local Bosses = require("game.bosses")
 local AIMaturity = require("game.ai_maturity")
 local TechModifiers = require("game.tech_modifiers")
+local CompatSuppression = require("game.compat_suppression")
 
 local Scoring = {}
 local MAX_USERS, MAX_REVENUE = 10000000, 100000
@@ -207,6 +208,7 @@ function Scoring.evaluate_ship(played)
 
   -- compatibility (E3): count clashes (utility founders clear them in the `before` pass) + accrue tech-debt
   G.GAME._clashes_active = #Compat.clashes(played)
+  local clashes_before_founders = G.GAME._clashes_active
   for _, c in ipairs(played) do                                  -- the signature JIT schema clears ALL clashes
     if c.center and c.center.clears_clash then G.GAME._clashes_active = 0; break end
   end
@@ -352,6 +354,15 @@ function Scoring.evaluate_ship(played)
 
   -- compatibility penalty (clashes left after utility clears) + tech-debt drag (E3)
   local clashes_left = G.GAME._clashes_active or 0
+  local compat_view = CompatSuppression.view(G.GAME)
+  ScoreTrace.capture(G.GAME.score_trace, "compatibility", {
+    clashes_before_founders = clashes_before_founders,
+    active_clashes = clashes_left,
+    suppressed_this_ship = math.max(0, clashes_before_founders - clashes_left),
+    substitutes = subs,
+    persistent_edges = compat_view.count,
+    persistent_revision = compat_view.revision,
+  })
   local td = Meters.tier("tech_debt")
   if clashes_left > 0 or td > 0 then
     local penalty_before = score_snap(S)

@@ -15,6 +15,7 @@ local Leads = require("game.leads")
 local TechLaws = require("game.tech_laws")
 local Consumables = require("game.consumables")
 local ShopDirectives = require("game.shop_directives")
+local CompatSuppression = require("game.compat_suppression")
 
 local RunState = {}
 
@@ -237,6 +238,7 @@ function RunState.new(opts)
     founder_next_id = 0,
     founder_negotiation_seen = {}, founder_negotiation_next_id = 0,
     shop_directives = { next_id=1, queue={}, history={} },
+    compat_suppressions = { revision=0, edges={}, sources={}, journal={} },
     _shop_sequence = 0, _shop_offer_sequence = 0,
     app_levels = {}, tech_drafts_taken = 0,
     -- BLIND / ROUND scope (filled by set_blind / scoring) --------------------
@@ -292,6 +294,7 @@ function RunState.serialize()
   normalize_moonshot_state(g)
   Consumables.normalize(g)
   ShopDirectives.normalize(g)
+  CompatSuppression.normalize(g)
   normalize_card_offer_state(g)
   for k, v in pairs(g) do
     if k ~= "score" and k ~= "this_app" then out[k] = v end
@@ -321,6 +324,7 @@ function RunState.deserialize(t)
   normalize_moonshot_state(G.GAME)
   Consumables.normalize(G.GAME)
   ShopDirectives.normalize(G.GAME)
+  CompatSuppression.normalize(G.GAME)
   normalize_card_offer_state(G.GAME)
   require("game.founder_negotiation").normalize(G.GAME)
   require("game.founder_lifecycle").normalize_ids(G.GAME)
