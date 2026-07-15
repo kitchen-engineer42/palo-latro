@@ -378,24 +378,52 @@ end
 
 local function add_consumable_actions(out, g)
   for i, c in ipairs((G.consumables and G.consumables.cards) or {}) do
-    local action = { consumable_id = card_id(c, "consumable", i) }
-    local usable = Consumables.can_use(c, g)
+    local consumable_id = card_id(c, "consumable", i)
     if c.center and c.center.target then
       local count = c.center.target.n or 1
-      local choices = {}
+      local exact_choices, picked, target_ids = {}, {}, {}
       local targets, area_name, area = Consumables.target_candidates(c, g)
       for _, target in ipairs(targets) do
         for j, candidate in ipairs((area and area.cards) or {}) do
-          if candidate == target then choices[#choices + 1] = card_id(target, area_name, j); break end
+          if candidate == target then target_ids[target] = card_id(target, area_name, j); break end
         end
       end
-      usable = usable and #choices >= count
-      action.target_ids = { type = "array", count = count, choices = choices }
-      action.target_area = area_name
-      if c.center.target.layer then action.layer = { "Frontend", "Backend", "Data", "Infra", "AI" } end
+      local function add_exact_choice(layer)
+        local usable = Consumables.can_use(c, g, picked, layer and { layer = layer } or nil)
+        if not usable then return end
+        local choice = { consumable_id = consumable_id, target_ids = {} }
+        for _, target in ipairs(picked) do choice.target_ids[#choice.target_ids + 1] = target_ids[target] end
+        if layer then choice.layer = layer end
+        exact_choices[#exact_choices + 1] = choice
+      end
+      local function combinations(start_at)
+        if #picked == count then
+          if c.center.target.layer then
+            for _, layer in ipairs(Coverage.CORE_ORDER) do add_exact_choice(layer) end
+          else
+            add_exact_choice(nil)
+          end
+          return
+        end
+        local remaining = count - #picked
+        for target_index = start_at, #targets - remaining + 1 do
+          picked[#picked + 1] = targets[target_index]
+          combinations(target_index + 1)
+          picked[#picked] = nil
+        end
+      end
+      combinations(1)
+      if #exact_choices > 0 then
+        local params = { consumable_id = consumable_id,
+          target_ids = { type = "array", count = count }, target_area = area_name }
+        if c.center.target.layer then params.layer = "string" end
+        add_action(out, "use_consumable", params, exact_choices)
+      end
+    else
+      local usable = Consumables.can_use(c, g)
+      if usable then add_action(out, "use_consumable", { consumable_id = consumable_id }) end
     end
-    if usable then add_action(out, "use_consumable", action) end
-    add_action(out, "sell_consumable", { consumable_id = action.consumable_id })
+    add_action(out, "sell_consumable", { consumable_id = consumable_id })
   end
 end
 
@@ -1229,6 +1257,9 @@ local function dispatch(action)
         local target_ok, target_reason = Consumables.can_target(card, target, g)
         if not target_ok then return nil, target_reason or "invalid consumable target" end
       end
+      local selection_ok, selection_reason = Consumables.can_use(card, g, targets,
+        card.center.target.layer and { layer = action.layer } or nil)
+      if not selection_ok then return nil, selection_reason or "consumable selection cannot be used" end
       select_one(G.consumables.cards, "consumable", action.consumable_id)
       G.FUNCS.use_consumable()
       if not G.PENDING_CONSUMABLE then return nil, "consumable targeting failed" end

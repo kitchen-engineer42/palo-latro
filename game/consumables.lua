@@ -304,21 +304,24 @@ function Consumables.apply(center_or_card, targets, opts)
   return legacy_apply(plan)
 end
 
-function Consumables.can_use(card_or_center, game)
+function Consumables.can_use(card_or_center, game, targets, opts)
   local center = center_of(card_or_center)
   game = game_of(game)
   if not (center and game) then return false, "Unknown consumable" end
+  local explicit_targets = targets ~= nil
+  local use_opts = {}
+  for key, value in pairs(opts or {}) do use_opts[key] = value end
+  use_opts.game = game
+  use_opts.card = use_opts.card
+    or (type(card_or_center) == "table" and card_or_center.center and card_or_center or nil)
+  use_opts.payload = use_opts.payload or moonshot_payload(card_or_center)
   if moonshots().handles(center) then
-    return moonshots().can_use(card_or_center, game, nil, {
-      game = game, payload = moonshot_payload(card_or_center),
-    })
+    return moonshots().can_use(card_or_center, game, targets, use_opts)
   end
   if TechLaws.handles(center) then
-    return TechLaws.can_use(card_or_center, game, nil, { game = game,
-      card = type(card_or_center) == "table" and card_or_center.center and card_or_center or nil })
+    return TechLaws.can_use(card_or_center, game, targets, use_opts)
   end
-  local targets
-  if center.target then
+  if center.target and not explicit_targets then
     targets = {}
     for _, candidate in ipairs((G and G.hand and G.hand.cards) or {}) do
       if Consumables.can_target(center, candidate, game) then
@@ -327,10 +330,12 @@ function Consumables.can_use(card_or_center, game)
       end
     end
   end
-  local plan, reason = legacy_preflight(center, targets, { game = game })
-  if not plan and center.target and center.target.layer and targets and targets[1] then
+  local plan, reason = legacy_preflight(center, targets, use_opts)
+  if not plan and not explicit_targets and center.target and center.target.layer
+      and targets and targets[1] then
     for _, layer in ipairs({ "Frontend", "Backend", "Data", "Infra", "AI" }) do
-      plan, reason = legacy_preflight(center, targets, { game = game, layer = layer })
+      use_opts.layer = layer
+      plan, reason = legacy_preflight(center, targets, use_opts)
       if plan then break end
     end
   end
