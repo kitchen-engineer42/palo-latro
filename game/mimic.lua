@@ -28,6 +28,7 @@ local Preview = require("game.preview")
 local MAX_SHIP_PREVIEWS = 5
 local MAX_SHIP_PREVIEW_EVALUATIONS = 8192
 local MAX_AUDIT_EVENTS = 512
+local MAX_PUBLIC_AUDIT_EVENTS = 4
 
 local function roadmap_pack(kind)
   return kind == "tech_law" or kind == "moonshot"
@@ -656,7 +657,7 @@ end
 
 local function new_audit()
   return {
-    schema_version = 1,
+    schema_version = 2, -- counters + monotonic event_count + bounded recent_events projection
     counters = {
       events_dropped = 0,
       lead = { eligible_states = 0, skipped = 0 },
@@ -675,6 +676,7 @@ local function new_audit()
         vouchers_bought = 0, consumables_bought = 0, left = 0 },
     },
     events = {},
+    event_count = 0,
     _captured_steps = {},
   }
 end
@@ -686,19 +688,24 @@ end
 local function audit_view()
   local audit = audit_state()
   if not audit then return nil end
+  local recent = {}
+  local first = math.max(1, #audit.events - MAX_PUBLIC_AUDIT_EVENTS + 1)
+  for index = first, #audit.events do recent[#recent + 1] = copy_plain(audit.events[index]) end
   return {
     schema_version = audit.schema_version,
     counters = copy_plain(audit.counters),
-    events = copy_plain(audit.events),
+    event_count = audit.event_count,
+    recent_events = recent,
   }
 end
 
 local function audit_append(event)
   local audit = audit_state()
   if not audit then return end
+  audit.event_count = audit.event_count + 1
   if #audit.events >= MAX_AUDIT_EVENTS then
+    table.remove(audit.events, 1)
     audit.counters.events_dropped = audit.counters.events_dropped + 1
-    return
   end
   audit.events[#audit.events + 1] = event
 end
