@@ -26,30 +26,10 @@ local Consumables = require("game.consumables")
 local Moonshots = require("game.moonshots")
 local FounderActions = require("game.founder_actions")
 local CardStack = require("game.card_stack")
+local ShopView = require("game.shop_view")
 
 local function roadmap_pack(kind)
   return kind == "tech_law" or kind == "moonshot"
-end
-
-local function shop_founder_layout(shop, width)
-  local slots = math.max(Shop.slots(), #(shop and shop.founders or {}))
-  local play_x, right_pad, side_card, gap = 352, 20, Card.W + 14, slots > 2 and 10 or 30
-  local available = width - play_x - right_pad - side_card
-  local card_w = math.min(160, math.floor((available - math.max(0, slots - 1) * gap) / math.max(1, slots)))
-  card_w = math.max(104, card_w)
-  local card_h = math.floor(card_w * 206 / 160 + 0.5)
-  local total = slots * card_w + math.max(0, slots - 1) * gap + side_card
-  local x0 = play_x + math.max(0, (width - play_x - right_pad - total) / 2)
-  return slots, card_w, card_h, gap, x0
-end
-
-local function shop_pack_layout(packs, width)
-  local count, play_x, gap = #(packs or {}), 352, 12
-  local available = width - play_x - 20
-  local item_w = count > 0 and math.min(220,
-    math.floor((available - math.max(0, count - 1) * gap) / count)) or 220
-  local total = count * item_w + math.max(0, count - 1) * gap
-  return item_w, play_x + math.max(0, (available - total) / 2), gap
 end
 
 -- One geometry projection feeds retained input targets and the immediate-mode
@@ -294,7 +274,7 @@ function UI.prepare()
   local W, H, GAME = G.WINDOW.w, G.WINDOW.h, G.GAME
   local definitions, rects = {}, {}
   local order = 0
-  local function add(action, rect, enabled, scope, z)
+  local function add(action, rect, enabled, scope, z, command)
     if not (action and rect) then return end
     order = order + 1
     rects[action] = rect
@@ -302,6 +282,7 @@ function UI.prepare()
       id = "ui:" .. action, action = action, w = rect.w, h = rect.h,
       offset_x = rect.x, offset_y = rect.y, order = order, focus_order = order,
       z = z or 10, enabled = enabled ~= false, modal_scope = scope,
+      metadata = command and { command = command } or nil,
     })
   end
   local function selected(area)
@@ -391,7 +372,9 @@ function UI.prepare()
       add("founder_negotiation_walk_away", ng.walk, true, "negotiation", 60)
     else
     local drawer_scope = sh.pack_open and "pack" or nil
-    add("shop_tech_drawer", { x = 344, y = 264, w = 150, h = 34 }, true, drawer_scope, 55)
+    local drawer_rect = sh.pack_open and { x = 344, y = 264, w = 150, h = 34 }
+      or ShopView.layout(Shop.snapshot(), W, H).drawer_toggle
+    add("shop_tech_drawer", drawer_rect, true, drawer_scope, 55)
     local founder = selected(G.jokers)
     if founder and founder.center then
       local descriptor = FounderActions.descriptor(founder)
@@ -449,41 +432,27 @@ function UI.prepare()
         end
       end
     else
-      local slots, cw, ch, gap, x0 = shop_founder_layout(sh, W)
-      local y0 = 312
-      for i = 1, slots do
-        local offer = sh.founders and sh.founders[i]
-        if offer then
-          local price = Shop.price(offer)
-          add("shop_buy_" .. i, { x = x0 + (i - 1) * (cw + gap) + 10,
-          y = y0 + ch + 8, w = cw - 20, h = 32 },
-          (price == 0 or (GAME.cash or 0) >= price) and #G.jokers.cards < Shop.founder_cap())
-        end
+      local snapshot = Shop.snapshot()
+      local layout = ShopView.layout(snapshot, W, H)
+      for i, product in ipairs(layout.primary.founders) do
+        local offer = snapshot.offers.founders[i]
+        add("shop_buy_" .. i, product.control, offer and not offer.disabled_reason,
+          nil, nil, offer and offer.command)
       end
-      if sh.consumable then
-        local x = x0 + slots * (cw + gap)
-        add("shop_buy_consumable", { x = x, y = y0 + Card.H + 8, w = Card.W, h = 32 },
-          (GAME.cash or 0) >= Shop.consumable_price(sh.consumable)
-            and #((G.consumables and G.consumables.cards) or {}) < (GAME.consumable_slots or 2))
-      end
-      local reroll = sh.reroll_cost or Shop.reroll_cost(0)
-      add("shop_reroll", { x = W / 2 - 230, y = y0 + ch + 50, w = 200, h = 50 },
-        (GAME.cash or 0) >= reroll)
-      add("shop_continue", { x = W / 2 + 30, y = y0 + ch + 50, w = 200, h = 50 }, true)
-      if sh.voucher then
-        local vw, vy = 480, y0 + ch + 112
-        local vx = (W - vw) / 2
-        add("shop_redeem", { x = vx + vw - 108, y = vy + 12, w = 96, h = 30 },
-          (GAME.cash or 0) >= Shop.voucher_price(sh.voucher))
-      end
-      local packs = sh.packs or {}
-      local pw, px0, pack_gap = shop_pack_layout(packs, W)
-      local py = y0 + ch + 174
-      for i = 1, #packs do
-        local pack = packs[i]
-        local price = pack and Shop.pack_price(pack) or math.huge
-        add("shop_open_pack_" .. i, { x = px0 + (i - 1) * (pw + pack_gap), y = py, w = pw, h = 44 },
-          pack and (price == 0 or (GAME.cash or 0) >= price))
+      local roadmap = snapshot.offers.roadmap
+      add("shop_buy_consumable", layout.primary.roadmap.control,
+        roadmap and not roadmap.disabled_reason, nil, nil, roadmap and roadmap.command)
+      local voucher = snapshot.offers.voucher
+      add("shop_redeem", layout.voucher.control, voucher and not voucher.disabled_reason,
+        nil, nil, voucher and voucher.command)
+      add("shop_reroll", layout.actions.reroll,
+        not snapshot.commands.reroll.disabled_reason, nil, nil, snapshot.commands.reroll)
+      add("shop_continue", layout.actions.next_blind,
+        not snapshot.commands.next_blind.disabled_reason, nil, nil, snapshot.commands.next_blind)
+      for i, product in ipairs(layout.packs) do
+        local pack = snapshot.offers.packs[i]
+        add("shop_open_pack_" .. i, product.control, pack and not pack.disabled_reason,
+          nil, nil, pack and pack.command)
       end
     end
     end
@@ -564,6 +533,7 @@ function UI.prepare()
       enabled = target.enabled, visible = target.visible, scope = target.modal_scope,
       global = target.global, allow_when_locked = target.allow_when_locked,
       focusable = target.focusable,
+      command = target.metadata and target.metadata.command or nil,
     }
   end
   return UI.buttons
@@ -1688,98 +1658,116 @@ function UI.render_shop(W, H, GAME)
 
   draw_consumable_controls()
 
-  local slots, cw, ch, gap, x0 = shop_founder_layout(sh, W)
-  local y0 = 312                                        -- offers as founder faces (square art + banner; buy below)
-  local hovc, hovx, hovy                               -- hovered offer → full-detail tooltip
-  for i = 1, slots do
-    local c = sh.founders[i]
-    local x = x0 + (i - 1) * (cw + gap)
-    if c then
-      local hov = point_in_rect(mx, my, x, y0, cw, ch)
-      local rc = SHOP_RARITY_COL[c.rarity] or G.C.border
-      Card.draw_founder_face({ x = x, y = y0, w = cw, h = ch }, c, { border = hov and G.C.hover or rc, line_w = hov and 3 or 2 })
-      local rl = (c.rarity or ""):upper()                                    -- rarity pip (top-right corner)
-      chip(x + cw - (text_w(G.FONTS.tiny, rl) + 14) - 6, y0 + 5, rl, G.FONTS.tiny, rc, { 0, 0, 0, 1 })
-      if c.edition then chip(x + 6, y0 + 5, tostring(c.edition), G.FONTS.tiny, G.C.arr, { 0, 0, 0, 1 }) end
-      if c.stake_mod then UI.text(G.FONTS.tiny, tostring(c.stake_mod.kind), x, y0 + ch - 24, G.C.lose, cw, "center") end
-      local price, r = Shop.price(c), { x = x + 10, y = y0 + ch + 8, w = cw - 20, h = 32 }
-      UI.rects["shop_buy_" .. i] = r
-      local can = (price == 0 or (GAME.cash or 0) >= price) and #G.jokers.cards < Shop.founder_cap()
-      draw_button(r, "Buy $" .. price, can, point_in_rect(mx, my, r.x, r.y, r.w, r.h))
-      if hov then hovc, hovx, hovy = c, x + cw + 10, y0 end
+  local snapshot = Shop.snapshot()
+  local layout = ShopView.layout(snapshot, W, H)
+  local hovc, hovx, hovy, hovcc, hovccx, hovccy
+
+  local status = layout.actions.status
+  pixel_rect(status.x, status.y, status.w, status.h, { 0.08, 0.10, 0.15, 0.98 },
+    { chamfer = 5, border = G.C.border, line_w = 1, shadow = false })
+  UI.text(G.FONTS.small, "$" .. format_number(snapshot.cash), status.x + 10,
+    status.y + 9, G.C.win, status.w - 20, "left")
+  UI.text(G.FONTS.tiny, ("Payroll $%s  ·  Founders %d/%d"):format(
+    format_number(RunState.payroll_due()), snapshot.capacity.founders.used,
+    snapshot.capacity.founders.limit), status.x + 10, status.y + 43,
+    G.C.text_dim, status.w - 20, "left")
+
+  local rr, cont = layout.actions.reroll, layout.actions.next_blind
+  UI.rects.shop_reroll, UI.rects.shop_continue = rr, cont
+  draw_button(rr, "Reroll $" .. tostring(snapshot.commands.reroll.price or 0),
+    not snapshot.commands.reroll.disabled_reason,
+    point_in_rect(mx, my, rr.x, rr.y, rr.w, rr.h))
+  draw_button(cont, "Next Blind \194\187", not snapshot.commands.next_blind.disabled_reason,
+    point_in_rect(mx, my, cont.x, cont.y, cont.w, cont.h))
+
+  for i, product in ipairs(layout.primary.founders) do
+    local row, r, control = snapshot.offers.founders[i], product.product, product.control
+    UI.rects["shop_buy_" .. i] = control
+    if row and row.available then
+      local center = Centers.get(row.key) or row
+      local hov = point_in_rect(mx, my, r.x, r.y, r.w, r.h)
+      local rc = SHOP_RARITY_COL[row.rarity] or G.C.border
+      Card.draw_founder_face(r, center,
+        { border = hov and G.C.hover or rc, line_w = hov and 3 or 2 })
+      local rarity = (row.rarity or ""):upper()
+      chip(r.x + r.w - (text_w(G.FONTS.tiny, rarity) + 14) - 6, r.y + 5,
+        rarity, G.FONTS.tiny, rc, { 0, 0, 0, 1 })
+      if row.edition then chip(r.x + 6, r.y + 5, tostring(row.edition),
+        G.FONTS.tiny, G.C.arr, { 0, 0, 0, 1 }) end
+      draw_button(control, "Buy $" .. tostring(row.price), not row.disabled_reason,
+        point_in_rect(mx, my, control.x, control.y, control.w, control.h), G.FONTS.tiny)
+      if hov then hovc, hovx, hovy = center, r.x + r.w + 10, r.y end
     else
-      pixel_rect(x, y0, cw, ch, { 0.12, 0.12, 0.14, 1 }, { chamfer = 6, border = G.C.border, shadow = false, emboss = false })
-      lg.setColor(G.C.text_dim); lg.setFont(G.FONTS.small); lg.printf("(sold)", x, y0 + ch / 2 - 10, cw, "center")
+      pixel_rect(r.x, r.y, r.w, r.h, { 0.12, 0.12, 0.14, 1 },
+        { chamfer = 6, border = G.C.border, shadow = false, emboss = false })
+      UI.text(G.FONTS.small, "(sold)", r.x, r.y + r.h / 2 - 10,
+        G.C.text_dim, r.w, "center")
     end
   end
 
-  -- Track C B3: one Tech Law consumable offer per shop (rendered with the real card face)
-  local hovcc, hovccx, hovccy
-  local cc = sh.consumable
-  if cc then
-    local cx2 = x0 + slots * (cw + gap)
-    local hov2 = point_in_rect(mx, my, cx2, y0, Card.W, Card.H)
-    Card.draw_consumable_face({ x = cx2, y = y0, w = Card.W, h = Card.H }, cc,
-      { border = hov2 and G.C.hover or G.C.arr, line_w = hov2 and 3 or 2 })
-    local price2 = Shop.consumable_price(cc)
-    local r2 = { x = cx2, y = y0 + Card.H + 8, w = Card.W, h = 32 }
-    UI.rects.shop_buy_consumable = r2
-    local can2 = (GAME.cash or 0) >= price2 and ((G.consumables and #G.consumables.cards) or 0) < (GAME.consumable_slots or 2)
-    draw_button(r2, "Buy $" .. price2, can2, point_in_rect(mx, my, r2.x, r2.y, r2.w, r2.h))
-    if hov2 then hovcc, hovccx, hovccy = cc, cx2 + Card.W + 10, y0 end
+  local roadmap, roadmap_box = snapshot.offers.roadmap, layout.primary.roadmap
+  UI.rects.shop_buy_consumable = roadmap_box.control
+  if roadmap and roadmap.available then
+    local center = Centers.get(roadmap.key) or roadmap
+    local r, control = roadmap_box.product, roadmap_box.control
+    local hov = point_in_rect(mx, my, r.x, r.y, r.w, r.h)
+    Card.draw_consumable_face(r, center,
+      { border = hov and G.C.hover or G.C.arr, line_w = hov and 3 or 2 })
+    draw_button(control, "Buy $" .. tostring(roadmap.price), not roadmap.disabled_reason,
+      point_in_rect(mx, my, control.x, control.y, control.w, control.h), G.FONTS.tiny)
+    if hov then hovcc, hovccx, hovccy = center, r.x + r.w + 10, r.y end
+  else
+    local r = roadmap_box.product
+    pixel_rect(r.x, r.y, r.w, r.h, { 0.12, 0.12, 0.14, 1 },
+      { chamfer = 6, border = G.C.border, shadow = false, emboss = false })
+    UI.text(G.FONTS.small, "(sold)", r.x, r.y + r.h / 2 - 10, G.C.text_dim, r.w, "center")
   end
 
-  local rcost = sh.reroll_cost or Shop.reroll_cost(0)
-  local rr = { x = W / 2 - 230, y = y0 + ch + 50, w = 200, h = 50 }     -- +50: clear the per-offer Buy buttons
-  UI.rects.shop_reroll = rr
-  draw_button(rr, "Reroll $" .. rcost, (GAME.cash or 0) >= rcost, point_in_rect(mx, my, rr.x, rr.y, rr.w, rr.h))
-  local cont = { x = W / 2 + 30, y = y0 + ch + 50, w = 200, h = 50 }
-  UI.rects.shop_continue = cont
-  draw_button(cont, "Next Blind \194\187", true, point_in_rect(mx, my, cont.x, cont.y, cont.w, cont.h))
-
-  -- Investment voucher (one per shop)
-  local v = sh.voucher
-  if v then
-    local vw, vy = 480, y0 + ch + 112
-    local vx = (W - vw) / 2
-    pixel_rect(vx, vy, vw, 54, { 0.18, 0.16, 0.20, 1 }, { chamfer = 4, border = G.C.arr, line_w = 2 })
-    lg.setColor(G.C.text); lg.setFont(G.FONTS.small); lg.printf("INVESTMENT \194\183 " .. (v.name or ""), vx + 12, vy + 6, vw - 130, "left")
-    lg.setColor(G.C.text_dim); lg.setFont(G.FONTS.tiny); lg.printf(v.desc or "", vx + 12, vy + 28, vw - 130, "left")
-    local vp = Shop.voucher_price(v)
-    local vr = { x = vx + vw - 108, y = vy + 12, w = 96, h = 30 }
-    UI.rects.shop_redeem = vr
-    draw_button(vr, "Buy $" .. vp, (GAME.cash or 0) >= vp, point_in_rect(mx, my, vr.x, vr.y, vr.w, vr.h))
+  local voucher, voucher_box = snapshot.offers.voucher, layout.voucher
+  UI.rects.shop_redeem = voucher_box.control
+  local vr = voucher_box.product
+  pixel_rect(vr.x, vr.y, vr.w, vr.h, { 0.18, 0.16, 0.20, 1 },
+    { chamfer = 4, border = voucher and voucher.available and G.C.arr or G.C.border, line_w = 2 })
+  if voucher and voucher.available then
+    UI.text(G.FONTS.small, "INVESTMENT \194\183 " .. (voucher.name or ""),
+      vr.x + 12, vr.y + 6, G.C.text, vr.w - 130, "left")
+    UI.text(G.FONTS.tiny, voucher.description or "", vr.x + 12, vr.y + 28,
+      G.C.text_dim, vr.w - 130, "left")
+    local control = voucher_box.control
+    draw_button(control, "Buy $" .. tostring(voucher.price), not voucher.disabled_reason,
+      point_in_rect(mx, my, control.x, control.y, control.w, control.h), G.FONTS.tiny)
+  else
+    UI.text(G.FONTS.small, "INVESTMENT  ·  REDEEMED", vr.x, vr.y + 18,
+      G.C.text_dim, vr.w, "center")
   end
 
-  -- Booster row: Hiring (Founder), Playbook (App-Type), and Tech Law families.
-  local packs = sh.packs or {}
-  local np = #packs
-  if np > 0 then
-    local pw, px0, pack_gap = shop_pack_layout(packs, W)
-    local py = y0 + ch + 174
-    for i = 1, np do
-      local x = px0 + (i - 1) * (pw + pack_gap)
-      local r = { x = x, y = py, w = pw, h = 44 }
-      UI.rects["shop_open_pack_" .. i] = r
-      local pp = packs[i] and Shop.pack_price(packs[i]) or 0
-      local bonus = packs[i] and math.max(0,
-        Shop.pack_effective_options(packs[i]) - (packs[i].options or 0)) or 0
-      local lbl = packs[i] and ((packs[i].name or "Pack") .. (bonus > 0 and (" +" .. bonus) or "") .. " $" .. pp) or "(opened)"
-      draw_button(r, lbl, packs[i] and (pp == 0 or (GAME.cash or 0) >= pp),
-        point_in_rect(mx, my, r.x, r.y, r.w, r.h), np >= 3 and G.FONTS.tiny or nil)
-      local cvr = packs[i] and G.PACK_ART and (G.PACK_ART[packs[i].art_key]
-        or G.PACK_ART[packs[i].fallback_art] or G.PACK_ART.hiring_round)
-      if cvr and np <= 2 then   -- three-pack Lead rows need the full button width for readable names
-        local cs = (r.h - 4) / cvr:getHeight()
-        lg.setColor(1, 1, 1, 1); lg.draw(cvr, r.x + r.w - cvr:getWidth() * cs - 3, r.y + 2, 0, cs, cs)
+  for i, product in ipairs(layout.packs) do
+    local row, r, control = snapshot.offers.packs[i], product.product, product.control
+    UI.rects["shop_open_pack_" .. i] = control
+    pixel_rect(r.x, r.y, r.w, r.h, { 0.08, 0.10, 0.14, 1 },
+      { chamfer = 6, border = row and row.available and G.C.arr or G.C.border, line_w = 2 })
+    if row and row.available then
+      local cvr = G.PACK_ART and (G.PACK_ART[row.art_key]
+        or G.PACK_ART[row.fallback_art] or G.PACK_ART.hiring_round)
+      if cvr then
+        local iw, ih = cvr:getDimensions()
+        local scale = math.min(r.w / iw, r.h / ih)
+        lg.setColor(1, 1, 1, 1)
+        lg.draw(cvr, r.x + (r.w - iw * scale) / 2,
+          r.y + (r.h - ih * scale) / 2, 0, scale, scale)
+      else
+        UI.text(G.FONTS.small, row.name or "Pack", r.x + 6, r.y + 32,
+          G.C.arr, r.w - 12, "center")
       end
+      local bonus = math.max(0, (row.options or 0) - ((sh.packs[i] and sh.packs[i].options) or 0))
+      local label = "Open $" .. tostring(row.price) .. (bonus > 0 and ("  +" .. bonus) or "")
+      draw_button(control, label, not row.disabled_reason,
+        point_in_rect(mx, my, control.x, control.y, control.w, control.h), G.FONTS.tiny)
+    else
+      UI.text(G.FONTS.small, "(opened)", r.x, r.y + r.h / 2 - 10,
+        G.C.text_dim, r.w, "center")
     end
   end
-
-  local payroll = RunState.payroll_due()
-  lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text_dim)
-  lg.printf("Your founders: " .. #G.jokers.cards .. "/" .. Shop.founder_cap() ..
-    "   payroll due $" .. format_number(payroll), 0, y0 + ch + 230, W, "center")
   draw_shop_tech_drawer(W, H, sh, mx, my)
   if not sh.tech_drawer_open then
     if hovc then UI.tip_box(hovx, hovy, hovc.name, Card.effect_brief(hovc) .. "   \194\183   " .. (hovc.rarity or ""), (hovc.ability_name or "") .. "\n\n" .. (hovc.ability_text or hovc.hint or "")) end

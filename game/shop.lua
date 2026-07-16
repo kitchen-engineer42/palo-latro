@@ -49,6 +49,61 @@ local function next_offer_id(kind)
     tostring(next_sequence("_shop_offer_sequence")) }, ":")
 end
 
+local function plain_copy(value, seen)
+  local kind = type(value)
+  if kind ~= "table" then return kind == "function" and nil or value end
+  seen = seen or {}
+  if seen[value] then return nil end
+  seen[value] = true
+  local out = {}
+  for key, item in pairs(value) do
+    if type(key) == "string" or type(key) == "number" then
+      local copied = plain_copy(item, seen)
+      if copied ~= nil then out[key] = copied end
+    end
+  end
+  seen[value] = nil
+  return out
+end
+
+local function shop_command(action, sh, offer, index, disabled_reason)
+  return {
+    action = action,
+    payload = {
+      shop_id = sh.shop_id, shop_revision = sh.revision,
+      session_token = ("shop:%s:%s"):format(tostring(sh.shop_id), tostring(sh.revision)),
+      offer_id = offer and offer.offer_id or nil, index = index,
+    },
+    disabled_reason = disabled_reason,
+  }
+end
+
+local function command_valid(sh, expected_offer_id, expected_revision, expected_shop_id,
+    expected_session_token, offer, label)
+  if not sh then return false, "Shop is closed" end
+  if expected_shop_id ~= nil and expected_shop_id ~= sh.shop_id then
+    return false, "Stale Shop identity"
+  end
+  if expected_revision ~= nil and expected_revision ~= sh.revision then
+    return false, "Stale Shop revision"
+  end
+  local current_token = ("shop:%s:%s"):format(tostring(sh.shop_id), tostring(sh.revision))
+  if expected_session_token ~= nil and expected_session_token ~= current_token then
+    return false, "Stale Shop session"
+  end
+  if expected_offer_id ~= nil and (not offer or expected_offer_id ~= offer.offer_id) then
+    return false, "Stale " .. tostring(label or "Shop") .. " offer"
+  end
+  return true
+end
+
+function Shop.validate_command(payload, offer)
+  payload = payload or {}
+  local sh = G.GAME and G.GAME.shop
+  return command_valid(sh, payload.offer_id, payload.shop_revision, payload.shop_id,
+    payload.session_token, offer, "Shop")
+end
+
 local function negotiation_pending()
   return G.GAME and FounderNegotiation.normalize(G.GAME) ~= nil
 end
@@ -151,14 +206,120 @@ function Shop.consumable_sell_value(c)
   return Pricing.sell_value(c, Shop.consumable_price(center))
 end
 
+-- Immutable-with-respect-to-runtime product projection.  Every nested value is copied, so consumers
+-- may retain or even modify a snapshot without changing the authoritative Shop or center catalog.
+function Shop.snapshot()
+  local game, sh = G.GAME, G.GAME and G.GAME.shop
+  if not (game and sh) then return nil end
+  local founder_cap = effective_founder_cap(game)
+  local founder_used = #((G.jokers and G.jokers.cards) or {})
+  local roadmap_used = #((G.consumables and G.consumables.cards) or {})
+  local roadmap_cap = game.consumable_slots or 2
+  local snapshot = {
+    shop_id = sh.shop_id, revision = sh.revision,
+    session_token = ("shop:%s:%s"):format(tostring(sh.shop_id), tostring(sh.revision)),
+    cash = game.cash or 0, ante = game.ante or 1,
+    capacity = {
+      founders = { used = founder_used, limit = founder_cap,
+        offer_slots = math.max(Shop.slots(), #(sh.founders or {})) },
+      roadmaps = { used = roadmap_used, limit = roadmap_cap },
+      packs = { offer_slots = math.max(Shop.pack_slots(), #(sh.packs or {})), limit = MAX_PACK_OFFERS },
+    },
+    offers = { founders = {}, packs = {} },
+    pack_open = sh.pack_open and true or false,
+    negotiation_open = negotiation_pending(),
+    tech_drawer_open = sh.tech_drawer_open == true,
+  }
+
+  for index = 1, snapshot.capacity.founders.offer_slots do
+    local offer = sh.founders and sh.founders[index]
+    local disabled
+    if not offer then disabled = "Sold"
+    elseif founder_used >= founder_cap then disabled = "Founder slots are full"
+    elseif Shop.price(offer) > 0 and (game.cash or 0) < Shop.price(offer) then disabled = "Not enough Cash" end
+    local center = offer and (offer.center or offer)
+    snapshot.offers.founders[index] = {
+      index = index, available = offer and true or false,
+      offer_id = offer and offer.offer_id or nil,
+      key = center and center.key or nil, name = center and center.name or nil,
+      short = center and center.short or nil, rarity = center and center.rarity or nil,
+      edition = offer and offer.edition or nil, stake_mod = plain_copy(offer and offer.stake_mod),
+      price = offer and Shop.price(offer) or nil, disabled_reason = disabled,
+      command = shop_command("buy_founder", sh, offer, index, disabled),
+    }
+  end
+
+  local roadmap, roadmap_disabled = sh.consumable, nil
+  if not roadmap then roadmap_disabled = "Sold"
+  elseif roadmap_used >= roadmap_cap then roadmap_disabled = "Roadmap is full"
+  elseif Shop.consumable_price(roadmap) > 0
+      and (game.cash or 0) < Shop.consumable_price(roadmap) then roadmap_disabled = "Not enough Cash" end
+  snapshot.offers.roadmap = {
+    available = roadmap and true or false, offer_id = roadmap and roadmap.offer_id or nil,
+    key = roadmap and roadmap.key or nil, name = roadmap and roadmap.name or nil,
+    kind = roadmap and roadmap.kind or nil, rarity = roadmap and roadmap.rarity or nil,
+    description = roadmap and roadmap.desc or nil,
+    price = roadmap and Shop.consumable_price(roadmap) or nil,
+    disabled_reason = roadmap_disabled,
+    command = shop_command("buy_roadmap", sh, roadmap, 1, roadmap_disabled),
+  }
+
+  local voucher, voucher_disabled = sh.voucher, nil
+  if not voucher then voucher_disabled = "Sold"
+  elseif Shop.voucher_price(voucher) > 0
+      and (game.cash or 0) < Shop.voucher_price(voucher) then voucher_disabled = "Not enough Cash" end
+  snapshot.offers.voucher = {
+    available = voucher and true or false, offer_id = voucher and voucher.offer_id or nil,
+    key = voucher and voucher.key or nil, name = voucher and voucher.name or nil,
+    description = voucher and voucher.desc or nil,
+    price = voucher and Shop.voucher_price(voucher) or nil, disabled_reason = voucher_disabled,
+    command = shop_command("buy_voucher", sh, voucher, 1, voucher_disabled),
+  }
+
+  local pack_slots = snapshot.capacity.packs.offer_slots
+  for index = 1, pack_slots do
+    local offer, disabled = sh.packs and sh.packs[index], nil
+    if not offer then disabled = "Opened"
+    elseif sh.pack_open then disabled = "Finish the open pack"
+    elseif Shop.pack_price(offer) > 0
+        and (game.cash or 0) < Shop.pack_price(offer) then disabled = "Not enough Cash" end
+    snapshot.offers.packs[index] = {
+      index = index, available = offer and true or false,
+      offer_id = offer and offer.offer_id or nil,
+      key = offer and offer.key or nil, name = offer and offer.name or nil,
+      family = offer and offer.family or nil, size = offer and offer.size or nil,
+      art_key = offer and offer.art_key or nil, fallback_art = offer and offer.fallback_art or nil,
+      options = offer and Shop.pack_effective_options(offer) or nil,
+      picks = offer and offer.picks or nil, price = offer and Shop.pack_price(offer) or nil,
+      disabled_reason = disabled,
+      command = shop_command("open_pack", sh, offer, index, disabled),
+    }
+  end
+
+  local reroll_disabled = sh.pack_open and "Finish the open pack"
+    or negotiation_pending() and "Finish the negotiation"
+    or ((game.cash or 0) < (sh.reroll_cost or 0) and "Not enough Cash" or nil)
+  local next_disabled = sh.pack_open and "Finish or skip the open pack"
+    or negotiation_pending() and "Finish the negotiation" or nil
+  snapshot.commands = {
+    reroll = shop_command("reroll_shop", sh, nil, nil, reroll_disabled),
+    next_blind = shop_command("next_blind", sh, nil, nil, next_disabled),
+  }
+  snapshot.commands.reroll.price = sh.reroll_cost or 0
+  return snapshot
+end
+
 local function roll_consumable()
   return TechLaws.roll(law_shop_random) or false
 end
 
-function Shop.buy_consumable()
+function Shop.buy_consumable(expected_offer_id, expected_revision, expected_shop_id, expected_session_token)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
   local c = sh and sh.consumable
+  local valid, stale_reason = command_valid(sh, expected_offer_id, expected_revision,
+    expected_shop_id, expected_session_token, c, "Roadmap")
+  if not valid then return false, stale_reason end
   if not c then return false end
   local cost = Shop.consumable_price(c)
   if (G.GAME.cash or 0) < cost then return false end
@@ -168,6 +329,7 @@ function Shop.buy_consumable()
   if not entry then return false end                              -- inventory full → don't charge
   if not FounderEvents.spend(G.GAME, cost, "consumable", { center_key = c.key }) then return false end
   sh.consumable = false
+  sh.revision = (sh.revision or 1) + 1
   Profile.discover(c.key)
   Audio.play("hire")
   return true
@@ -344,12 +506,24 @@ end
 function Shop.enter()
   local voucher = false
   if G.GAME.voucher_offer_ante ~= G.GAME.ante then voucher = roll_voucher(); G.GAME.voucher_offer_ante = G.GAME.ante end
+  local voucher_offer
+  if voucher then
+    voucher_offer = {}; for key, value in pairs(voucher) do voucher_offer[key] = value end
+    voucher_offer.center = voucher
+  end
+  local consumable_center, consumable_offer = roll_consumable(), nil
+  if consumable_center then
+    consumable_offer = {}; for key, value in pairs(consumable_center) do consumable_offer[key] = value end
+    consumable_offer.center = consumable_center
+  end
   G.GAME.shop = { shop_id = next_sequence("_shop_sequence"), revision = 1,
                   founders = {}, rerolls = 0, reroll_cost = Shop.reroll_cost(0),
-                  voucher = voucher, voucher_free = voucher and G.GAME.free_voucher_pending or false,
-                  consumable = roll_consumable(), packs = {}, pack_open = nil,
+                  voucher = voucher_offer or false, voucher_free = voucher and G.GAME.free_voucher_pending or false,
+                  consumable = consumable_offer or false, packs = {}, pack_open = nil,
                   tech_drawer_open = false }
   if G.GAME.shop.voucher_free then G.GAME.free_voucher_pending = false end
+  if G.GAME.shop.voucher then G.GAME.shop.voucher.offer_id = next_offer_id("voucher") end
+  if G.GAME.shop.consumable then G.GAME.shop.consumable.offer_id = next_offer_id("roadmap") end
   roll_offers()
   local seen = {}
   for i = 1, (G.GAME.shop_pack_slots or 2) do
@@ -382,10 +556,13 @@ function Shop.enter()
 end
 
 -- redeem the offered voucher: pay, apply its run-modifier generically, mark owned (one-time).
-function Shop.redeem()
+function Shop.redeem(expected_offer_id, expected_revision, expected_shop_id, expected_session_token)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
   local v = sh and sh.voucher
+  local valid, stale_reason = command_valid(sh, expected_offer_id, expected_revision,
+    expected_shop_id, expected_session_token, v, "Investment")
+  if not valid then return false, stale_reason end
   if not v then return false end
   local cost = Shop.voucher_price(v)
   if (G.GAME.cash or 0) < cost then return false end
@@ -394,13 +571,17 @@ function Shop.redeem()
   if m.field then G.GAME[m.field] = (G.GAME[m.field] or 0) + (m.delta or 0) end
   G.GAME.vouchers_owned[v.key] = true
   sh.voucher = false
+  sh.revision = (sh.revision or 1) + 1
   Audio.play("hire")
   return true
 end
 
-function Shop.reroll()
+function Shop.reroll(expected_revision, expected_shop_id, expected_session_token)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
+  local valid, stale_reason = command_valid(sh, nil, expected_revision, expected_shop_id,
+    expected_session_token, nil, "Reroll")
+  if not valid then return false, stale_reason end
   if not sh or (G.GAME.cash or 0) < sh.reroll_cost then return false end
   if not FounderEvents.spend(G.GAME, sh.reroll_cost, "reroll") then return false end
   sh.rerolls = sh.rerolls + 1
@@ -411,15 +592,14 @@ function Shop.reroll()
   return true
 end
 
-function Shop.buy(idx, expected_offer_id, expected_revision, expected_shop_id)
+function Shop.buy(idx, expected_offer_id, expected_revision, expected_shop_id, expected_session_token)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
-  if not sh then return false end
-  if expected_shop_id ~= nil and expected_shop_id ~= sh.shop_id then return false, "Stale Shop identity" end
-  if expected_revision ~= nil and expected_revision ~= sh.revision then return false, "Stale Shop revision" end
   local offer = sh and sh.founders[idx]
+  local valid, stale_reason = command_valid(sh, expected_offer_id, expected_revision,
+    expected_shop_id, expected_session_token, offer, "Founder")
+  if not valid then return false, stale_reason end
   if not offer then return false end
-  if expected_offer_id ~= nil and expected_offer_id ~= offer.offer_id then return false, "Stale Founder offer" end
   if #G.jokers.cards >= Shop.founder_cap() then
     Guidance.emit("founder_slots_full", { slots = Shop.founder_cap() })
     return false
@@ -505,14 +685,19 @@ local function emplace_founder(c, sell_basis, edition, source_i, source_count, a
   return jk
 end
 
-function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop_id)
+local function consume_pack_offer(sh, idx)
+  sh.packs[idx] = false
+  sh.revision = (sh.revision or 1) + 1
+end
+
+function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop_id, expected_session_token)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
-  if not sh or not sh.packs[idx] then return false end
-  local offered = sh.packs[idx]
-  if expected_shop_id ~= nil and expected_shop_id ~= sh.shop_id then return false, "Stale Shop identity" end
-  if expected_revision ~= nil and expected_revision ~= sh.revision then return false, "Stale Shop revision" end
-  if expected_offer_id ~= nil and expected_offer_id ~= offered.offer_id then return false, "Stale pack offer" end
+  local offered = sh and sh.packs[idx]
+  local valid, stale_reason = command_valid(sh, expected_offer_id, expected_revision,
+    expected_shop_id, expected_session_token, offered, "pack")
+  if not valid then return false, stale_reason end
+  if not offered then return false end
   local definition = {}; for key, value in pairs(offered) do definition[key] = value end
   definition.options = Shop.pack_effective_options(offered)
   local cost = Shop.pack_price(definition)
@@ -551,7 +736,7 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
   end
   if not FounderEvents.spend(G.GAME, cost, "pack", { pack_key = definition.key, family = definition.family }) then return false end
   if definition.family == "tech_evaluation" then
-    sh.packs[idx] = false
+    consume_pack_offer(sh, idx)
     local targets = TechEvaluation.deprecated_targets(G.GAME)
     sh.pack_open = { kind = "tech_evaluation", name = definition.name, pack_key = definition.key,
       art_key = definition.art_key, fallback_art = definition.fallback_art,
@@ -571,7 +756,7 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
       local app = apps[pack_random(#apps)]
       if not seen[app.key] then seen[app.key] = true; opts[#opts + 1] = app end
     end
-    sh.packs[idx] = false
+    consume_pack_offer(sh, idx)
     sh.pack_open = { kind = "playbook", name = definition.name, pack_key = definition.key,
       art_key = definition.art_key, fallback_art = definition.fallback_art,
       options = opts, picks_left = definition.picks }
@@ -591,7 +776,7 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
       seen[c.key] = true
       opts[#opts + 1] = c
     end
-    sh.packs[idx] = false
+    consume_pack_offer(sh, idx)
     sh.pack_open = { kind = "tech_law", name = definition.name, pack_key = definition.key,
       art_key = definition.art_key, fallback_art = definition.fallback_art,
       options = opts, picks_left = definition.picks }
@@ -603,7 +788,7 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
     return true
   end
   if definition.family == "moonshot" then
-    sh.packs[idx] = false
+    consume_pack_offer(sh, idx)
     sh.pack_open = { kind = "moonshot", name = definition.name, pack_key = definition.key,
       art_key = definition.art_key, fallback_art = definition.fallback_art,
       options = moonshot_options, picks_left = definition.picks }
@@ -633,7 +818,7 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
       opts[#opts + 1] = option
     end
   end
-  sh.packs[idx] = false
+  consume_pack_offer(sh, idx)
   sh.pack_open = { kind = "hiring", name = definition.name, pack_key = definition.key,
     art_key = definition.art_key, fallback_art = definition.fallback_art,
     options = opts, picks_left = definition.picks }

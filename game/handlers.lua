@@ -274,22 +274,43 @@ G.FUNCS.fire = function()
 end
 
 -- shop: buy a founder offer / reroll / leave for the next blind
-G.FUNCS.shop_buy_1 = function() if G.STATE == S.SHOP then Shop.buy(1) end end
-G.FUNCS.shop_buy_2 = function() if G.STATE == S.SHOP then Shop.buy(2) end end
-G.FUNCS.shop_buy_3 = function() if G.STATE == S.SHOP then Shop.buy(3) end end
-G.FUNCS.shop_buy_4 = function() if G.STATE == S.SHOP then Shop.buy(4) end end
-G.FUNCS.shop_buy_5 = function() if G.STATE == S.SHOP then Shop.buy(5) end end
-G.FUNCS.shop_reroll = function() if G.STATE == S.SHOP then Shop.reroll() end end
-G.FUNCS.shop_redeem = function() if G.STATE == S.SHOP then Shop.redeem() end end
+local function shop_payload(command)
+  return type(command) == "table" and (command.payload or command) or {}
+end
+local function buy_shop_founder(index, command)
+  if G.STATE ~= S.SHOP then return end
+  local p = shop_payload(command)
+  return Shop.buy(index, p.offer_id, p.shop_revision, p.shop_id, p.session_token)
+end
+G.FUNCS.shop_buy_1 = function(command) return buy_shop_founder(1, command) end
+G.FUNCS.shop_buy_2 = function(command) return buy_shop_founder(2, command) end
+G.FUNCS.shop_buy_3 = function(command) return buy_shop_founder(3, command) end
+G.FUNCS.shop_buy_4 = function(command) return buy_shop_founder(4, command) end
+G.FUNCS.shop_buy_5 = function(command) return buy_shop_founder(5, command) end
+G.FUNCS.shop_reroll = function(command)
+  if G.STATE ~= S.SHOP then return end
+  local p = shop_payload(command)
+  return Shop.reroll(p.shop_revision, p.shop_id, p.session_token)
+end
+G.FUNCS.shop_redeem = function(command)
+  if G.STATE ~= S.SHOP then return end
+  local p = shop_payload(command)
+  return Shop.redeem(p.offer_id, p.shop_revision, p.shop_id, p.session_token)
+end
 G.FUNCS.shop_tech_drawer = function()
   local sh = G.STATE == S.SHOP and G.GAME and G.GAME.shop
   if sh and not Shop.negotiation_pending() then sh.tech_drawer_open = not sh.tech_drawer_open end
 end
-G.FUNCS.shop_open_pack_1 = function() if G.STATE == S.SHOP then Shop.open_pack(1) end end
-G.FUNCS.shop_open_pack_2 = function() if G.STATE == S.SHOP then Shop.open_pack(2) end end
-G.FUNCS.shop_open_pack_3 = function() if G.STATE == S.SHOP then Shop.open_pack(3) end end
-G.FUNCS.shop_open_pack_4 = function() if G.STATE == S.SHOP then Shop.open_pack(4) end end
-G.FUNCS.shop_open_pack_5 = function() if G.STATE == S.SHOP then Shop.open_pack(5) end end
+local function open_shop_pack(index, command)
+  if G.STATE ~= S.SHOP then return end
+  local p = shop_payload(command)
+  return Shop.open_pack(index, p.offer_id, p.shop_revision, p.shop_id, p.session_token)
+end
+G.FUNCS.shop_open_pack_1 = function(command) return open_shop_pack(1, command) end
+G.FUNCS.shop_open_pack_2 = function(command) return open_shop_pack(2, command) end
+G.FUNCS.shop_open_pack_3 = function(command) return open_shop_pack(3, command) end
+G.FUNCS.shop_open_pack_4 = function(command) return open_shop_pack(4, command) end
+G.FUNCS.shop_open_pack_5 = function(command) return open_shop_pack(5, command) end
 G.FUNCS.pack_pick_1 = function() if G.STATE == S.SHOP then Shop.pack_pick(1) end end
 G.FUNCS.pack_pick_2 = function() if G.STATE == S.SHOP then Shop.pack_pick(2) end end
 G.FUNCS.pack_pick_3 = function() if G.STATE == S.SHOP then Shop.pack_pick(3) end end
@@ -315,9 +336,11 @@ G.FUNCS.founder_negotiation_answer_3 = function() if G.STATE == S.SHOP then Shop
 G.FUNCS.founder_negotiation_continue = function() if G.STATE == S.SHOP then Shop.negotiation_continue() end end
 G.FUNCS.founder_negotiation_standard_terms = function() if G.STATE == S.SHOP then Shop.negotiation_standard_terms() end end
 G.FUNCS.founder_negotiation_walk_away = function() if G.STATE == S.SHOP then Shop.negotiation_walk_away() end end
-G.FUNCS.shop_continue = function()
+G.FUNCS.shop_continue = function(command)
   if G.STATE ~= S.SHOP then return end
-  if Shop.negotiation_pending() then return end
+  local sh, p = G.GAME and G.GAME.shop, shop_payload(command)
+  local valid = Shop.validate_command(p)
+  if not valid or not sh or sh.pack_open or Shop.negotiation_pending() then return end
   G.GAME.shop = nil
   StateMachine.set_state(S.BLIND_SELECT)                       -- preview the upcoming blind (P2); Play → play_blind
 end
@@ -413,7 +436,11 @@ G.FUNCS.sell_consumable = function()
   Audio.play("fire")
 end
 
-G.FUNCS.shop_buy_consumable = function() if G.STATE == S.SHOP then Shop.buy_consumable() end end
+G.FUNCS.shop_buy_consumable = function(command)
+  if G.STATE ~= S.SHOP then return end
+  local p = shop_payload(command)
+  return Shop.buy_consumable(p.offer_id, p.shop_revision, p.shop_id, p.session_token)
+end
 
 function G.CONSUMABLE_TARGET_PICK(card)                        -- an eligible card clicked during TARGET_SELECT
   local pc = G.PENDING_CONSUMABLE

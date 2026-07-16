@@ -367,7 +367,7 @@ function Input:rebuild(button_specs)
         allow_when_locked = spec.allow_when_locked,
         focusable = spec.focusable ~= false,
         bounds = function(n) return n.T end,
-        meta = { kind = "button", action = action, index = index },
+        meta = { kind = "button", action = action, index = index, command = spec.command },
       })
     end
   end
@@ -390,11 +390,11 @@ function Input:update(dt, button_specs)
   else self:_sync_policy(); self:_consume() end
 end
 
-function Input:_call(action)
+function Input:_call(action, command)
   local g = game()
   local fn = g and g.FUNCS and g.FUNCS[action]
   if not fn then return false end
-  fn()
+  fn(command)
   self:_sync_policy()
   return true
 end
@@ -488,7 +488,7 @@ function Input:_dispatch_click(intent, meta)
   if meta.kind == "button" then
     if meta.action == "modal_backdrop" then return close_overlay() end
     if meta.action == "pack_locked" then return true end
-    return self:_call(meta.action)
+    return self:_call(meta.action, meta.command)
   elseif meta.kind == "draw_pile" then
     if selectable_state() and g then g.SHOW_DECK_VIEW = true; self:_sync_policy(); return true end
   elseif meta.kind == "hand_card" then return self:_toggle_hand(meta.card)
