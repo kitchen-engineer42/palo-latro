@@ -342,6 +342,180 @@ function Consumables.can_use(card_or_center, game, targets, opts)
   return plan ~= nil, reason
 end
 
+local function target_id(target, area_name)
+  if not target then return nil end
+  if area_name == "hand" then return target.uid end
+  if area_name == "founder" then
+    local cfg = target.ability and target.ability.config or {}
+    return cfg._founder_id or target.founder_instance_id or target.ID
+  end
+  return target.uid or target.ID
+end
+
+function Consumables.target_id(target, area_name)
+  return target_id(target, area_name)
+end
+
+local function same_ids(left, right)
+  if #(left or {}) ~= #(right or {}) then return false end
+  local counts = {}
+  for _, id in ipairs(left or {}) do counts[id] = (counts[id] or 0) + 1 end
+  for _, id in ipairs(right or {}) do
+    if not counts[id] then return false end
+    counts[id] = counts[id] - 1
+    if counts[id] == 0 then counts[id] = nil end
+  end
+  return next(counts) == nil
+end
+
+-- Enumerate exact, jointly legal uses in visible area order.  This is pure with respect to gameplay:
+-- it delegates to the same preflight used by resolution and never materializes Moonshot payloads.
+function Consumables.legal_uses(card_or_center, game)
+  local center = center_of(card_or_center)
+  game = game_of(game)
+  if not (center and game) then return {}, "Unknown consumable" end
+
+  if not center.target then
+    local ok, reason = Consumables.can_use(card_or_center, game, nil, nil)
+    if not ok then return {}, reason end
+    return { { targets = {}, target_ids = {}, target_area = nil, layer = nil } }
+  end
+
+  local candidates, area_name = Consumables.target_candidates(card_or_center, game)
+  local count = math.max(1, math.floor(tonumber(center.target.n) or 1))
+  if #candidates < count then
+    return {}, ("Select exactly %d eligible %s target(s)"):format(count,
+      area_name == "founder" and "Founder" or "Tech")
+  end
+
+  local uses, picked, first_reason = {}, {}
+  local function consider(layer)
+    local opts = layer and { layer = layer } or nil
+    local ok, reason = Consumables.can_use(card_or_center, game, picked, opts)
+    if not ok then first_reason = first_reason or reason; return end
+    local targets, ids = {}, {}
+    for _, target in ipairs(picked) do
+      targets[#targets + 1] = target
+      ids[#ids + 1] = target_id(target, area_name)
+    end
+    uses[#uses + 1] = {
+      targets = targets, target_ids = ids, target_area = area_name, layer = layer,
+    }
+  end
+  local function combinations(start_at)
+    if #picked == count then
+      if center.target.layer then
+        for _, layer in ipairs(Coverage.CORE_ORDER) do consider(layer) end
+      else consider(nil) end
+      return
+    end
+    local remaining = count - #picked
+    for index = start_at, #candidates - remaining + 1 do
+      picked[#picked + 1] = candidates[index]
+      combinations(index + 1)
+      picked[#picked] = nil
+    end
+  end
+  combinations(1)
+  return uses, first_reason
+end
+
+-- Project the currently selected target cards without mutating their selection or the effect.
+function Consumables.selected_use_view(card_or_center, game)
+  local center = center_of(card_or_center)
+  game = game_of(game)
+  local view = {
+    key = center and center.key or nil,
+    target_requirements = nil,
+    selected_ids = {},
+    selected_targets = {},
+    legal = false,
+    is_legal = false,
+    reason = nil,
+    follow_up = nil,
+    follow_up_state = nil,
+  }
+  if not (center and game) then view.reason = "Unknown consumable"; return view end
+
+  if not center.target then
+    local ok, reason = Consumables.can_use(card_or_center, game, nil, nil)
+    view.legal, view.is_legal, view.reason = ok == true, ok == true, reason
+    return view
+  end
+
+  local area, area_name = Consumables.target_area(card_or_center)
+  local needed = math.max(1, math.floor(tonumber(center.target.n) or 1))
+  view.target_requirements = { area = area_name, count = needed, layer = center.target.layer == true }
+  view.target_area = area_name
+  for _, target in ipairs((area and area.cards) or {}) do
+    if target.selected then
+      view.selected_targets[#view.selected_targets + 1] = target
+      view.selected_ids[#view.selected_ids + 1] = target_id(target, area_name)
+    end
+  end
+  if #view.selected_targets ~= needed then
+    view.reason = ("Select exactly %d %s target(s)"):format(needed,
+      area_name == "founder" and "Founder" or "Tech")
+    return view
+  end
+
+  local uses, reason = Consumables.legal_uses(card_or_center, game)
+  local layers = {}
+  for _, use in ipairs(uses) do
+    if same_ids(use.target_ids, view.selected_ids) then
+      if use.layer then layers[#layers + 1] = use.layer
+      else view.legal, view.is_legal = true, true end
+    end
+  end
+  if #layers > 0 then
+    view.legal, view.is_legal = true, true
+    view.follow_up = { kind = "layer", options = layers }
+    view.follow_up_state = "layer"
+  end
+  if not view.legal then
+    local _, selected_reason = Consumables.can_use(card_or_center, game, view.selected_targets)
+    view.reason = selected_reason or reason or "Selected targets are not jointly legal"
+  end
+  return view
+end
+
+local function consumable_is_live(card)
+  if not (G and G.consumables and G.consumables.cards) then return true end
+  for _, candidate in ipairs(G.consumables.cards) do if candidate == card then return true end end
+  return false
+end
+
+-- Stable-ID transactional resolver shared by GUI and Mimic.  Every identity is looked up again and
+-- the complete tuple is re-preflighted before the existing `use` boundary can mutate or consume.
+function Consumables.resolve_use(card, selection, opts)
+  selection, opts = selection or {}, opts or {}
+  if not (card and card.center) or not consumable_is_live(card) then
+    return failed(card and card.center, "Consumable is stale or no longer owned")
+  end
+  local requested = selection.target_ids or {}
+  if type(requested) ~= "table" then return failed(card.center, "Target IDs must be an array") end
+  local seen = {}
+  for _, id in ipairs(requested) do
+    if id == nil or seen[id] then return failed(card.center, "Target IDs must be distinct") end
+    seen[id] = true
+  end
+  local uses, reason = Consumables.legal_uses(card, opts.game)
+  for _, use in ipairs(uses) do
+    if same_ids(use.target_ids, requested) and use.layer == selection.layer then
+      local use_opts = {}
+      for key, value in pairs(opts) do use_opts[key] = value end
+      use_opts.layer = selection.layer
+      return Consumables.use(card, use.targets, use_opts)
+    end
+  end
+  if card.center.target and card.center.target.layer and selection.layer == nil then
+    reason = "Choose a core Layer"
+  end
+  return failed(card.center, reason or "Consumable targets are stale or jointly illegal")
+end
+
+Consumables.resolve = Consumables.resolve_use
+
 local function next_instance_id(game)
   game.consumable_next_id = (game.consumable_next_id or 0) + 1
   return game.consumable_next_id

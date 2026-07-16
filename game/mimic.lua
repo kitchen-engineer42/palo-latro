@@ -379,49 +379,33 @@ end
 local function add_consumable_actions(out, g)
   for i, c in ipairs((G.consumables and G.consumables.cards) or {}) do
     local consumable_id = card_id(c, "consumable", i)
+    local legal_uses = Consumables.legal_uses(c, g)
     if c.center and c.center.target then
       local count = c.center.target.n or 1
-      local exact_choices, picked, target_ids = {}, {}, {}
-      local targets, area_name, area = Consumables.target_candidates(c, g)
-      for _, target in ipairs(targets) do
-        for j, candidate in ipairs((area and area.cards) or {}) do
-          if candidate == target then target_ids[target] = card_id(target, area_name, j); break end
-        end
-      end
-      local function add_exact_choice(layer)
-        local usable = Consumables.can_use(c, g, picked, layer and { layer = layer } or nil)
-        if not usable then return end
+      local exact_choices = {}
+      for _, use in ipairs(legal_uses) do
         local choice = { consumable_id = consumable_id, target_ids = {} }
-        for _, target in ipairs(picked) do choice.target_ids[#choice.target_ids + 1] = target_ids[target] end
-        if layer then choice.layer = layer end
+        local area = select(1, Consumables.target_area(c))
+        for _, target in ipairs(use.targets) do
+          for j, candidate in ipairs((area and area.cards) or {}) do
+            if candidate == target then
+              choice.target_ids[#choice.target_ids + 1] = card_id(target, use.target_area, j)
+              break
+            end
+          end
+        end
+        if use.layer then choice.layer = use.layer end
         exact_choices[#exact_choices + 1] = choice
       end
-      local function combinations(start_at)
-        if #picked == count then
-          if c.center.target.layer then
-            for _, layer in ipairs(Coverage.CORE_ORDER) do add_exact_choice(layer) end
-          else
-            add_exact_choice(nil)
-          end
-          return
-        end
-        local remaining = count - #picked
-        for target_index = start_at, #targets - remaining + 1 do
-          picked[#picked + 1] = targets[target_index]
-          combinations(target_index + 1)
-          picked[#picked] = nil
-        end
-      end
-      combinations(1)
       if #exact_choices > 0 then
         local params = { consumable_id = consumable_id,
-          target_ids = { type = "array", count = count }, target_area = area_name }
+          target_ids = { type = "array", count = count },
+          target_area = select(2, Consumables.target_area(c)) }
         if c.center.target.layer then params.layer = "string" end
         add_action(out, "use_consumable", params, exact_choices)
       end
     else
-      local usable = Consumables.can_use(c, g)
-      if usable then add_action(out, "use_consumable", { consumable_id = consumable_id }) end
+      if #legal_uses > 0 then add_action(out, "use_consumable", { consumable_id = consumable_id }) end
     end
     add_action(out, "sell_consumable", { consumable_id = consumable_id })
   end
@@ -1151,7 +1135,7 @@ local function action_is_legal(id)
   return false
 end
 
-local function select_cards(cards, area, requested, min_count, max_count)
+local function select_cards(cards, area, requested, min_count, max_count, mutate_selection)
   if type(requested) ~= "table" then return nil, "card_ids must be an array" end
   local count = array_shape(requested)
   if not count then return nil, "card_ids must be a dense array" end
@@ -1163,8 +1147,10 @@ local function select_cards(cards, area, requested, min_count, max_count)
     seen[id], selected[#selected + 1] = true, by_id[id]
   end
   if #selected < min_count or #selected > max_count then return nil, "card_ids count is outside the legal range" end
-  for _, card in ipairs(cards or {}) do card.selected = false end
-  for _, card in ipairs(selected) do card.selected = true end
+  if mutate_selection ~= false then
+    for _, card in ipairs(cards or {}) do card.selected = false end
+    for _, card in ipairs(selected) do card.selected = true end
+  end
   return selected
 end
 
@@ -1241,8 +1227,7 @@ local function dispatch(action)
       select_one(G.consumables.cards, "consumable", action.consumable_id)
       G.FUNCS.sell_consumable(); return true
     end
-    local usable, use_reason = Consumables.can_use(card, g)
-    if not usable then return nil, use_reason or "consumable cannot be used" end
+    local result
     if card.center and card.center.target then
       local target_count = card.center.target.n or 1
       if card.center.target.layer then
@@ -1251,28 +1236,17 @@ local function dispatch(action)
       end
       local target_area, target_area_name = Consumables.target_area(card)
       local targets, target_err = select_cards((target_area and target_area.cards) or {},
-        target_area_name, action.target_ids, target_count, target_count)
+        target_area_name, action.target_ids, target_count, target_count, false)
       if not targets then return nil, target_err end
+      local stable_ids = {}
       for _, target in ipairs(targets) do
-        local target_ok, target_reason = Consumables.can_target(card, target, g)
-        if not target_ok then return nil, target_reason or "invalid consumable target" end
+        stable_ids[#stable_ids + 1] = Consumables.target_id(target, target_area_name)
       end
-      local selection_ok, selection_reason = Consumables.can_use(card, g, targets,
-        card.center.target.layer and { layer = action.layer } or nil)
-      if not selection_ok then return nil, selection_reason or "consumable selection cannot be used" end
-      select_one(G.consumables.cards, "consumable", action.consumable_id)
-      G.FUNCS.use_consumable()
-      if not G.PENDING_CONSUMABLE then return nil, "consumable targeting failed" end
-      for _, target in ipairs(targets) do G.CONSUMABLE_TARGET_PICK(target) end
-      if card.center.target.layer then G.CONSUMABLE_RESOLVE(action.layer) end
+      result = Consumables.resolve_use(card, { target_ids = stable_ids, layer = action.layer }, { game = g })
     else
-      select_one(G.consumables.cards, "consumable", action.consumable_id)
-      G.FUNCS.use_consumable()
+      result = Consumables.resolve_use(card, { target_ids = {} }, { game = g })
     end
-    for _, remaining in ipairs(G.consumables.cards) do
-      if remaining == card then return nil, "consumable use failed" end
-    end
-    return true
+    return result and result.ok and true or nil, (result and result.reason) or "consumable use failed"
   elseif id == "pick_target" then
     local pending = G.PENDING_CONSUMABLE
     if not pending or pending.need_layer then return nil, "target card is not expected" end
