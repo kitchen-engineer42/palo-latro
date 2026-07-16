@@ -24,6 +24,7 @@ local Moonshots = require("game.moonshots")
 local FounderActions = require("game.founder_actions")
 local CompatSuppression = require("game.compat_suppression")
 local Preview = require("game.preview")
+local SignaturePair = require("game.signature_pair")
 
 local MAX_SHIP_PREVIEWS = 5
 local MAX_SHIP_PREVIEW_EVALUATIONS = 8192
@@ -155,6 +156,7 @@ local function card_view(card, area, index)
     ability = center.ability_name,
     face_tag = center.face_tag,
     rules_text = center.rules_text,
+    identity = copy_plain(SignaturePair.identity(center)),
     effect = center.rules_text or center.effect_brief or center.desc,
     sell_value = cfg._sell_basis and math.max(0, math.floor(cfg._sell_basis * 0.5)) or nil,
   }
@@ -243,6 +245,7 @@ local function master_deck_view()
       layer_locked = entry.layer_locked == true,
       law_marks = copy_plain(entry.law_marks),
       stickers = copy_plain(entry.stickers),
+      identity = copy_plain(SignaturePair.identity(center)),
     }
   end
   table.sort(out, function(a, b)
@@ -290,6 +293,7 @@ local function shop_view()
       founders[#founders + 1] = { index = i, key = founder.key, name = founder.name,
         rarity = offer.rarity, edition = offer.edition, price = Shop.price(offer),
         face_tag = founder.face_tag, rules_text = founder.rules_text,
+        identity = copy_plain(SignaturePair.identity(founder)),
         offer_id = offer.offer_id, pinned = offer.pinned == true,
         free = Shop.price(offer) == 0, directive_source = offer.directive_source }
     end
@@ -313,6 +317,7 @@ local function shop_view()
           local option_view = { index = i, key = option_center.key, name = option_center.name,
             edition = option.edition, rarity = option.rarity, description = option.desc,
             face_tag = option_center.face_tag, rules_text = option_center.rules_text,
+            identity = copy_plain(SignaturePair.identity(option_center)),
             target = copy_plain(option.target), price_units = option.price_units,
             moonshot_payload = copy_plain(option.moonshot_payload) }
           if option.kind == "Moonshot" then

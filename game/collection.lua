@@ -5,6 +5,7 @@
 -- are projected as silhouettes so callers cannot accidentally reveal their names or rules.
 
 local Collection = {}
+local SignaturePair = require("game.signature_pair")
 
 Collection.PAGE_SIZE = 12
 Collection.CATEGORIES = {
@@ -203,11 +204,14 @@ local function summary(category, source)
     return (source.audience or "Any") .. " · " .. (source.industry or "Any") .. " · " .. view.fit.label,
       ((view.perk or {}).name or "Market Perk") .. ": " .. ((view.perk or {}).effect or "")
   elseif category == "founders" or category == "forms" then
-    return (source.rarity or "Founder") .. " · Salary $" .. tostring(source.salary or 0),
+    local identity = SignaturePair.identity_label(source)
+    return (source.rarity or "Founder") .. " · Salary $" .. tostring(source.salary or 0)
+        .. (identity and (" · " .. identity) or ""),
       source.rules_text or source.effect_brief or source.ability_name or source.hint or ""
   elseif category == "tech" then
     local users = source.base_users or source.users or source.chips or 0
-    return (source.layer or "Tech") .. " · " .. (source.sub_role or "Technology"),
+    local identity = SignaturePair.identity_label(source)
+    return identity or ((source.layer or "Tech") .. " · " .. (source.sub_role or "Technology")),
       tostring(users) .. " Users" .. (source.desc and (" · " .. source.desc) or "")
   elseif category == "playbooks" then
     return tostring(source.base_chips or 0) .. " Users × " .. tostring(source.base_mult or 1) .. " Rev",

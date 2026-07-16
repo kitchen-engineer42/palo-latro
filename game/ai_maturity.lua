@@ -21,7 +21,7 @@ local function has_any(have, wanted)
 end
 
 local function signals(cards)
-  local roles, layers, evidence_cards = {}, {}, {}
+  local roles, layers, explicit, evidence_cards = {}, {}, {}, {}
   for _, card in ipairs(cards or {}) do
     local center = card.center or card
     local card_roles, card_layers = {}, {}
@@ -48,6 +48,14 @@ local function signals(cards)
     end
     role(center.sub_role or card.sub_role)
     if (center.layer or card.layer) == "agent-harness" then role("agent-harness") end
+    local identity = center.identity
+    if type(identity) == "table" then
+      if identity.role then role(identity.role) end
+      if identity.era == "AI" then layer("AI") end
+      if identity.tech_layer then layer(identity.tech_layer) end
+      if identity.ai_maturity then explicit[identity.ai_maturity] = true end
+    end
+    if center.ai_maturity_key then explicit[center.ai_maturity_key] = true end
 
     evidence_cards[#evidence_cards + 1] = {
       key = card.center_key or center.key,
@@ -55,7 +63,7 @@ local function signals(cards)
       layers = card_layers,
     }
   end
-  return roles, layers, evidence_cards
+  return roles, layers, explicit, evidence_cards
 end
 
 local function matches(requirement, roles, layers)
@@ -128,14 +136,19 @@ end
 -- Workflow card merely to prove that the shipped product is harness-grade.
 function AIMaturity.evaluate(cards, app)
   if not AIMaturity.is_ai_app(app) then return nil end
-  local roles, layers, evidence_cards = signals(cards)
+  local roles, layers, explicit, evidence_cards = signals(cards)
   if not layers.AI then return nil end
   local best, matched_by
   for index, rung in ipairs(Rules.rungs) do
-    for evidence_index, requirement in ipairs(rung.evidence) do
-      if matches(requirement, roles, layers) then
-        best, matched_by = { rung = rung, index = index }, evidence_index
-        break
+    if explicit[rung.key] then best, matched_by = { rung = rung, index = index }, 0 end
+  end
+  if not best then
+    for index, rung in ipairs(Rules.rungs) do
+      for evidence_index, requirement in ipairs(rung.evidence) do
+        if matches(requirement, roles, layers) then
+          best, matched_by = { rung = rung, index = index }, evidence_index
+          break
+        end
       end
     end
   end
@@ -150,6 +163,7 @@ function AIMaturity.evaluate(cards, app)
     users_bonus = best.rung.users_bonus,
     rev_mult = best.rung.rev_mult,
     matched_evidence = matched_by or 1,
+    explicit_identity = matched_by == 0,
     roles = roles,
     layers = layers,
     evidence_cards = evidence_cards,

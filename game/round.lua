@@ -98,10 +98,6 @@ function G.GENERATE(kind, opts)
   -- Backward-compatible public adapter: callers keep the historical generation
   -- vocabulary while the authoritative mutation is now one planned transaction.
   local tx_opts = {}; for key, value in pairs(opts) do tx_opts[key] = value end
-  if kind == "specific_tech_card" then
-    local center = tx_opts.key and Centers.get(tx_opts.key)
-    if center and center.signature then tx_opts.signature_injection = true end
-  end
   return DeckTransactions.generate(kind, tx_opts, G.GAME)
 end
 
@@ -197,7 +193,11 @@ function Round.master_add(center_key, props, game)
   local center = Centers.get(center_key)
   if not center or center.set ~= "TechCard" then return nil, "Unknown Tech candidate" end
   if center.signature then
-    if props.signature_injection ~= true then return nil, "Signature Tech requires explicit injection" end
+    local Pair = require("game.signature_pair")
+    if not (center.key == Pair.JO_KEY and props.signature_injection == Pair.INJECTION_TOKEN
+        and props.source == "signature_pair") then
+      return nil, "Signature Tech requires explicit injection"
+    end
   else
     local allowed, reason = Deck.candidate_allowed(center, g.market)
     if not allowed then return nil, reason end

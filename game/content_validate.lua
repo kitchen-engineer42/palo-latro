@@ -1358,6 +1358,61 @@ local function validate_centers(list, source, r, keys, require_founder_presentat
   end
 end
 
+local function validate_signature_pair(list, r)
+  local by_key = {}
+  for _, center in ipairs(type(list) == "table" and list or {}) do
+    if type(center) == "table" then by_key[center.key] = center end
+  end
+  local kitchen = by_key["f_kitchen-engineer42"]
+  local jo = by_key["t_joharness-burg"]
+  if not kitchen then add(r, "signature_cards", "must include the signature Founder") end
+  if not jo then add(r, "signature_cards", "must include the paired signature Tech") end
+  local function identity(center, path)
+    local value = center and center.identity
+    if type(value) ~= "table" then add(r, path .. ".identity", "is required"); return end
+    local expected = { era = "AI", game_era = "E4", product = "Agent",
+      ai_maturity = "agent_harnesses", tech_layer = "Knowledge", role = "agent-harness" }
+    for field, wanted in pairs(expected) do
+      if value[field] ~= wanted then add(r, path .. ".identity." .. field, "must be " .. wanted) end
+    end
+  end
+  if kitchen then
+    identity(kitchen, "signature_cards.kitchen")
+    if kitchen.set ~= "Founder" or kitchen.signature ~= true then
+      add(r, "signature_cards.kitchen", "must be the signature Founder")
+    end
+    if type(kitchen.era_affinity) ~= "table" or #kitchen.era_affinity ~= 1
+        or kitchen.era_affinity[1] ~= "E4" then
+      add(r, "signature_cards.kitchen.era_affinity", "must contain only E4")
+    end
+  end
+  if jo then
+    identity(jo, "signature_cards.jo")
+    if jo.set ~= "TechCard" or jo.signature ~= true then
+      add(r, "signature_cards.jo", "must be the paired signature Tech")
+    end
+    if jo.layer ~= "Knowledge" or jo.sub_role ~= "agent-harness" then
+      add(r, "signature_cards.jo", "must use Knowledge Layer and agent-harness role")
+    end
+    if type(jo.layers) ~= "table" or #jo.layers ~= 1
+        or jo.layers[1].layer ~= "Knowledge" or jo.layers[1].sub_role ~= "agent-harness" then
+      add(r, "signature_cards.jo.layers", "must contain only the Knowledge harness identity")
+    end
+    if type(jo.eras) ~= "table" or #jo.eras ~= 1 or jo.eras[1] ~= "E4" then
+      add(r, "signature_cards.jo.eras", "must contain only E4")
+    end
+    local behavior = jo.signature_behavior
+    if type(behavior) ~= "table" or behavior.double_layer ~= true
+        or behavior.coverage_slots ~= 2 or behavior.coverage_mode ~= "wildcard_core"
+        or behavior.anchor_layer ~= "AI" then
+      add(r, "signature_cards.jo.signature_behavior", "must explicitly define its two-slot signature")
+    end
+    if jo.double_layer ~= nil then
+      add(r, "signature_cards.jo.double_layer", "legacy taxonomy-coupled behavior is forbidden")
+    end
+  end
+end
+
 local function validate_compat(compat, tech_keys, r)
   if type(compat) ~= "table" then add(r, "compat", "must return a table"); return end
   for _, relation in ipairs({ "substitutes", "clashes", "complements" }) do
@@ -1585,6 +1640,9 @@ function Validate.catalog(catalog, options)
   validate_centers(catalog.forms, "forms", r, keys, options.require_founder_presentation)
   validate_centers(catalog.signature_cards or {}, "signature_cards", r, keys,
     options.require_founder_presentation)
+  if options.require_signature_pair then
+    validate_signature_pair(catalog.signature_cards or {}, r)
+  end
   validate_centers(catalog.vouchers or {}, "vouchers", r, keys)
   validate_centers(catalog.consumables or {}, "consumables", r, keys)
   validate_tech_laws(catalog.consumables or {}, r)

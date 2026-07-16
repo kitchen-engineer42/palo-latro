@@ -27,6 +27,7 @@ local FounderEvents = require("game.founder_events")
 local ShopDirectives = require("game.shop_directives")
 local Markets = require("game.markets")
 local ShopView = require("game.shop_view")
+local SignaturePair = require("game.signature_pair")
 local random = RNG.fn("shop")
 local pack_random = RNG.fn("packs")
 local pack_shop_random = RNG.fn("pack_shop")
@@ -36,6 +37,7 @@ local moonshot_pack_random = RNG.fn("moonshot_pack")
 local moonshot_special_random = RNG.fn("moonshot_special")
 local moonshot_payload_random = RNG.fn("moonshot_payload")
 local directive_random = RNG.fn("shop_directives")
+local signature_secret_random = RNG.fn(SignaturePair.ROLL_STREAM)
 
 local Shop = {}
 local MAX_FOUNDER_OFFERS, MAX_PACK_OFFERS = 5, 5
@@ -614,7 +616,7 @@ function Shop.buy(idx, expected_offer_id, expected_revision, expected_shop_id, e
   end
   local offered_key = (offer.center or offer).key
   local c = type(offered_key) == "string" and Centers.get(offered_key)
-  if not (c and c.set == "Founder") or (c.rarity == "Legendary" and not c.signature) then
+  if not (c and c.set == "Founder") or c.rarity == "Legendary" or c.signature then
     return false, "Invalid Founder offer"
   end
   local cost = Shop.price(offer)
@@ -860,6 +862,17 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
     art_key = definition.art_key, fallback_art = definition.fallback_art,
     options = opts, picks_left = definition.picks }
   identify_pack_session(sh, sh.pack_open, idx, definition)
+  local secret_hit = SignaturePair.roll_offer(G.GAME, sh.pack_open, definition,
+    signature_secret_random)
+  if secret_hit and #opts > 0 then
+    local center = Centers.get(SignaturePair.KITCHEN_KEY)
+    local option = {}
+    for key, value in pairs(center or {}) do option[key] = value end
+    option.center = center
+    option.edition = nil
+    option.secret_offer = SignaturePair.offer_token(G.GAME, sh.pack_open)
+    opts[#opts] = option
+  end
   local keys = {}; for _, option in ipairs(opts) do keys[#keys + 1] = (option.center or option).key end
   Profile.discover_many(keys)
   PackPresentation.begin(sh.pack_open, idx, definition)
@@ -1057,6 +1070,24 @@ function Shop.pack_pick(i, expected_open_id)
   end
   local offered = c.center or c
   local canonical_offer = type(offered) == "table" and Centers.get(offered.key) or nil
+  if po.kind ~= "hiring" or not canonical_offer or canonical_offer.set ~= "Founder"
+      or (c.key ~= nil and c.key ~= canonical_offer.key) then
+    return false, "Invalid Founder option"
+  end
+  if canonical_offer.signature then
+    if not SignaturePair.valid_offer(G.GAME, po, c, canonical_offer) then
+      return false, "The signature Founder offer is no longer available"
+    end
+    if #G.jokers.cards >= Shop.founder_cap() then
+      Guidance.emit("founder_slots_full", { slots = Shop.founder_cap() })
+      return false, "Founder slots are full"
+    end
+    emplace_founder(canonical_offer, 0, nil, i, #po.options, {
+      source = "signature_secret",
+    })
+    consume_pack_option(sh, po, i, c, "secret")
+    return true
+  end
   if po.kind == "hiring" and canonical_offer and canonical_offer.rarity == "Legendary"
       and not canonical_offer.signature then
     local option, center, pick_reason = validate_legendary_pick(G.GAME, {
@@ -1075,13 +1106,13 @@ function Shop.pack_pick(i, expected_open_id)
     Guidance.emit("founder_slots_full", { slots = Shop.founder_cap() })
     return false
   end
-  emplace_founder(c.center or c, 0, c.edition, i, #po.options); Audio.play("hire")
-  Profile.discover((c.center or c).key)
+  emplace_founder(canonical_offer, 0, c.edition, i, #po.options); Audio.play("hire")
+  Profile.discover(canonical_offer.key)
   po.options[i] = false
   po.picks_left = po.picks_left - 1
   if po.picks_left <= 0 then sh.pack_open = nil end             -- pack consumed
-  Guidance.emit("pack_picked", { family = po.kind, key = (c.center or c).key })
-  FounderEvents.pack_selected({ family = po.kind, center_key = (c.center or c).key, mode = "pick" })
+  Guidance.emit("pack_picked", { family = po.kind, key = canonical_offer.key })
+  FounderEvents.pack_selected({ family = po.kind, center_key = canonical_offer.key, mode = "pick" })
   return true
 end
 

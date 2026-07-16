@@ -246,7 +246,7 @@ G.FUNCS.hire = function()
       local ante = G.GAME.ante or 1
       in_era = ante >= (center.era_gate.min or 1) and ante <= (center.era_gate.max or 8)
     end
-    if not present and in_era then
+    if not present and in_era and not center.signature then
       local jk = Card({ center = center, T = { x = G.jokers.T.x, y = G.jokers.T.y } })
       G.jokers:emplace(jk)
       Lifecycle.acquire(jk, { source = "debug_hire", sell_basis = 0 })

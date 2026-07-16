@@ -27,6 +27,7 @@ local Moonshots = require("game.moonshots")
 local FounderActions = require("game.founder_actions")
 local CardStack = require("game.card_stack")
 local ShopView = require("game.shop_view")
+local SignaturePair = require("game.signature_pair")
 
 local function roadmap_pack(kind)
   return kind == "tech_law" or kind == "moonshot"
@@ -1072,6 +1073,8 @@ function UI.draw_tooltip()
     local ed = hovered.edition and Card.EDITIONS[hovered.edition]
     if ed then body = body .. "\n\226\156\166 " .. ed.label .. " edition: " .. (ed.desc or "") end
     body = body .. "\n\n" .. (c.rules_text or c.hint or "")
+    local identity = SignaturePair.identity_label(c)
+    if identity then body = body .. "\n\nIdentity · " .. identity end
   else
     local effective, status, before_decay = Card.tech_users(hovered, c)
     local base = hovered.base_users or c.base_users or 0
@@ -1080,6 +1083,8 @@ function UI.draw_tooltip()
     local rev = hovered.rev_sticker_label and hovered:rev_sticker_label()
     sub = (Card.tech_layer_label(hovered, c) or "") .. "  ·  " .. users .. (rev and ("  ·  " .. rev) or "")
     body = c.desc or ""
+    local identity = SignaturePair.identity_label(c)
+    if identity then body = body .. "\n\nIdentity · " .. identity end
     if status.state == "deprecated" then
       body = body .. ("\n\nDEPRECATED · %d Era%s behind · -%d%% Users (%s → %s)."):format(
         status.eras_behind, status.eras_behind == 1 and "" or "s",

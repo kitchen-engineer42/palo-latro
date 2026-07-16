@@ -107,7 +107,7 @@ function Coverage.analyze(cards)
     subroles = {},
     subrole_count = 0,
   }
-  local covered, flexible = {}, {}
+  local covered, flexible, signature_wildcards = {}, {}, {}
 
   local function assign(card, layer)
     if not layer then return end
@@ -129,15 +129,39 @@ function Coverage.analyze(cards)
       end
     end
 
-    if #options == 1 then
+    local behavior = card.center and card.center.signature_behavior
+    if card.layer_override == nil and behavior and behavior.coverage_mode == "wildcard_core"
+        and tonumber(behavior.coverage_slots) and behavior.coverage_slots > 0 then
+      signature_wildcards[#signature_wildcards + 1] = {
+        card = card,
+        slots = math.min(#Coverage.CORE_ORDER, math.floor(behavior.coverage_slots)),
+        anchor = core_set[behavior.anchor_layer] and behavior.anchor_layer or nil,
+      }
+    elseif #options == 1 then
       assign(card, options[1])
-    elseif #options > 1 and card.center and card.center.double_layer then
-      for _, layer in ipairs(options) do assign(card, layer) end
     elseif #options > 1 then
       flexible[#flexible + 1] = { card = card, options = options }
     else
       result.assignments[card] = {}
     end
+  end
+
+  -- The paired signature Tech contributes two useful product-layer slots, but
+  -- its authored identity remains Knowledge. Harness is a role, never a Layer.
+  for _, item in ipairs(signature_wildcards) do
+    local picks = {}
+    if item.anchor then picks[#picks + 1] = item.anchor end
+    for _, layer in ipairs(Coverage.CORE_ORDER) do
+      local duplicate = false
+      for _, picked in ipairs(picks) do if picked == layer then duplicate = true; break end end
+      if not duplicate and not covered[layer] and #picks < item.slots then picks[#picks + 1] = layer end
+    end
+    for _, layer in ipairs(Coverage.CORE_ORDER) do
+      local duplicate = false
+      for _, picked in ipairs(picks) do if picked == layer then duplicate = true; break end end
+      if not duplicate and #picks < item.slots then picks[#picks + 1] = layer end
+    end
+    for _, layer in ipairs(picks) do assign(item.card, layer) end
   end
 
   for _, item in ipairs(flexible) do

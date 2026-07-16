@@ -1,6 +1,7 @@
 -- Transaction boundary for every Founder entry/exit route.
 
 local Interp = require("game.effect_interp")
+local SignaturePair = require("game.signature_pair")
 
 local Lifecycle = {}
 
@@ -89,9 +90,19 @@ function Lifecycle.acquire(card, opts)
   G.GAME.founders_hired_round = (G.GAME.founders_hired_round or 0) + 1
   require("game.leads").on_founder_acquired(G.GAME, card)
   Interp.apply_passive(card)
-  if card.center_key == "f_kitchen-engineer42" and G.GENERATE then
-    G.GENERATE("specific_tech_card", { key = "t_joharness-burg", amount = 1 })
-    cfg._signature_key = "t_joharness-burg"
+  if card.center_key == SignaturePair.KITCHEN_KEY and G.GENERATE then
+    local existing = SignaturePair.find_jo(G.GAME)
+    local result = existing and { ok = true, added_uids = { existing.uid } } or G.GENERATE(
+      "specific_tech_card", {
+        key = SignaturePair.JO_KEY, amount = 1, source = "signature_pair",
+        signature_injection = SignaturePair.INJECTION_TOKEN,
+      })
+    local added = result and result.added_uids and result.added_uids[1]
+    local entry = SignaturePair.find_jo(G.GAME) or (added and { uid = added })
+    if result == nil or result.ok then
+      cfg._signature_key = SignaturePair.JO_KEY
+      SignaturePair.mark_paired(G.GAME, entry)
+    end
   end
   require("game.founder_events").fire("founder_hired", {
     founder = card, other_card = card, founder_key = card.center_key,
@@ -135,7 +146,13 @@ function Lifecycle.remove(card, opts)
   if cfg._removed then return false end
   cfg._removed = true
 
-  if cfg._signature_key and G.GENERATE then G.GENERATE("remove_tech_card", { key = cfg._signature_key }) end
+  if cfg._signature_key and G.GENERATE then
+    G.GENERATE("remove_tech_card", {
+      key = cfg._signature_key, source = "signature_pair",
+      signature_injection = SignaturePair.INJECTION_TOKEN,
+    })
+    SignaturePair.mark_removed(G.GAME)
+  end
   Interp.revert_passive(card)
   if opts.promote then
     G.GAME.automated_founders = G.GAME.automated_founders or {}

@@ -7,6 +7,7 @@
 local Centers = require("game.centers")
 local Deck = require("game.deck")
 local TechLifecycle = require("game.tech_lifecycle")
+local SignaturePair = require("game.signature_pair")
 
 local Transactions = {}
 
@@ -297,7 +298,9 @@ local function apply_add_specific(state, op)
   local key = op.center_key or op.key
   local center = type(key) == "string" and Centers.get(key)
   if not (center and center.set == "TechCard") then return nil, "Unknown Tech candidate" end
-  if center.signature and op.signature_injection ~= true then
+  if center.signature and not (center.key == SignaturePair.JO_KEY
+      and op.signature_injection == SignaturePair.INJECTION_TOKEN
+      and op.source == "signature_pair") then
     return nil, "Signature Tech requires explicit injection"
   end
   if not center.signature then
@@ -318,6 +321,12 @@ end
 local function apply_remove_key(state, op)
   local key = op.center_key or op.key
   if type(key) ~= "string" or key == "" then return nil, "Tech removal requires a key" end
+  local center = Centers.get(key)
+  if center and center.signature and not (key == SignaturePair.JO_KEY
+      and op.signature_injection == SignaturePair.INJECTION_TOKEN
+      and op.source == "signature_pair") then
+    return nil, "Signature Tech requires paired removal"
+  end
   local removed = {}
   for index = #state.entries, 1, -1 do
     if state.entries[index].center_key == key then
@@ -340,7 +349,8 @@ local function apply_remove_selected(state, op)
   if candidates == false then return nil, "Tech candidate UIDs must be a dense positive-integer array" end
   for _ = 1, amount do
     local entry = selected_entry(state.entries, op.selector or op.which or "lowest", function(candidate, center)
-      return (not candidates or candidates[candidate.uid]) and (not op.filter or op.filter(candidate, center))
+      return not center.signature and (not candidates or candidates[candidate.uid])
+        and (not op.filter or op.filter(candidate, center))
     end, state.game)
     if not entry then return nil, "No eligible Tech can be removed" end
     remove_uid(state.entries, entry.uid)
@@ -358,6 +368,7 @@ local function apply_copy_selected(state, op)
   if candidates == false then return nil, "Tech candidate UIDs must be a dense positive-integer array" end
   for _ = 1, amount do
     local entry = selected_for_op(state, op.selector or op.which or "lowest", function(candidate, center)
+      if center.signature then return false end
       if candidates and not candidates[candidate.uid] then return false end
       if op.filter and not op.filter(candidate, center) then return false end
       return has_copy_room(state, center)
@@ -719,9 +730,10 @@ function Transactions.operation_from_generate(kind, opts)
       source = opts.source or "generated", rng_stream = opts.rng_stream }
   elseif kind == "specific_tech_card" then
     return { kind = "add_specific", key = opts.key, amount = opts.amount,
-      source = opts.source or "generated", signature_injection = opts.signature_injection == true }
+      source = opts.source or "generated", signature_injection = opts.signature_injection }
   elseif kind == "remove_tech_card" then
-    return { kind = "remove_key", key = opts.key }
+    return { kind = "remove_key", key = opts.key, source = opts.source or "generated",
+      signature_injection = opts.signature_injection }
   elseif kind == "remove_card" then
     return { kind = "remove_selected", selector = opts.which or "lowest", amount = opts.amount }
   elseif kind == "copy_card" then

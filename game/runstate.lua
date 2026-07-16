@@ -16,6 +16,7 @@ local TechLaws = require("game.tech_laws")
 local Consumables = require("game.consumables")
 local ShopDirectives = require("game.shop_directives")
 local CompatSuppression = require("game.compat_suppression")
+local SignaturePair = require("game.signature_pair")
 
 local RunState = {}
 
@@ -259,6 +260,8 @@ function RunState.new(opts)
     tech_law_state = {}, last_ship_app_key = nil, last_ship_coverage = 0,
     last_ship_uids = {}, last_pivot_uids = {}, next_hand_uids = {},
     moonshot_state = { viral_moment_uses = 0, blitzscale_uses = 0 },
+    signature_secret = { version = 1, offered = false, offered_once = false,
+      hired = false, pair_state = "hidden", rolls = {} },
     last_shipped_app_key = nil, last_shipped_distinct_layers = 0,
     -- maturity / equity seams (E4) -------------------------------------------
     maturity_rung = 1, leverage_mult = 1,
@@ -323,6 +326,7 @@ function RunState.serialize()
   Consumables.normalize(g)
   ShopDirectives.normalize(g)
   CompatSuppression.normalize(g)
+  SignaturePair.normalize(g)
   normalize_card_offer_state(g)
   for k, v in pairs(g) do
     if k ~= "score" and k ~= "this_app" then out[k] = v end
@@ -353,6 +357,7 @@ function RunState.deserialize(t)
   Consumables.normalize(G.GAME)
   ShopDirectives.normalize(G.GAME)
   CompatSuppression.normalize(G.GAME)
+  SignaturePair.normalize(G.GAME)
   normalize_card_offer_state(G.GAME)
   require("game.founder_negotiation").normalize(G.GAME)
   require("game.founder_lifecycle").normalize_ids(G.GAME)

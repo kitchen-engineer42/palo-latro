@@ -90,7 +90,7 @@ end
 function TechEvaluation.is_deprecated(entry, game)
   game = game or (G and G.GAME)
   local center = entry and Centers.get(entry.center_key)
-  if not center then return false end
+  if not center or center.signature then return false end
   return TechLifecycle.is_deprecated(center, game and game.era)
 end
 
