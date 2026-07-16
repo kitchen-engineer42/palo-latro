@@ -95,6 +95,7 @@ end
 local function validate_pending(game, pending)
   if type(pending) ~= "table" or pending.version ~= 1
       or not whole(pending.id, 1) or type(pending.pack_key) ~= "string"
+      or type(pending.open_id) ~= "string"
       or type(pending.center_key) ~= "string" or type(pending.base_key) ~= "string"
       or not whole(pending.option_index, 1) or not whole(pending.current, 1, 3)
       or not whole(pending.rapport, 0, 6)
@@ -106,6 +107,7 @@ local function validate_pending(game, pending)
   if not script then return false end
   local po = game.shop and game.shop.pack_open
   local option = po and po.kind == "hiring" and po.pack_key == pending.pack_key
+    and po.open_id == pending.open_id
     and type(po.options) == "table" and po.options[pending.option_index] or nil
   local offered = option and (option.center or option)
   local remaining = po and remaining_options(po.options)
@@ -150,6 +152,11 @@ function FounderNegotiation.normalize(game)
   game.founder_negotiation_next_id = next_id
   normalize_seen(game)
   local shop = type(game.shop) == "table" and game.shop or nil
+  if shop and type(shop.founder_negotiation) == "table"
+      and type(shop.founder_negotiation.open_id) ~= "string"
+      and type(shop.pack_open) == "table" and type(shop.pack_open.open_id) == "string" then
+    shop.founder_negotiation.open_id = shop.pack_open.open_id
+  end
   if shop and shop.founder_negotiation ~= nil
       and not validate_pending(game, shop.founder_negotiation) then
     shop.founder_negotiation = nil
@@ -202,6 +209,13 @@ function FounderNegotiation.begin(game, center, option_index)
   if not script or type(script.questions) ~= "table" or #script.questions ~= 6 then
     return nil, "This Legendary Founder has no negotiation script"
   end
+  local po = game.shop.pack_open
+  if type(po) ~= "table" then return nil, "The Hiring Round is no longer available" end
+  if type(po.open_id) ~= "string" or po.open_id == "" then
+    game.pack_session_next_id = (game.pack_session_next_id or 0) + 1
+    po.open_id = table.concat({ "pack-open", tostring(game.shop.shop_id or 0),
+      tostring(game.pack_session_next_id) }, ":")
+  end
   local ids = choose_question_ids(game, script)
   local materialized = {}
   for index, id in ipairs(ids) do
@@ -214,7 +228,8 @@ function FounderNegotiation.begin(game, center, option_index)
   local pending = {
     version = 1,
     id = game.founder_negotiation_next_id,
-    pack_key = game.shop.pack_open.pack_key,
+    pack_key = po.pack_key,
+    open_id = po.open_id,
     center_key = center.key,
     base_key = key,
     option_index = option_index,

@@ -311,25 +311,45 @@ G.FUNCS.shop_open_pack_2 = function(command) return open_shop_pack(2, command) e
 G.FUNCS.shop_open_pack_3 = function(command) return open_shop_pack(3, command) end
 G.FUNCS.shop_open_pack_4 = function(command) return open_shop_pack(4, command) end
 G.FUNCS.shop_open_pack_5 = function(command) return open_shop_pack(5, command) end
-G.FUNCS.pack_pick_1 = function() if G.STATE == S.SHOP then Shop.pack_pick(1) end end
-G.FUNCS.pack_pick_2 = function() if G.STATE == S.SHOP then Shop.pack_pick(2) end end
-G.FUNCS.pack_pick_3 = function() if G.STATE == S.SHOP then Shop.pack_pick(3) end end
-G.FUNCS.pack_pick_4 = function() if G.STATE == S.SHOP then Shop.pack_pick(4) end end
-G.FUNCS.pack_pick_5 = function() if G.STATE == S.SHOP then Shop.pack_pick(5) end end
-G.FUNCS.pack_adopt_1 = function() if G.STATE == S.SHOP then Shop.pack_adopt(1) end end
-G.FUNCS.pack_adopt_2 = function() if G.STATE == S.SHOP then Shop.pack_adopt(2) end end
-G.FUNCS.pack_adopt_3 = function() if G.STATE == S.SHOP then Shop.pack_adopt(3) end end
-G.FUNCS.pack_adopt_4 = function() if G.STATE == S.SHOP then Shop.pack_adopt(4) end end
-G.FUNCS.pack_adopt_5 = function() if G.STATE == S.SHOP then Shop.pack_adopt(5) end end
-G.FUNCS.pack_migrate_1 = function() if G.STATE == S.SHOP then Shop.pack_migrate(1) end end
-G.FUNCS.pack_migrate_2 = function() if G.STATE == S.SHOP then Shop.pack_migrate(2) end end
-G.FUNCS.pack_migrate_3 = function() if G.STATE == S.SHOP then Shop.pack_migrate(3) end end
-G.FUNCS.pack_migrate_4 = function() if G.STATE == S.SHOP then Shop.pack_migrate(4) end end
-G.FUNCS.pack_migrate_5 = function() if G.STATE == S.SHOP then Shop.pack_migrate(5) end end
+local function pack_action(index, command, operation)
+  if G.STATE ~= S.SHOP then return end
+  local p = shop_payload(command)
+  return operation(index, p.open_id)
+end
+G.FUNCS.pack_pick_1 = function(c) return pack_action(1, c, Shop.pack_pick) end
+G.FUNCS.pack_pick_2 = function(c) return pack_action(2, c, Shop.pack_pick) end
+G.FUNCS.pack_pick_3 = function(c) return pack_action(3, c, Shop.pack_pick) end
+G.FUNCS.pack_pick_4 = function(c) return pack_action(4, c, Shop.pack_pick) end
+G.FUNCS.pack_pick_5 = function(c) return pack_action(5, c, Shop.pack_pick) end
+G.FUNCS.pack_pick_6 = function(c) return pack_action(6, c, Shop.pack_pick) end
+G.FUNCS.pack_adopt_1 = function(c) return pack_action(1, c, Shop.pack_adopt) end
+G.FUNCS.pack_adopt_2 = function(c) return pack_action(2, c, Shop.pack_adopt) end
+G.FUNCS.pack_adopt_3 = function(c) return pack_action(3, c, Shop.pack_adopt) end
+G.FUNCS.pack_adopt_4 = function(c) return pack_action(4, c, Shop.pack_adopt) end
+G.FUNCS.pack_adopt_5 = function(c) return pack_action(5, c, Shop.pack_adopt) end
+G.FUNCS.pack_adopt_6 = function(c) return pack_action(6, c, Shop.pack_adopt) end
+local function migrate_action(index, command)
+  if G.STATE ~= S.SHOP then return end
+  local p = shop_payload(command)
+  return Shop.pack_migrate(index, nil, p.open_id)
+end
+G.FUNCS.pack_migrate_1 = function(c) return migrate_action(1, c) end
+G.FUNCS.pack_migrate_2 = function(c) return migrate_action(2, c) end
+G.FUNCS.pack_migrate_3 = function(c) return migrate_action(3, c) end
+G.FUNCS.pack_migrate_4 = function(c) return migrate_action(4, c) end
+G.FUNCS.pack_migrate_5 = function(c) return migrate_action(5, c) end
+G.FUNCS.pack_migrate_6 = function(c) return migrate_action(6, c) end
 G.FUNCS.pack_target_prev = function() if G.STATE == S.SHOP then Shop.pack_cycle_migration_target(-1) end end
 G.FUNCS.pack_target_next = function() if G.STATE == S.SHOP then Shop.pack_cycle_migration_target(1) end end
-G.FUNCS.pack_skip = function() if G.STATE == S.SHOP then Shop.pack_skip() end end
-G.FUNCS.pack_locked = function() end -- modal ceremony consumes clicks until the last card is revealed
+G.FUNCS.pack_skip = function(command)
+  if G.STATE ~= S.SHOP then return end
+  return Shop.pack_skip(shop_payload(command).open_id)
+end
+G.FUNCS.pack_fast_forward = function(command)
+  if G.STATE ~= S.SHOP then return end
+  return Shop.pack_fast_forward(shop_payload(command).open_id)
+end
+G.FUNCS.pack_locked = G.FUNCS.pack_fast_forward -- one-release compatibility alias
 G.FUNCS.founder_negotiation_answer_1 = function() if G.STATE == S.SHOP then Shop.negotiation_answer(1) end end
 G.FUNCS.founder_negotiation_answer_2 = function() if G.STATE == S.SHOP then Shop.negotiation_answer(2) end end
 G.FUNCS.founder_negotiation_answer_3 = function() if G.STATE == S.SHOP then Shop.negotiation_answer(3) end end

@@ -28,6 +28,13 @@ local function now()
   return (G.TIMERS and G.TIMERS.REAL) or 0
 end
 
+local function ready_age(pack_open)
+  if G.SETTINGS and G.SETTINGS.reduced_motion then return REDUCED_READY end
+  local count = #((pack_open and pack_open.options) or {})
+  return FULL.first_flip + math.max(0, count - 1) * FULL.flip_gap
+    + FULL.flip_duration + FULL.ready_pad
+end
+
 function PackPresentation.begin(pack_open, source_index, definition)
   if not pack_open then return end
   pack_open.presentation = {
@@ -84,6 +91,16 @@ end
 
 function PackPresentation.input_locked(pack_open)
   return pack_open ~= nil and not PackPresentation.snapshot(pack_open).ready
+end
+
+function PackPresentation.fast_forward(pack_open)
+  local p = pack_open and pack_open.presentation
+  if not p or not PackPresentation.input_locked(pack_open) then return false end
+  p.started_at = now() - ready_age(pack_open)
+  p.fast_forwarded = true
+  p.tear_cued, p.ready_cued, p.flip_cued = true, true, {}
+  for index = 1, #((pack_open and pack_open.options) or {}) do p.flip_cued[index] = true end
+  return true
 end
 
 -- Fire tactile cues once as the pure timeline crosses its beats. Presentation flags live beside

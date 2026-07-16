@@ -32,6 +32,13 @@ local function roadmap_pack(kind)
   return kind == "tech_law" or kind == "moonshot"
 end
 
+local function pack_command(action, pack_open, index)
+  return {
+    action = action,
+    payload = { open_id = pack_open and pack_open.open_id or nil, index = index },
+  }
+end
+
 -- One geometry projection feeds retained input targets and the immediate-mode
 -- term sheet. The modal deliberately starts to the right of the 332px run rail.
 local function founder_negotiation_geometry(W, H, view)
@@ -274,7 +281,7 @@ function UI.prepare()
   local W, H, GAME = G.WINDOW.w, G.WINDOW.h, G.GAME
   local definitions, rects = {}, {}
   local order = 0
-  local function add(action, rect, enabled, scope, z, command)
+  local function add(action, rect, enabled, scope, z, command, allow_when_locked)
     if not (action and rect) then return end
     order = order + 1
     rects[action] = rect
@@ -283,6 +290,7 @@ function UI.prepare()
       offset_x = rect.x, offset_y = rect.y, order = order, focus_order = order,
       z = z or 10, enabled = enabled ~= false, modal_scope = scope,
       metadata = command and { command = command } or nil,
+      allow_when_locked = allow_when_locked == true,
     })
   end
   local function selected(area)
@@ -402,34 +410,37 @@ function UI.prepare()
     end
     if sh.pack_open then
       local po, frame = sh.pack_open, PackPresentation.snapshot(sh.pack_open)
-      if frame.ready then
-        local n, cw, ch, gap, y0 = #po.options, 160, 206, 30, 360
-        local play_cx = 332 + (W - 332) / 2
-        local x0 = play_cx - (n * cw + (n - 1) * gap) / 2
+      if not frame.ready then
+        add("pack_fast_forward", { x = 332, y = 0, w = W - 332, h = H }, true,
+          "pack", 90, pack_command("fast_forward", po), true)
+      else
+        local pack_layout = ShopView.pack_layout(po, W, H)
         if po.kind == "tech_evaluation" then
           local targets = Shop.tech_migration_targets()
           for i, option in ipairs(po.options or {}) do
             if option then
-              local x = x0 + (i - 1) * (cw + gap)
+              local product = pack_layout.options[i]
               local can_adopt = Deck.can_add(GAME.master_deck, option, GAME.market)
-              add("pack_adopt_" .. i, { x = x + 4, y = y0 + ch + 8, w = 73, h = 32 }, can_adopt, "pack")
-              add("pack_migrate_" .. i, { x = x + 83, y = y0 + ch + 8, w = 73, h = 32 },
-                #targets > 0 and Deck.can_add(GAME.master_deck, option, GAME.market), "pack")
+              add("pack_adopt_" .. i, product.adopt, can_adopt, "pack", nil,
+                pack_command("adopt", po, i))
+              add("pack_migrate_" .. i, product.migrate,
+                #targets > 0 and Deck.can_add(GAME.master_deck, option, GAME.market), "pack", nil,
+                pack_command("migrate", po, i))
             end
           end
-          add("pack_target_prev", { x = play_cx - 326, y = y0 + ch + 68, w = 48, h = 38 }, #targets > 1, "pack")
-          add("pack_target_next", { x = play_cx + 278, y = y0 + ch + 68, w = 48, h = 38 }, #targets > 1, "pack")
-          add("pack_skip", { x = play_cx - 100, y = y0 + ch + 120, w = 200, h = 42 }, true, "pack")
+          add("pack_target_prev", pack_layout.target_prev, #targets > 1, "pack")
+          add("pack_target_next", pack_layout.target_next, #targets > 1, "pack")
         else
           local can_pick = po.kind == "playbook"
             or (roadmap_pack(po.kind) and #(GAME.consumables or {}) < (GAME.consumable_slots or 2))
             or (po.kind == "hiring" and #G.jokers.cards < Shop.founder_cap())
           for i, option in ipairs(po.options or {}) do
-            if option then add("pack_pick_" .. i, { x = x0 + (i - 1) * (cw + gap) + 10,
-              y = y0 + ch + 8, w = cw - 20, h = 32 }, can_pick, "pack") end
+            if option then add("pack_pick_" .. i, pack_layout.options[i].pick,
+              can_pick, "pack", nil, pack_command("pick", po, i)) end
           end
-          add("pack_skip", { x = play_cx - 100, y = y0 + ch + 50, w = 200, h = 46 }, true, "pack")
         end
+        add("pack_skip", pack_layout.skip, true, "pack", nil,
+          pack_command("skip", po))
       end
     else
       local snapshot = Shop.snapshot()
@@ -1480,9 +1491,10 @@ function UI.render_shop(W, H, GAME)
       end
     end
     local n = #po.options
-    local cw, ch, gap, y0 = 160, 206, 30, 360            -- pick options as founder faces (square art + banner), pick below
-    local play_cx = 332 + (W - 332) / 2
-    local x0 = play_cx - (n * cw + (n - 1) * gap) / 2
+    local pack_layout = ShopView.pack_layout(po, W, H)
+    local first_product = pack_layout.options[1].product
+    local cw, ch, y0 = first_product.w, first_product.h, first_product.y
+    local play_cx = pack_layout.play_center
     local hc, hx, hy
     local migration_targets, migration_target, migration_center
     local migration_effective, migration_before, migration_status
@@ -1502,7 +1514,8 @@ function UI.render_shop(W, H, GAME)
       local c = po.options[i]
       local tech_center = po.kind == "tech_evaluation" and tech_offer_center(c) or nil
       local tech_subject = tech_center and tech_offer_subject(c, tech_center) or nil
-      local x = x0 + (i - 1) * (cw + gap)
+      local product_geometry = pack_layout.options[i]
+      local x = product_geometry.product.x
       local cf = frame.cards[i] or { visible = true, face_down = false, deal = 1, scale_x = 1 }
       if c and cf.visible then
         local deal = ease_out_cubic(cf.deal or 1)
@@ -1543,8 +1556,7 @@ function UI.render_shop(W, H, GAME)
         lg.pop()
         if frame.ready then
           if po.kind == "tech_evaluation" then
-            local adopt = { x = x + 4, y = y0 + ch + 8, w = 73, h = 32 }
-            local migrate = { x = x + 83, y = y0 + ch + 8, w = 73, h = 32 }
+            local adopt, migrate = product_geometry.adopt, product_geometry.migrate
             UI.rects["pack_adopt_" .. i], UI.rects["pack_migrate_" .. i] = adopt, migrate
             local can_adopt = Deck.can_add(GAME.master_deck, c, GAME.market)
             local can_migrate = migration_target ~= nil and Deck.can_add(GAME.master_deck, c, GAME.market)
@@ -1561,7 +1573,7 @@ function UI.render_shop(W, H, GAME)
               UI.text(G.FONTS.tiny, "Deck +1", x, y0 + ch + 43, G.C.text_dim, cw, "center")
             end
           else
-            local r = { x = x + 10, y = y0 + ch + 8, w = cw - 20, h = 32 }
+            local r = product_geometry.pick
             UI.rects["pack_pick_" .. i] = r
             local can_pick = po.kind == "playbook" or
               (roadmap_pack(po.kind) and #(GAME.consumables or {}) < (GAME.consumable_slots or 2)) or
@@ -1583,8 +1595,7 @@ function UI.render_shop(W, H, GAME)
     end
     if frame.ready then
       if po.kind == "tech_evaluation" then
-        local prev = { x = play_cx - 326, y = y0 + ch + 68, w = 48, h = 38 }
-        local next = { x = play_cx + 278, y = y0 + ch + 68, w = 48, h = 38 }
+        local prev, next = pack_layout.target_prev, pack_layout.target_next
         local target_box = { x = play_cx - 268, y = y0 + ch + 68, w = 536, h = 38 }
         UI.rects.pack_target_prev, UI.rects.pack_target_next = prev, next
         draw_button(prev, "‹", #(migration_targets or {}) > 1,
@@ -1612,9 +1623,7 @@ function UI.render_shop(W, H, GAME)
             target_box.x + 8, target_box.y + 10, G.C.text_dim, target_box.w - 16, "center")
         end
       end
-      local sk = po.kind == "tech_evaluation"
-        and { x = play_cx - 100, y = y0 + ch + 120, w = 200, h = 42 }
-        or { x = play_cx - 100, y = y0 + ch + 50, w = 200, h = 46 }
+      local sk = pack_layout.skip
       UI.rects.pack_skip = sk
       draw_button(sk, "Skip", true, point_in_rect(mx, my, sk.x, sk.y, sk.w, sk.h))
       if po.error then
@@ -1779,7 +1788,7 @@ end
 -- so overlays and later/higher-z controls win deterministically.
 function UI.button_at(x, y)
   local po = G.STATE == G.STATES.SHOP and G.GAME and G.GAME.shop and G.GAME.shop.pack_open
-  if PackPresentation.input_locked(po) then return "pack_locked" end
+  if PackPresentation.input_locked(po) then return "pack_fast_forward" end
   for i = #(UI.buttons or {}), 1, -1 do
     local button, r = UI.buttons[i], UI.buttons[i].rect
     if button.enabled ~= false and button.visible ~= false

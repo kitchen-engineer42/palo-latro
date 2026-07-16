@@ -46,6 +46,7 @@ local function normalize_card_offer_state(g)
   end
   g._shop_sequence = bounded_integer(g._shop_sequence, 0)
   g._shop_offer_sequence = bounded_integer(g._shop_offer_sequence, 0)
+  g.pack_session_next_id = bounded_integer(g.pack_session_next_id, 0)
   if type(g.pack_option_passives) ~= "table" then g.pack_option_passives = {} end
   if type(g.shop) ~= "table" then g.shop = nil; return end
 
@@ -74,6 +75,33 @@ local function normalize_card_offer_state(g)
   end
   normalize_offers("founders", "founder")
   normalize_offers("packs", "pack")
+  local function normalize_single_offer(field, kind)
+    local offer = sh[field]
+    if offer == nil or offer == false then sh[field] = false; return end
+    if type(offer) ~= "table" then sh[field] = false; return end
+    if type(offer.offer_id) ~= "string" or offer.offer_id == "" or seen[offer.offer_id] then
+      g._shop_offer_sequence = g._shop_offer_sequence + 1
+      offer.offer_id = table.concat({ kind, tostring(shop_id), tostring(g._shop_offer_sequence) }, ":")
+    end
+    seen[offer.offer_id] = true
+  end
+  normalize_single_offer("voucher", "voucher")
+  normalize_single_offer("consumable", "roadmap")
+  sh.tech_drawer_open = sh.tech_drawer_open == true
+  if sh.pack_open ~= nil and type(sh.pack_open) ~= "table" then sh.pack_open = nil end
+  local po = sh.pack_open
+  if po then
+    if type(po.open_id) ~= "string" or po.open_id == "" then
+      g.pack_session_next_id = g.pack_session_next_id + 1
+      po.open_id = table.concat({ "pack-open", tostring(shop_id),
+        tostring(g.pack_session_next_id) }, ":")
+    else
+      local suffix = tonumber(po.open_id:match(":(%d+)$"))
+      if suffix then g.pack_session_next_id = math.max(g.pack_session_next_id, suffix) end
+    end
+    po.shop_id = shop_id
+    po.source_index = math.max(1, bounded_integer(po.source_index, 1))
+  end
 end
 
 local function normalize_moonshot_state(g)
@@ -239,7 +267,7 @@ function RunState.new(opts)
     founder_negotiation_seen = {}, founder_negotiation_next_id = 0,
     shop_directives = { next_id=1, queue={}, history={} },
     compat_suppressions = { revision=0, edges={}, sources={}, journal={} },
-    _shop_sequence = 0, _shop_offer_sequence = 0,
+    _shop_sequence = 0, _shop_offer_sequence = 0, pack_session_next_id = 0,
     app_levels = {}, tech_drafts_taken = 0,
     -- BLIND / ROUND scope (filled by set_blind / scoring) --------------------
     blind = nil, blind_idx = 1,

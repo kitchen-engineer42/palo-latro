@@ -378,6 +378,23 @@ function Input:rebuild(button_specs)
   if defer_shop_hand and g and g.hand then add_hand_targets() end
 
   self:_drop_missing(seen)
+  local current_pack = pack_open()
+  local current_pack_id = current_pack and (current_pack.open_id or current_pack) or nil
+  if self._pack_open_id and not current_pack then
+    local restore_id
+    for _, spec in ipairs(self._buttons) do
+      local action = spec.action or spec.name or spec.id or spec[1]
+      if spec.enabled ~= false and type(action) == "string"
+          and action:match("^shop_open_pack_%d+$") then
+        restore_id = spec.id or action
+        break
+      end
+    end
+    restore_id = restore_id or "shop_reroll"
+    local registration = self._registrations["button:" .. tostring(restore_id)]
+    if registration then self.controller:focus(registration.node) end
+  end
+  self._pack_open_id = current_pack_id
   self:_sync_policy()
   self.controller:refresh()
   self:_consume()
@@ -507,7 +524,11 @@ function Input:_cancel()
   if state_is("COLLECTION") then return self:_call("collection_back") end
   if state_is("TARGET_SELECT") and g.CONSUMABLE_CANCEL then g.CONSUMABLE_CANCEL(); return true end
   if overlay_open() then return close_overlay() end
-  if pack_open() then return self:_call("pack_skip") end
+  local po = pack_open()
+  if po then
+    local action = PackPresentation.input_locked(po) and "pack_fast_forward" or "pack_skip"
+    return self:_call(action, { payload = { open_id = po.open_id } })
+  end
   if g.FUNCS and g.FUNCS.cancel then g.FUNCS.cancel(); return true end
   if g.FUNCS and g.FUNCS.back then g.FUNCS.back(); return true end
   return false
@@ -563,7 +584,13 @@ function Input:pointer_pressed(x, y, button, device, physical_x, physical_y)
   if button == 2 then
     self.controller:pointer_move(x, y, device or "mouse", physical_x, physical_y)
     self.controller.hid.buttons[2] = true
-    if state_is("TARGET_SELECT") then self.controller:cancel({ button = button }) end
+    local po = pack_open()
+    if state_is("TARGET_SELECT") then
+      self.controller:cancel({ button = button })
+    elseif po then
+      local action = PackPresentation.input_locked(po) and "pack_fast_forward" or "pack_skip"
+      return self:_call(action, { payload = { open_id = po.open_id } })
+    end
   elseif button == 1 then
     self.controller:pointer_press(button, x, y, device or "mouse", physical_x, physical_y)
   else
@@ -621,7 +648,7 @@ function Input:reset()
   if self._founder_drag then self:_restore_founder_drag() end
   self.controller:reset()
   self._registrations, self._button_nodes, self._meta = {}, {}, {}
-  self._buttons, self._founder_drag = {}, nil
+  self._buttons, self._founder_drag, self._pack_open_id = {}, nil, nil
   local g = game()
   if g then
     g.CONTROLLER = self.controller

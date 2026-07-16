@@ -26,6 +26,7 @@ local FounderNegotiation = require("game.founder_negotiation")
 local FounderEvents = require("game.founder_events")
 local ShopDirectives = require("game.shop_directives")
 local Markets = require("game.markets")
+local ShopView = require("game.shop_view")
 local random = RNG.fn("shop")
 local pack_random = RNG.fn("packs")
 local pack_shop_random = RNG.fn("pack_shop")
@@ -226,7 +227,12 @@ function Shop.snapshot()
       packs = { offer_slots = math.max(Shop.pack_slots(), #(sh.packs or {})), limit = MAX_PACK_OFFERS },
     },
     offers = { founders = {}, packs = {} },
-    pack_open = sh.pack_open and true or false,
+    pack_open = sh.pack_open and {
+      open_id = sh.pack_open.open_id, pack_key = sh.pack_open.pack_key,
+      kind = sh.pack_open.kind, picks_left = sh.pack_open.picks_left,
+      source_index = sh.pack_open.source_index,
+      source_offer_id = sh.pack_open.source_offer_id,
+    } or nil,
     negotiation_open = negotiation_pending(),
     tech_drawer_open = sh.tech_drawer_open == true,
   }
@@ -665,11 +671,12 @@ end
 local function emplace_founder(c, sell_basis, edition, source_i, source_count, acquire_opts)
   local sx, sy = G.jokers.T.x, G.jokers.T.y
   if not G.SETTINGS.reduced_motion and source_i and source_count then
-    local pick_w, gap = 160, 30
-    local play_cx = 332 + (G.WINDOW.w - 332) / 2
-    local x0 = play_cx - (source_count * pick_w + (source_count - 1) * gap) / 2
-    sx = x0 + (source_i - 1) * (pick_w + gap) + (pick_w - Card.FW) / 2
-    sy = 360
+    local po = G.GAME and G.GAME.shop and G.GAME.shop.pack_open
+    local geometry = ShopView.pack_layout(po or { options = {} }, G.WINDOW.w, G.WINDOW.h)
+    local product = geometry.options[source_i] and geometry.options[source_i].product
+    if product then
+      sx, sy = product.x + (product.w - Card.FW) / 2, product.y
+    end
   end
   local jk = Card({ center = c, T = { x = sx, y = sy } })
   G.jokers:emplace(jk)
@@ -690,16 +697,40 @@ local function consume_pack_offer(sh, idx)
   sh.revision = (sh.revision or 1) + 1
 end
 
+local function identify_pack_session(sh, pack_open, idx, definition)
+  G.GAME.pack_session_next_id = (G.GAME.pack_session_next_id or 0) + 1
+  pack_open.open_id = table.concat({ "pack-open", tostring(sh.shop_id),
+    tostring(G.GAME.pack_session_next_id) }, ":")
+  pack_open.shop_id = sh.shop_id
+  pack_open.shop_revision = sh.revision
+  pack_open.source_index = idx
+  pack_open.source_offer_id = definition.offer_id
+  return pack_open
+end
+
 function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop_id, expected_session_token)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
   local sh = G.GAME.shop
+  if sh and (type(sh.shop_id) ~= "number" or sh.shop_id < 1) then
+    sh.shop_id = next_sequence("_shop_sequence")
+  end
+  if sh and (type(sh.revision) ~= "number" or sh.revision < 1) then sh.revision = 1 end
   local offered = sh and sh.packs[idx]
   local valid, stale_reason = command_valid(sh, expected_offer_id, expected_revision,
     expected_shop_id, expected_session_token, offered, "pack")
   if not valid then return false, stale_reason end
   if not offered then return false end
+  local canonical = type(offered.key) == "string" and Packs.get(offered.key) or nil
+  if not canonical or canonical.family ~= offered.family or canonical.size ~= offered.size
+      or type(offered.picks) ~= "number" or offered.picks % 1 ~= 0
+      or offered.picks < 1 or offered.picks > 2 then
+    return false, "Invalid pack offer"
+  end
   local definition = {}; for key, value in pairs(offered) do definition[key] = value end
   definition.options = Shop.pack_effective_options(offered)
+  if definition.options < definition.picks or definition.options > 6 then
+    return false, "Invalid pack option count"
+  end
   local cost = Shop.pack_price(definition)
   if cost > 0 and (G.GAME.cash or 0) < cost then return false end
   local tech_options
@@ -742,6 +773,7 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
       art_key = definition.art_key, fallback_art = definition.fallback_art,
       options = tech_options, picks_left = definition.picks,
       migration_target_uid = targets[1] and targets[1].uid or nil }
+    identify_pack_session(sh, sh.pack_open, idx, definition)
     local keys = {}; for _, option in ipairs(tech_options) do keys[#keys + 1] = option.key end
     Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
@@ -760,6 +792,7 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
     sh.pack_open = { kind = "playbook", name = definition.name, pack_key = definition.key,
       art_key = definition.art_key, fallback_art = definition.fallback_art,
       options = opts, picks_left = definition.picks }
+    identify_pack_session(sh, sh.pack_open, idx, definition)
     local keys = {}; for _, option in ipairs(opts) do keys[#keys + 1] = option.key end
     Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
@@ -780,6 +813,7 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
     sh.pack_open = { kind = "tech_law", name = definition.name, pack_key = definition.key,
       art_key = definition.art_key, fallback_art = definition.fallback_art,
       options = opts, picks_left = definition.picks }
+    identify_pack_session(sh, sh.pack_open, idx, definition)
     local keys = {}; for _, option in ipairs(opts) do keys[#keys + 1] = option.key end
     Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
@@ -792,6 +826,7 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
     sh.pack_open = { kind = "moonshot", name = definition.name, pack_key = definition.key,
       art_key = definition.art_key, fallback_art = definition.fallback_art,
       options = moonshot_options, picks_left = definition.picks }
+    identify_pack_session(sh, sh.pack_open, idx, definition)
     local keys = {}; for _, option in ipairs(moonshot_options) do keys[#keys + 1] = option.key end
     Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
@@ -822,12 +857,23 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
   sh.pack_open = { kind = "hiring", name = definition.name, pack_key = definition.key,
     art_key = definition.art_key, fallback_art = definition.fallback_art,
     options = opts, picks_left = definition.picks }
+  identify_pack_session(sh, sh.pack_open, idx, definition)
   local keys = {}; for _, option in ipairs(opts) do keys[#keys + 1] = (option.center or option).key end
   Profile.discover_many(keys)
   PackPresentation.begin(sh.pack_open, idx, definition)
   Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
   Audio.play("select", nil, 0.6)
   return true
+end
+
+local function active_pack(expected_open_id)
+  local sh = G.GAME and G.GAME.shop
+  local po = sh and sh.pack_open
+  if not po then return nil, nil, "No pack is open" end
+  if expected_open_id ~= nil and expected_open_id ~= po.open_id then
+    return nil, nil, "Stale pack session"
+  end
+  return sh, po
 end
 
 local function consume_pack_option(sh, po, index, option, mode)
@@ -868,10 +914,10 @@ function Shop.pack_cycle_migration_target(delta)
   return targets[current]
 end
 
-function Shop.pack_adopt(i)
+function Shop.pack_adopt(i, expected_open_id)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
-  local sh = G.GAME and G.GAME.shop
-  local po = sh and sh.pack_open
+  local sh, po, session_reason = active_pack(expected_open_id)
+  if not sh then return false, session_reason end
   local option = po and po.kind == "tech_evaluation" and po.options[i]
   if not option then return false end
   local entry, reason = TechEvaluation.adopt(option.key, G.GAME, option)
@@ -881,10 +927,10 @@ function Shop.pack_adopt(i)
   return true
 end
 
-function Shop.pack_migrate(i, target_uid)
+function Shop.pack_migrate(i, target_uid, expected_open_id)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
-  local sh = G.GAME and G.GAME.shop
-  local po = sh and sh.pack_open
+  local sh, po, session_reason = active_pack(expected_open_id)
+  if not sh then return false, session_reason end
   local option = po and po.kind == "tech_evaluation" and po.options[i]
   if not option then return false end
   target_uid = target_uid or po.migration_target_uid
@@ -905,7 +951,7 @@ local function validate_legendary_pick(game, pending)
   if not (po and po.kind == "hiring" and valid_remaining_picks(po)) then
     return nil, nil, "The Hiring Round is no longer available"
   end
-  if pending and po.pack_key ~= pending.pack_key then
+  if pending and (po.pack_key ~= pending.pack_key or po.open_id ~= pending.open_id) then
     return nil, nil, "The selected Hiring Round is no longer available"
   end
   local index = pending and pending.option_index
@@ -964,13 +1010,13 @@ local function commit_legendary_pick()
   return true
 end
 
-function Shop.pack_pick(i)
+function Shop.pack_pick(i, expected_open_id)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
-  local sh = G.GAME.shop
-  local po = sh and sh.pack_open
+  local sh, po, session_reason = active_pack(expected_open_id)
+  if not sh then return false, session_reason end
   local c = po and po.options[i]
   if not c then return false end
-  if po.kind == "tech_evaluation" then return Shop.pack_adopt(i) end
+  if po.kind == "tech_evaluation" then return Shop.pack_adopt(i, expected_open_id) end
   if po.kind == "playbook" then
     require("game.playbooks").upgrade(c.key, 1)
     Profile.discover(c.key)
@@ -1037,10 +1083,18 @@ function Shop.pack_pick(i)
   return true
 end
 
-function Shop.pack_skip()
+function Shop.pack_skip(expected_open_id)
   local blocked, reason = mutation_blocked(); if blocked then return false, reason end
-  if G.GAME.shop then G.GAME.shop.pack_open = nil; return true end -- leave remaining picks (Balatro "Skip")
-  return false
+  local sh, _, session_reason = active_pack(expected_open_id)
+  if not sh then return false, session_reason end
+  sh.pack_open = nil
+  return true -- leave remaining picks (Balatro "Skip")
+end
+
+function Shop.pack_fast_forward(expected_open_id)
+  local _, po, session_reason = active_pack(expected_open_id)
+  if not po then return false, session_reason end
+  return PackPresentation.fast_forward(po)
 end
 
 function Shop.negotiation_view()

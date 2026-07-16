@@ -317,7 +317,8 @@ local function shop_view()
         end
       end
     end
-    open = { key = sh.pack_open.pack_key, name = sh.pack_open.name, kind = sh.pack_open.kind,
+    open = { open_id = sh.pack_open.open_id, key = sh.pack_open.pack_key,
+      name = sh.pack_open.name, kind = sh.pack_open.kind,
       picks_left = sh.pack_open.picks_left, options = options }
     if sh.pack_open.kind == "tech_evaluation" then
       local by_uid = {}
@@ -574,13 +575,15 @@ function Mimic.legal_actions()
           end
         end
         if #adopt_choices > 0 then
-          add_action(out, "adopt_pack_option", { index = "integer" }, adopt_choices)
-          add_action(out, "pick_pack_option", { index = "integer" }, adopt_choices,
+          add_action(out, "adopt_pack_option",
+            { index = "integer", open_id = sh.pack_open.open_id }, adopt_choices)
+          add_action(out, "pick_pack_option",
+            { index = "integer", open_id = sh.pack_open.open_id }, adopt_choices,
             "legacy alias for Adopt")
         end
         if #migrate_choices > 0 then
           add_action(out, "migrate_pack_option",
-            { index = "integer", target_uid = "integer" }, migrate_choices)
+            { index = "integer", target_uid = "integer", open_id = sh.pack_open.open_id }, migrate_choices)
         end
       else
         local choices = {}
@@ -590,9 +593,10 @@ function Mimic.legal_actions()
         if can_pick then
           for i, option in ipairs(sh.pack_open.options or {}) do if option then choices[#choices + 1] = i end end
         end
-        if #choices > 0 then add_action(out, "pick_pack_option", { index = "integer" }, choices) end
+        if #choices > 0 then add_action(out, "pick_pack_option",
+          { index = "integer", open_id = sh.pack_open.open_id }, choices) end
       end
-      add_action(out, "skip_pack")
+      add_action(out, "skip_pack", { open_id = sh.pack_open.open_id })
       local fireable = {}
       for i, card in ipairs((G.jokers and G.jokers.cards) or {}) do
         local cfg = card.ability and card.ability.config or {}
@@ -1292,7 +1296,7 @@ local function dispatch(action)
       and true or nil, "pack open failed"
   elseif id == "pick_pack_option" then
     local i, err = index_arg(action, g.shop and g.shop.pack_open and g.shop.pack_open.options); if not i then return nil, err end
-    return Shop.pack_pick(i) and true or nil, "pack pick failed"
+    return Shop.pack_pick(i, action.open_id) and true or nil, "pack pick failed"
   elseif id == "answer_founder_negotiation" then
     if type(action.choice_id) ~= "string" then return nil, "choice_id must be a string" end
     local accepted, reason = Shop.negotiation_answer(action.choice_id)
@@ -1310,7 +1314,7 @@ local function dispatch(action)
     local po = g.shop and g.shop.pack_open
     if not (po and po.kind == "tech_evaluation") then return nil, "Tech Evaluation is not open" end
     local i, err = index_arg(action, po.options); if not i then return nil, err end
-    local accepted, reason = Shop.pack_adopt(i)
+    local accepted, reason = Shop.pack_adopt(i, action.open_id)
     return accepted and true or nil, reason or "Tech adoption failed"
   elseif id == "migrate_pack_option" then
     local po = g.shop and g.shop.pack_open
@@ -1319,10 +1323,10 @@ local function dispatch(action)
     if type(action.target_uid) ~= "number" or action.target_uid % 1 ~= 0 then
       return nil, "invalid migration target uid"
     end
-    local accepted, reason = Shop.pack_migrate(i, action.target_uid)
+    local accepted, reason = Shop.pack_migrate(i, action.target_uid, action.open_id)
     return accepted and true or nil, reason or "Tech migration failed"
   elseif id == "skip_pack" then
-    local skipped, reason = Shop.pack_skip()
+    local skipped, reason = Shop.pack_skip(action.open_id)
     return skipped and true or nil, reason or "pack skip failed"
   elseif id == "leave_shop" then G.FUNCS.shop_continue(); return true end
   return nil, "unknown action"

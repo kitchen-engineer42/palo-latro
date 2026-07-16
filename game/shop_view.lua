@@ -71,4 +71,37 @@ function ShopView.layout(snapshot, width, height)
   return out
 end
 
+-- Pack decisions use the same right-hand playable region at every option count. The projection
+-- deliberately scales the cards before reducing the gaps, so two-to-six offers never cross the
+-- run rail or the right edge.
+function ShopView.pack_layout(pack_open, width, height)
+  width, height = width or 1280, height or 800
+  local play_x, right, gap = 352, width - 20, 10
+  local options = (pack_open and pack_open.options) or {}
+  local count = math.max(1, #options)
+  local available = math.max(1, right - play_x)
+  local card_w = math.min(160,
+    math.max(1, math.floor((available - gap * math.max(0, count - 1)) / count)))
+  local card_h = math.floor(card_w * 206 / 160 + 0.5)
+  local total = count * card_w + math.max(0, count - 1) * gap
+  local x0, y = play_x + math.max(0, (available - total) / 2), 360
+  local out = { options = {}, play_center = play_x + (width - play_x) / 2 }
+  for index = 1, count do
+    local x = x0 + (index - 1) * (card_w + gap)
+    out.options[index] = {
+      product = rect(x, y, card_w, card_h),
+      pick = rect(x + 8, y + card_h + 8, card_w - 16, 32),
+      adopt = rect(x + 3, y + card_h + 8, math.max(1, (card_w - 10) / 2), 32),
+      migrate = rect(x + 7 + math.max(1, (card_w - 10) / 2), y + card_h + 8,
+        math.max(1, (card_w - 10) / 2), 32),
+    }
+  end
+  out.target_prev = rect(out.play_center - 326, y + card_h + 68, 48, 38)
+  out.target_next = rect(out.play_center + 278, y + card_h + 68, 48, 38)
+  out.skip = pack_open and pack_open.kind == "tech_evaluation"
+    and rect(out.play_center - 100, y + card_h + 120, 200, 42)
+    or rect(out.play_center - 100, y + card_h + 50, 200, 46)
+  return out
+end
+
 return ShopView
