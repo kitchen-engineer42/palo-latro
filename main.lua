@@ -26,6 +26,7 @@ local Juice        = require("game.juice")
 local Particles    = require("game.particles")
 local PackPresentation = require("game.pack_presentation")
 local Input         = require("game.input")
+local CardStack     = require("game.card_stack")
 local INPUT
 
 local layers = require("data.layers")
@@ -272,8 +273,10 @@ function love.draw()
   Juice.pop_transform()
 
   if G.STATE == G.STATES.SHOP and G.jokers then   -- founders stay visible in the shop (label drawn by ui.render_shop)
-    for _, c in ipairs(G.jokers.cards) do c:draw() end
-    if G.consumables then for _, c in ipairs(G.consumables.cards) do c:draw() end end   -- inventory visible in shop too
+    local shop_cards = {}
+    for _, c in ipairs(G.jokers.cards) do shop_cards[#shop_cards + 1] = c end
+    if G.consumables then for _, c in ipairs(G.consumables.cards) do shop_cards[#shop_cards + 1] = c end end
+    for _, c in ipairs(CardStack.sorted(shop_cards)) do c:draw() end   -- inventory stays visible too
   end
 
   UI.render()                -- HUD / buttons / overlay (no shake)

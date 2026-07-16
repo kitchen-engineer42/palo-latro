@@ -118,6 +118,7 @@ function Controller:add_target(node, opts)
     node = node,
     id = opts.id or node.ID,
     z = opts.z or opts.order or 0,
+    focus_order = opts.focus_order or opts.navigation_order,
     sequence = self._target_sequence,
     scope = opts.scope,
     global = opts.global == true,
@@ -178,7 +179,9 @@ function Controller:ordered_targets(for_focus)
     if self:_eligible(target, for_focus == true) then ordered[#ordered + 1] = target end
   end
   table.sort(ordered, function(a, b)
-    if a.z ~= b.z then return a.z < b.z end
+    local az = for_focus and (a.focus_order or a.z) or a.z
+    local bz = for_focus and (b.focus_order or b.z) or b.z
+    if az ~= bz then return az < bz end
     return a.sequence < b.sequence
   end)
   return ordered

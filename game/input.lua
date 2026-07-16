@@ -21,6 +21,7 @@ local PackPresentation = require("game.pack_presentation")
 local Audio = require("game.audio")
 local Guidance = require("game.guidance")
 local Consumables = require("game.consumables")
+local CardStack = require("game.card_stack")
 
 local Input = {}
 Input.__index = Input
@@ -170,6 +171,7 @@ function Input:_sync_target(key, node, opts, seen)
   else
     registration.id = opts.id or node.ID
     registration.z = opts.z or 0
+    registration.focus_order = opts.focus_order or opts.navigation_order
     registration.scope = opts.scope
     registration.global = opts.global == true
     registration.action = opts.action or "activate"
@@ -208,13 +210,25 @@ end
 
 function Input:rebuild(button_specs)
   self._buttons = button_specs or self._buttons or {}
-  local seen, z = {}, 0
+  local seen, z, focus_sequence = {}, 0, 0
   local g = game()
 
   local function add(key, node, opts)
     z = z + 1
     opts.z = z
+    if opts.focus_order == nil then
+      focus_sequence = focus_sequence + 1
+      opts.focus_order = focus_sequence
+    else
+      focus_sequence = math.max(focus_sequence, opts.focus_order)
+    end
     self:_sync_target(key, node, opts, seen)
+  end
+
+  local function ordered_area(area)
+    local list, indices = cards(area), {}
+    for index, card in ipairs(list) do indices[card] = index end
+    return CardStack.sorted(list), indices
   end
 
   if selectable_state() and g and g.deck then
@@ -228,11 +242,15 @@ function Input:rebuild(button_specs)
   local target_area_name = pending and (pending.target_area_name
     or select(2, Consumables.target_area(pending.card)))
   if (selectable_state() or (pending and target_area_name == "hand")) and g and g.hand then
-    for i, card in ipairs(cards(g.hand)) do
+    local ordered, indices = ordered_area(g.hand)
+    local focus_base = focus_sequence
+    for _, card in ipairs(ordered) do
+      local i = indices[card]
       local target_mode = pending ~= nil
       add("hand:" .. tostring(card.ID or card), card, {
         id = "hand:" .. tostring(card.ID or i), action = target_mode and "target_card" or "hand_card",
         scope = target_mode and "target" or nil,
+        focus_order = focus_base + i,
         enabled = function(node)
           if not target_mode then return true end
           return pending ~= nil and not pending.need_layer and not node.selected
@@ -241,14 +259,19 @@ function Input:rebuild(button_specs)
         meta = { kind = target_mode and "target_card" or "hand_card", card = card },
       })
     end
+    focus_sequence = math.max(focus_sequence, focus_base + #ordered)
   end
 
   if (founder_state() or (pending and target_area_name == "founder")) and g and g.jokers then
-    for i, card in ipairs(cards(g.jokers)) do
+    local ordered, indices = ordered_area(g.jokers)
+    local focus_base = focus_sequence
+    for _, card in ipairs(ordered) do
+      local i = indices[card]
       local target_mode = pending ~= nil and target_area_name == "founder"
       add("founder:" .. tostring(card.ID or card), card, {
         id = "founder:" .. tostring(card.ID or i), action = target_mode and "target_card" or "founder_card",
         scope = target_mode and "target" or (pack_open() and "pack" or nil),
+        focus_order = focus_base + i,
         enabled = function(node)
           if not target_mode then return true end
           return pending ~= nil and not pending.need_layer and not node.selected
@@ -258,16 +281,22 @@ function Input:rebuild(button_specs)
         meta = { kind = target_mode and "target_card" or "founder_card", card = card },
       })
     end
+    focus_sequence = math.max(focus_sequence, focus_base + #ordered)
   end
 
   if founder_state() and g and g.consumables then
-    for i, card in ipairs(cards(g.consumables)) do
+    local ordered, indices = ordered_area(g.consumables)
+    local focus_base = focus_sequence
+    for _, card in ipairs(ordered) do
+      local i = indices[card]
       add("consumable:" .. tostring(card.ID or card), card, {
         id = "consumable:" .. tostring(card.ID or i), action = "consumable_card",
         scope = pack_open() and "pack" or nil,
+        focus_order = focus_base + i,
         meta = { kind = "consumable_card", card = card },
       })
     end
+    focus_sequence = math.max(focus_sequence, focus_base + #ordered)
   end
 
   if overlay_open() and g and g.WINDOW then

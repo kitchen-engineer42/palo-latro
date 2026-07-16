@@ -159,32 +159,21 @@ local function draw_pool(pool)
   end
 end
 
+local CardStack = require("game.card_stack")
+
 -- per-area draw-rank: lower draws first (under). Within an area, cards draw by their position index, so the
 -- hand's z-order matches its left→right layout. (Was: pool-insertion order = tech-LAYER-grouped → e.g.
 -- Knowledge always on top regardless of hand position.) Hand/play rows keep this order even while a card is
 -- hovered or selected: every card to the right must remain above the card immediately to its left.
-local CARD_AREA_Z = { deck = 1, jokers = 2, play = 3, hand = 4 }
 function draw_all()
   draw_pool(G.I.CARDAREA)   -- areas (mostly invisible / debug outline)
   local list = {}
   for _, c in ipairs(G.I.CARD) do
     if not c.REMOVED and c.states and c.states.visible and c.draw then
-      local area_type = c.area and c.area.config and c.area.config.type
-      local rank = CARD_AREA_Z[area_type] or 5
-      local idx = 0
-      if c.area and c.area.cards then
-        for i = 1, #c.area.cards do if c.area.cards[i] == c then idx = i; break end end
-      end
-      local strict_row_order = area_type == "hand" or area_type == "play"
-      local lift = (not strict_row_order and ((c.states.hover and c.states.hover.is) or c.selected)) and 900 or 0
-      c._zsort = rank * 1000 + idx + lift
       list[#list + 1] = c
     end
   end
-  table.sort(list, function(a, b)
-    if a._zsort == b._zsort then return (a.ID or 0) < (b.ID or 0) end
-    return a._zsort < b._zsort
-  end)
+  table.sort(list, CardStack.less)
   for _, c in ipairs(list) do c:draw() end
   -- G.I.UIBOX reserved for the declarative UI module
 end
