@@ -8,7 +8,9 @@
 --   :add_target(node, opts) / :release_node(node_or_handle)
 --   :set_modal(scope) / :set_gameplay_locked(locked)
 --   :refresh()                                 -- re-resolve hover after target/layout changes
---   :pointer_move(x, y, device) / :pointer_press(button) / :pointer_release(button)
+--   :pointer_move(x, y, device, physical_x, physical_y)
+--   :pointer_press(button, x, y, device, physical_x, physical_y)
+--   :pointer_release(button, x, y, device, physical_x, physical_y)
 --   :focus(node) / :focus_next(direction) / :key_press(key, device) / :key_release(key)
 --   :request(action)                         -- debounced semantic HID action
 --   :cancel() / :back()                      -- always allowed while gameplay is locked
@@ -23,7 +25,10 @@
 local Controller = {}
 Controller.__index = Controller
 
-local DEFAULT_CLICK_DISTANCE = 6
+local DEFAULT_MOUSE_DRAG_DISTANCE = 10
+local DEFAULT_MOUSE_CLICK_SLOP = 12
+local DEFAULT_TOUCH_DRAG_DISTANCE = 18
+local DEFAULT_TOUCH_CLICK_SLOP = 24
 local DEFAULT_CLICK_TIMEOUT = 0.35
 
 local function copy_cursor(cursor)
@@ -45,12 +50,34 @@ local function distance_squared(x1, y1, x2, y2)
   return dx * dx + dy * dy
 end
 
+local function input_type(device)
+  return type(device) == "string" and device:match("^touch") and "touch" or "mouse"
+end
+
 function Controller.new(opts)
   opts = opts or {}
   local self = setmetatable({}, Controller)
-  self.click_distance = opts.click_distance or DEFAULT_CLICK_DISTANCE
+  -- `click_distance` is a one-release compatibility alias.  New callers should set the explicit
+  -- drag/slop fields; the alias intentionally maps both thresholds to the legacy single value.
+  local legacy_distance = opts.click_distance
+  self.mouse_drag_distance = opts.mouse_drag_distance or opts.drag_distance
+    or legacy_distance or DEFAULT_MOUSE_DRAG_DISTANCE
+  self.mouse_click_slop = opts.mouse_click_slop or opts.click_slop
+    or legacy_distance or DEFAULT_MOUSE_CLICK_SLOP
+  self.touch_drag_distance = opts.touch_drag_distance or legacy_distance or DEFAULT_TOUCH_DRAG_DISTANCE
+  self.touch_click_slop = opts.touch_click_slop or legacy_distance or DEFAULT_TOUCH_CLICK_SLOP
+  self.click_distance = legacy_distance or self.mouse_click_slop
+  self.click_distance_deprecated = legacy_distance ~= nil
   self.click_timeout = opts.click_timeout or DEFAULT_CLICK_TIMEOUT
-  assert(self.click_distance >= 0, "click_distance must be non-negative")
+  self.pointer_scale = opts.pointer_scale or opts.display_scale or 1
+  for name, value in pairs({
+    mouse_drag_distance = self.mouse_drag_distance, mouse_click_slop = self.mouse_click_slop,
+    touch_drag_distance = self.touch_drag_distance, touch_click_slop = self.touch_click_slop,
+  }) do
+    assert(type(value) == "number" and value >= 0, name .. " must be non-negative")
+  end
+  assert(type(self.pointer_scale) == "number" and self.pointer_scale > 0,
+    "pointer_scale must be positive")
   assert(self.click_timeout >= 0, "click_timeout must be non-negative")
   self.virtual_width = opts.virtual_width
   self.virtual_height = opts.virtual_height
@@ -102,6 +129,7 @@ function Controller:add_target(node, opts)
     visible = opts.visible,
     hit_test = opts.hit_test,
     bounds = opts.bounds,
+    draggable = opts.draggable == true or opts.action == "reorder",
   }
   self.targets[#self.targets + 1] = target
   return target
@@ -189,6 +217,7 @@ function Controller:_queue(kind, target, fields)
     frame = self.frame,
     time = self.time,
     device = self.hid.device,
+    input_type = input_type(self.hid.device),
     cursor = copy_cursor(self.cursor),
   }
   for k, v in pairs(fields or {}) do intent[k] = v end
@@ -228,7 +257,17 @@ function Controller:refresh()
   return self:_refresh_hover()
 end
 
-function Controller:pointer_move(x, y, device)
+function Controller:set_pointer_scale(scale)
+  assert(type(scale) == "number" and scale > 0, "pointer scale must be positive")
+  self.pointer_scale = scale
+end
+
+function Controller:_physical_point(x, y, physical_x, physical_y, scale)
+  scale = scale or self.pointer_scale
+  return physical_x or x * scale, physical_y or y * scale
+end
+
+function Controller:pointer_move(x, y, device, physical_x, physical_y)
   assert(type(x) == "number" and type(y) == "number", "pointer coordinates must be numbers")
   local next_device = device or self.hid.device or "pointer"
   local press = self._press
@@ -241,37 +280,51 @@ function Controller:pointer_move(x, y, device)
   local target = self:_refresh_hover()
 
   if press and press.target then
-    local moved = distance_squared(press.x, press.y, self.cursor.x, self.cursor.y)
-      > self.click_distance * self.click_distance
-    if moved and not self.dragging then
+    local px, py = self:_physical_point(self.cursor.x, self.cursor.y, physical_x, physical_y, press.scale)
+    local excursion = distance_squared(press.physical_x, press.physical_y, px, py)
+    press.current_physical_x, press.current_physical_y = px, py
+    press.max_excursion_sq = math.max(press.max_excursion_sq or 0, excursion)
+    local moved = press.max_excursion_sq >= press.drag_distance * press.drag_distance
+    if moved and press.target.draggable and not self.dragging then
       self.dragging = press.target.node
       node_state(self.dragging, "drag", true)
       self:_queue("drag", press.target, {
         phase = "start", button = press.button,
         origin = { x = press.x, y = press.y },
+        max_excursion = math.sqrt(press.max_excursion_sq),
       })
     elseif self.dragging then
       self:_queue("drag", press.target, {
         phase = "move", button = press.button,
         origin = { x = press.x, y = press.y },
+        max_excursion = math.sqrt(press.max_excursion_sq),
       })
     end
   end
   return target and target.node or nil
 end
 
-function Controller:pointer_press(button, x, y, device)
+function Controller:pointer_press(button, x, y, device, physical_x, physical_y)
   button = button or 1
   local next_device = device or self.hid.device or "pointer"
   if self._press then return nil end
   self.hid.device = next_device
-  if x ~= nil or y ~= nil then self:pointer_move(assert(x), assert(y), next_device) end
+  if x ~= nil or y ~= nil then
+    self:pointer_move(assert(x), assert(y), next_device, physical_x, physical_y)
+  end
   self.hid.buttons[button] = true
   self.hid.last_control = button
   local node, target = self:resolve()
+  local kind = input_type(next_device)
+  local px, py = self:_physical_point(self.cursor.x, self.cursor.y, physical_x, physical_y)
   self._press = {
     target = target, button = button, device = next_device,
     x = self.cursor.x, y = self.cursor.y, time = self.time,
+    physical_x = px, physical_y = py,
+    current_physical_x = px, current_physical_y = py,
+    max_excursion_sq = 0, scale = self.pointer_scale, input_type = kind,
+    drag_distance = kind == "touch" and self.touch_drag_distance or self.mouse_drag_distance,
+    click_slop = kind == "touch" and self.touch_click_slop or self.mouse_click_slop,
   }
   self.clicked = node
   if node then node_state(node, "click", true) end
@@ -279,20 +332,27 @@ function Controller:pointer_press(button, x, y, device)
   return node
 end
 
-function Controller:pointer_release(button, x, y, device)
+function Controller:pointer_release(button, x, y, device, physical_x, physical_y)
   button = button or 1
   local press = self._press
   local next_device = device or (press and press.device) or self.hid.device or "pointer"
   if press and press.device and press.device ~= next_device then return nil end
   self.hid.device = next_device
-  if x ~= nil or y ~= nil then self:pointer_move(assert(x), assert(y), next_device) end
+  if x ~= nil or y ~= nil then
+    self:pointer_move(assert(x), assert(y), next_device, physical_x, physical_y)
+  end
   self.hid.buttons[button] = nil
   self.hid.last_control = button
   if not press or press.button ~= button then return nil end
   local _, over = self:resolve()
   local elapsed = self.time - press.time
-  local moved = distance_squared(press.x, press.y, self.cursor.x, self.cursor.y)
-  self:_queue("release", press.target, { button = button, over = over and over.node or nil })
+  local max_excursion = math.sqrt(press.max_excursion_sq or 0)
+  local release_inside = press.target and self:_eligible(press.target, false)
+    and self:_contains(press.target, self.cursor.x, self.cursor.y)
+  self:_queue("release", press.target, {
+    button = button, over = over and over.node or nil, max_excursion = max_excursion,
+    cancelled = not release_inside, reason = not release_inside and "outside" or nil,
+  })
 
   local intent
   if self.dragging then
@@ -300,10 +360,14 @@ function Controller:pointer_release(button, x, y, device)
     self:_queue("drag", press.target, {
       phase = "end", button = button, over = over and over.node or nil,
       origin = { x = press.x, y = press.y },
+      max_excursion = max_excursion,
+      cancelled = not release_inside, reason = not release_inside and "outside" or nil,
     })
-  elseif press.target and over == press.target
-      and moved <= self.click_distance * self.click_distance and elapsed <= self.click_timeout then
-    intent = self:_queue_action("click", press.target, { button = button })
+  elseif release_inside
+      and max_excursion <= press.click_slop and elapsed <= self.click_timeout then
+    intent = self:_queue_action("click", press.target, {
+      button = button, max_excursion = max_excursion,
+    })
   end
 
   if self.clicked then node_state(self.clicked, "click", false) end

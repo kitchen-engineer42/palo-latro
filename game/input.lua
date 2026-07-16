@@ -112,6 +112,11 @@ function Input.new(opts)
     virtual_width = opts.width or opts.virtual_width,
     virtual_height = opts.height or opts.virtual_height,
     click_distance = opts.click_distance,
+    mouse_drag_distance = opts.mouse_drag_distance,
+    mouse_click_slop = opts.mouse_click_slop,
+    touch_drag_distance = opts.touch_drag_distance,
+    touch_click_slop = opts.touch_click_slop,
+    pointer_scale = opts.pointer_scale or opts.display_scale,
     click_timeout = opts.click_timeout,
   })
   self._registrations, self._button_nodes, self._meta = {}, {}, {}
@@ -152,6 +157,9 @@ function Input:_sync_target(key, node, opts, seen)
     registration = nil
   end
   if registration and registration.node ~= node then
+    if self._founder_drag and self._founder_drag.card == registration.node then
+      self:_restore_founder_drag()
+    end
     self.controller:release_node(registration)
     self._registrations[key] = nil
     registration = nil
@@ -170,6 +178,7 @@ function Input:_sync_target(key, node, opts, seen)
     registration.focusable = opts.focusable ~= false
     registration.enabled, registration.visible = opts.enabled, opts.visible
     registration.hit_test, registration.bounds = opts.hit_test, opts.bounds
+    registration.draggable = opts.draggable == true
     registration.released = nil
   end
   self._meta[node] = opts.meta
@@ -183,6 +192,7 @@ function Input:_drop_missing(seen)
   for _, key in ipairs(missing) do
     local registration = self._registrations[key]
     local node = registration and registration.node
+    if self._founder_drag and self._founder_drag.card == node then self:_restore_founder_drag() end
     self.controller:release_node(registration)
     self._registrations[key] = nil
     if node then self._meta[node] = nil end
@@ -244,6 +254,7 @@ function Input:rebuild(button_specs)
           return pending ~= nil and not pending.need_layer and not node.selected
             and Consumables.can_target(pending.card, node, g.GAME) == true
         end,
+        draggable = not target_mode,
         meta = { kind = target_mode and "target_card" or "founder_card", card = card },
       })
     end
@@ -406,6 +417,22 @@ function Input:_reorder_founder(card, x)
   return true
 end
 
+function Input:_restore_founder_drag()
+  local drag = self._founder_drag
+  local g = game()
+  local area = g and g.jokers
+  if not (drag and area and drag.card) then self._founder_drag = nil; return false end
+  local list, current = cards(area), nil
+  for i, candidate in ipairs(list) do if candidate == drag.card then current = i; break end end
+  if current and drag.original_index and current ~= drag.original_index then
+    table.remove(list, current)
+    table.insert(list, math.min(drag.original_index, #list + 1), drag.card)
+  end
+  if area.align_cards then area:align_cards() end
+  self._founder_drag = nil
+  return true
+end
+
 function Input:_dispatch_click(intent, meta)
   local g = game()
   if not meta then return false end
@@ -446,11 +473,19 @@ function Input:_dispatch_intent(intent)
     local g = game()
     if intent.phase == "start" and founder_state() then
       local tx = meta.card.T and meta.card.T.x or intent.cursor.x
-      self._founder_drag = { card = meta.card, grabx = (intent.origin and intent.origin.x or intent.cursor.x) - tx }
+      local original_index
+      for i, candidate in ipairs(cards(g and g.jokers)) do
+        if candidate == meta.card then original_index = i; break end
+      end
+      self._founder_drag = {
+        card = meta.card, original_index = original_index,
+        grabx = (intent.origin and intent.origin.x or intent.cursor.x) - tx,
+      }
       return self:_reorder_founder(meta.card, intent.cursor.x)
     elseif intent.phase == "move" and self._founder_drag and self._founder_drag.card == meta.card then
       return self:_reorder_founder(meta.card, intent.cursor.x)
     elseif intent.phase == "end" and self._founder_drag and self._founder_drag.card == meta.card then
+      if intent.cancelled then return self:_restore_founder_drag() end
       if g and g.jokers and g.jokers.align_cards then g.jokers:align_cards() end
       self._founder_drag = nil
       return true
@@ -467,36 +502,36 @@ function Input:_consume()
   return handled
 end
 
-function Input:pointer_moved(x, y, device)
+function Input:pointer_moved(x, y, device, physical_x, physical_y)
   self:_sync_policy()
-  self.controller:pointer_move(x, y, device or "mouse")
+  self.controller:pointer_move(x, y, device or "mouse", physical_x, physical_y)
   return self:_consume()
 end
 
-function Input:pointer_pressed(x, y, button, device)
+function Input:pointer_pressed(x, y, button, device, physical_x, physical_y)
   self:_sync_policy()
   button = button or 1
   if button == 2 then
-    self.controller:pointer_move(x, y, device or "mouse")
+    self.controller:pointer_move(x, y, device or "mouse", physical_x, physical_y)
     self.controller.hid.buttons[2] = true
     if state_is("TARGET_SELECT") then self.controller:cancel({ button = button }) end
   elseif button == 1 then
-    self.controller:pointer_press(button, x, y, device or "mouse")
+    self.controller:pointer_press(button, x, y, device or "mouse", physical_x, physical_y)
   else
     return false
   end
   return self:_consume()
 end
 
-function Input:pointer_released(x, y, button, device)
+function Input:pointer_released(x, y, button, device, physical_x, physical_y)
   self:_sync_policy()
   if (button or 1) == 2 then
-    self.controller:pointer_move(x, y, device or "mouse")
+    self.controller:pointer_move(x, y, device or "mouse", physical_x, physical_y)
     self.controller.hid.buttons[2] = nil
     return false
   end
   if (button or 1) ~= 1 then return false end
-  self.controller:pointer_release(button or 1, x, y, device or "mouse")
+  self.controller:pointer_release(button or 1, x, y, device or "mouse", physical_x, physical_y)
   return self:_consume()
 end
 
@@ -522,6 +557,7 @@ end
 
 function Input:release_node(node)
   if not node then return end
+  if self._founder_drag and self._founder_drag.card == node then self:_restore_founder_drag() end
   self.controller:release_node(node)
   self._meta[node] = nil
   local remove = {}
@@ -529,11 +565,11 @@ function Input:release_node(node)
     if registration.node == node then remove[#remove + 1] = key end
   end
   for _, key in ipairs(remove) do self._registrations[key] = nil end
-  if self._founder_drag and self._founder_drag.card == node then self._founder_drag = nil end
 end
 
 function Input:reset()
   if not self.controller then return end
+  if self._founder_drag then self:_restore_founder_drag() end
   self.controller:reset()
   self._registrations, self._button_nodes, self._meta = {}, {}, {}
   self._buttons, self._founder_drag = {}, nil

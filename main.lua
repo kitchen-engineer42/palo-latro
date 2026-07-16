@@ -172,7 +172,7 @@ function love.load()
     love.window.setFullscreen(true)
     update_view(love.graphics.getDimensions())
   end
-  INPUT = Input.new({ width = G.VW, height = G.VH })
+  INPUT = Input.new({ width = G.VW, height = G.VH, pointer_scale = G.VIEW.scale })
   G.INPUT = INPUT
   local mx, my = vmap(love.mouse.getPosition())
   INPUT:pointer_moved(mx, my, "mouse")
@@ -301,19 +301,19 @@ end
 function love.mousepressed(x, y, button)
   if not INPUT then return end
   local vx, vy = vmap(x, y)
-  INPUT:pointer_pressed(vx, vy, button, "mouse")
+  INPUT:pointer_pressed(vx, vy, button, "mouse", x, y)
 end
 
 function love.mousereleased(x, y, button)
   if not INPUT then return end
   local vx, vy = vmap(x, y)
-  INPUT:pointer_released(vx, vy, button, "mouse")
+  INPUT:pointer_released(vx, vy, button, "mouse", x, y)
 end
 
 function love.mousemoved(x, y)
   if not INPUT then return end
   local vx, vy = vmap(x, y)
-  INPUT:pointer_moved(vx, vy, "mouse")
+  INPUT:pointer_moved(vx, vy, "mouse", x, y)
 end
 
 function love.keypressed(key)
@@ -347,20 +347,26 @@ end
 
 function love.touchpressed(id, x, y)
   if not INPUT then return end
-  local vx, vy = vmap(x, y)
-  INPUT:pointer_pressed(vx, vy, 1, "touch:" .. tostring(id))
+  local w, h = love.graphics.getDimensions()
+  local px, py = x * w, y * h
+  local vx, vy = vmap(px, py)
+  INPUT:pointer_pressed(vx, vy, 1, "touch:" .. tostring(id), px, py)
 end
 
 function love.touchmoved(id, x, y)
   if not INPUT then return end
-  local vx, vy = vmap(x, y)
-  INPUT:pointer_moved(vx, vy, "touch:" .. tostring(id))
+  local w, h = love.graphics.getDimensions()
+  local px, py = x * w, y * h
+  local vx, vy = vmap(px, py)
+  INPUT:pointer_moved(vx, vy, "touch:" .. tostring(id), px, py)
 end
 
 function love.touchreleased(id, x, y)
   if not INPUT then return end
-  local vx, vy = vmap(x, y)
-  INPUT:pointer_released(vx, vy, 1, "touch:" .. tostring(id))
+  local w, h = love.graphics.getDimensions()
+  local px, py = x * w, y * h
+  local vx, vy = vmap(px, py)
+  INPUT:pointer_released(vx, vy, 1, "touch:" .. tostring(id), px, py)
 end
 
 function love.resize(w, h)
