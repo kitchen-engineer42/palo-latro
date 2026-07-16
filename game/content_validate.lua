@@ -162,6 +162,15 @@ local function add(r, path, message)
 end
 
 local function text(v) return type(v) == "string" and v ~= "" end
+local function unicode_scalars(v)
+  if type(v) ~= "string" then return 0 end
+  local count = 0
+  for index = 1, #v do
+    local byte = v:byte(index)
+    if byte < 0x80 or byte >= 0xC0 then count = count + 1 end
+  end
+  return count
+end
 local function number(v) return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge end
 
 local function dense_array(value)
@@ -1301,7 +1310,7 @@ local function validate_dsl(dsl, path, r, owner)
   end
 end
 
-local function validate_centers(list, source, r, keys)
+local function validate_centers(list, source, r, keys, require_founder_presentation)
   if not dense_array(list) then add(r, source, "must return a dense center array"); return end
   r.counts[source] = #list
   for i, center in ipairs(list) do
@@ -1325,9 +1334,24 @@ local function validate_centers(list, source, r, keys)
         end
         if not dense_array(center.eras) or #center.eras == 0 then add(r, path .. ".eras", "must be a non-empty array")
         else for j, era in ipairs(center.eras) do if not ERAS[era] then add(r, path .. ".eras[" .. j .. "]", "unknown era") end end end
-      elseif (source == "founders" or source == "forms") and center.set == "Founder" then
+      elseif center.set == "Founder" then
         if not RARITIES[center.rarity] then add(r, path .. ".rarity", "unknown rarity " .. tostring(center.rarity)) end
         if not number(center.salary) or center.salary < 0 then add(r, path .. ".salary", "must be non-negative") end
+        local presentation = require_founder_presentation or center.face_tag ~= nil
+          or center.rules_text ~= nil or center.lore_text ~= nil
+        if presentation then
+          if not text(center.face_tag) then add(r, path .. ".face_tag", "is required")
+          elseif unicode_scalars(center.face_tag) > 48 then add(r, path .. ".face_tag", "must be at most 48 Unicode scalars") end
+          if not text(center.rules_text) then add(r, path .. ".rules_text", "is required")
+          elseif unicode_scalars(center.rules_text) > 300 then add(r, path .. ".rules_text", "must be at most 300 Unicode scalars")
+          else
+            local paragraphs = 1
+            for _ in center.rules_text:gmatch("\n%s*\n") do paragraphs = paragraphs + 1 end
+            if paragraphs > 2 then add(r, path .. ".rules_text", "must contain at most two paragraphs") end
+          end
+          if not text(center.lore_text) then add(r, path .. ".lore_text", "is required") end
+          if not text(center.ability_text) then add(r, path .. ".ability_text", "must remain available for weighting") end
+        end
         if center.dsl ~= nil then validate_dsl(center.dsl, path .. ".dsl", r, center.key or path) end
       end
     end
@@ -1557,9 +1581,10 @@ function Validate.catalog(catalog, options)
   local r, keys, tech_keys = report(), {}, {}
   validate_centers(catalog.techcards, "techcards", r, keys)
   for _, center in ipairs(catalog.techcards or {}) do if text(center.key) then tech_keys[center.key:gsub("^t_", "")] = true end end
-  validate_centers(catalog.founders, "founders", r, keys)
-  validate_centers(catalog.forms, "forms", r, keys)
-  validate_centers(catalog.signature_cards or {}, "signature_cards", r, keys)
+  validate_centers(catalog.founders, "founders", r, keys, options.require_founder_presentation)
+  validate_centers(catalog.forms, "forms", r, keys, options.require_founder_presentation)
+  validate_centers(catalog.signature_cards or {}, "signature_cards", r, keys,
+    options.require_founder_presentation)
   validate_centers(catalog.vouchers or {}, "vouchers", r, keys)
   validate_centers(catalog.consumables or {}, "consumables", r, keys)
   validate_tech_laws(catalog.consumables or {}, r)

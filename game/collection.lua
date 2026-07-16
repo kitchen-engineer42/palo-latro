@@ -204,7 +204,7 @@ local function summary(category, source)
       ((view.perk or {}).name or "Market Perk") .. ": " .. ((view.perk or {}).effect or "")
   elseif category == "founders" or category == "forms" then
     return (source.rarity or "Founder") .. " · Salary $" .. tostring(source.salary or 0),
-      source.effect_brief or source.ability_name or source.hint or ""
+      source.rules_text or source.effect_brief or source.ability_name or source.hint or ""
   elseif category == "tech" then
     local users = source.base_users or source.users or source.chips or 0
     return (source.layer or "Tech") .. " · " .. (source.sub_role or "Technology"),

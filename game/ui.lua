@@ -49,14 +49,15 @@ local function founder_negotiation_geometry(W, H, view)
   local geometry = {
     panel = panel,
     portrait = { x = panel.x + 30, y = panel.y + 116, w = 178, h = 228 },
-    prompt = { x = content_x, y = panel.y + 116, w = content_w, h = 92 },
+    rules = { x = content_x, y = panel.y + 116, w = content_w, h = 50 },
+    prompt = { x = content_x, y = panel.y + 174, w = content_w, h = 52 },
     standard = { x = content_x, y = panel.y + panel.h - 62, w = 260, h = 40 },
     walk = { x = content_x + content_w - 184, y = panel.y + panel.h - 62, w = 184, h = 40 },
     choices = {},
   }
   if view and view.phase == "question" then
     for i = 1, 3 do
-      geometry.choices[i] = { x = content_x, y = panel.y + 226 + (i - 1) * 70,
+      geometry.choices[i] = { x = content_x, y = panel.y + 246 + (i - 1) * 70,
         w = content_w, h = 56 }
     end
   else
@@ -998,14 +999,14 @@ function UI.render_tech_draft(W, H, GAME)
     point_in_rect(mx, my, raise.x, raise.y, raise.w, raise.h), G.FONTS.tiny)
 end
 
--- hover tooltip: full ability text for the card under the cursor (founders) or tech-card desc.
+-- hover tooltip: bounded run rules for the card under the cursor (founders) or tech-card desc.
 -- Drawn LAST (after cards + HUD) so it sits on top of everything. Hover flags are set in love.update.
 local function wrapped_height(text, font, w)
   local _, lines = font:getWrap(text, w)
   return #lines * font:getHeight()
 end
 
--- reusable tooltip box: full name + ability_name + (wrapped, full) ability text near an anchor point.
+-- reusable tooltip box: full name + ability name + wrapped rules near an anchor point.
 function UI.tip_box(ax, ay, title, sub, body)
   sub, body = sub or "", body or ""
   if not title then return end
@@ -1070,7 +1071,7 @@ function UI.draw_tooltip()
     body = economics .. "\n" .. (c.ability_name or "")
     local ed = hovered.edition and Card.EDITIONS[hovered.edition]
     if ed then body = body .. "\n\226\156\166 " .. ed.label .. " edition: " .. (ed.desc or "") end
-    body = body .. "\n\n" .. (c.ability_text or c.hint or "")          -- flavor sketch (secondary)
+    body = body .. "\n\n" .. (c.rules_text or c.hint or "")
   else
     local effective, status, before_decay = Card.tech_users(hovered, c)
     local base = hovered.base_users or c.base_users or 0
@@ -1331,6 +1332,9 @@ local function draw_founder_negotiation(W, H, view, mx, my)
     p.x + 24, p.y + 82, G.C.win, p.w - 48, "center")
   UI.text(G.FONTS.tiny, "PITCH LOCKED  ·  WALK AWAY FORFEITS THE OPEN PACK",
     p.x + 24, p.y + 104, G.C.text_dim, p.w - 48, "center")
+  UI.text(G.FONTS.tiny, (view.founder and view.founder.rules_text)
+      or (center and center.rules_text) or "",
+    ng.rules.x, ng.rules.y, G.C.text_dim, ng.rules.w, "left")
 
   if center then
     local preview = { ability = { config = { _salary = view.projected_salary } } }
@@ -1632,7 +1636,7 @@ function UI.render_shop(W, H, GAME)
       end
       if hc and po.kind == "hiring" then UI.tip_box(hx, hy, hc.name,
         Card.effect_brief(hc) .. "   \194\183   " .. (hc.rarity or ""),
-        (hc.ability_name or "") .. "\n\n" .. (hc.ability_text or hc.hint or ""))
+        (hc.ability_name or "") .. "\n\n" .. (hc.rules_text or hc.hint or ""))
       elseif hc and roadmap_pack(po.kind) then
         local detail = hc.desc or ""
         if po.kind == "moonshot" then
@@ -1779,7 +1783,9 @@ function UI.render_shop(W, H, GAME)
   end
   draw_shop_tech_drawer(W, H, sh, mx, my)
   if not sh.tech_drawer_open then
-    if hovc then UI.tip_box(hovx, hovy, hovc.name, Card.effect_brief(hovc) .. "   \194\183   " .. (hovc.rarity or ""), (hovc.ability_name or "") .. "\n\n" .. (hovc.ability_text or hovc.hint or "")) end
+    if hovc then UI.tip_box(hovx, hovy, hovc.name,
+      Card.effect_brief(hovc) .. "   \194\183   " .. (hovc.rarity or ""),
+      (hovc.ability_name or "") .. "\n\n" .. (hovc.rules_text or hovc.hint or "")) end
     if hovcc then UI.tip_box(hovccx, hovccy, hovcc.name, (hovcc.kind or "Tech Law") .. "   \194\183   " .. (hovcc.rarity or ""), hovcc.desc or "") end
   end
 end

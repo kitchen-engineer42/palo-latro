@@ -249,6 +249,8 @@ function Shop.snapshot()
       offer_id = offer and offer.offer_id or nil,
       key = center and center.key or nil, name = center and center.name or nil,
       short = center and center.short or nil, rarity = center and center.rarity or nil,
+      face_tag = center and center.face_tag or nil,
+      rules_text = center and center.rules_text or nil,
       edition = offer and offer.edition or nil, stake_mod = plain_copy(offer and offer.stake_mod),
       price = offer and Shop.price(offer) or nil, disabled_reason = disabled,
       command = shop_command("buy_founder", sh, offer, index, disabled),

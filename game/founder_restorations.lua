@@ -28,7 +28,7 @@ function Restorations.apply(founders)
       for field, value in pairs(override) do center[field] = value end
     end
   end
-  return out
+  return require("game.founder_presentation").apply(out, founders)
 end
 
 return Restorations

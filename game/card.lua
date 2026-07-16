@@ -317,6 +317,7 @@ function Card.face_tag(center, card)
   end
   local live_state = card and state_summary(center, card)
   if live_state then return live_state end
+  if center.face_tag and center.face_tag ~= "" then return center.face_tag end
   if d and d.retrigger then return "Retrigger" end               -- DSL-derived short category
   local op = d and d.ops and d.ops[1]
   if op then

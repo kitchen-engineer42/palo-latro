@@ -33,6 +33,7 @@ function Centers.load_all()
     markets = require("data.centers.markets_gen"),
   }
   Centers.content_report = ContentValidate.assert_catalog(content, {
+    require_founder_presentation = true,
     minimums = { techcards = 226, founders = 262, forms = 17, tech_laws = 22,
       moonshots = 16, legendary_negotiations = 18 },
   })

@@ -2,7 +2,7 @@
 -- Kept separate from generated catalogs so content regeneration cannot clobber them.
 -- Behaviour: kitchen-engineer42's per-ante doubling lives in game/founders.lua FX; Jo-harness-burg's
 -- clash-clear / double-layer / additive coupling are handled as the lone special case in scoring.lua.
-return {
+local signature_cards = {
   {
     key = "f_kitchen-engineer42", set = "Founder",
     name = "kitchen-engineer42",                 -- codename = display name (matches the GitHub handle)
@@ -32,3 +32,4 @@ return {
     desc = "The harness writes the JIT schema: clears all clashes, fills 2 layers, grows with its paired Founder.",
   },
 }
+return require("game.founder_presentation").apply(signature_cards, signature_cards)

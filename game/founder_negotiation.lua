@@ -268,7 +268,8 @@ function FounderNegotiation.view(game)
   if center then
     local multiplier = pending.standard_terms and 1.0
       or FounderNegotiation.salary_multiplier(pending.rapport)
-    out.founder = { key = center.key, name = center.name, ability_name = center.ability_name }
+    out.founder = { key = center.key, name = center.name, ability_name = center.ability_name,
+      face_tag = center.face_tag, rules_text = center.rules_text }
     out.base_salary = center.salary or 1
     out.salary_multiplier = multiplier
     out.projected_salary = math.max(1, math.floor(out.base_salary * multiplier + 0.5))

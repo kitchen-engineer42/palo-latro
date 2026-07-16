@@ -153,7 +153,9 @@ local function card_view(card, area, index)
     selected = card.selected == true,
     salary = center.salary,
     ability = center.ability_name,
-    effect = center.effect_brief or center.ability_text or center.desc,
+    face_tag = center.face_tag,
+    rules_text = center.rules_text,
+    effect = center.rules_text or center.effect_brief or center.desc,
     sell_value = cfg._sell_basis and math.max(0, math.floor(cfg._sell_basis * 0.5)) or nil,
   }
   if center.set == "Founder" then
@@ -284,8 +286,10 @@ local function shop_view()
   local founders, packs = {}, {}
   for i, offer in ipairs(sh.founders or {}) do
     if offer then
-      founders[#founders + 1] = { index = i, key = offer.key, name = offer.name,
+      local founder = offer.center or offer
+      founders[#founders + 1] = { index = i, key = founder.key, name = founder.name,
         rarity = offer.rarity, edition = offer.edition, price = Shop.price(offer),
+        face_tag = founder.face_tag, rules_text = founder.rules_text,
         offer_id = offer.offer_id, pinned = offer.pinned == true,
         free = Shop.price(offer) == 0, directive_source = offer.directive_source }
     end
@@ -305,8 +309,10 @@ local function shop_view()
         if sh.pack_open.kind == "tech_evaluation" then
           options[#options + 1] = tech_option_view(option, i)
         else
-          local option_view = { index = i, key = option.key, name = option.name,
+          local option_center = option.center or option
+          local option_view = { index = i, key = option_center.key, name = option_center.name,
             edition = option.edition, rarity = option.rarity, description = option.desc,
+            face_tag = option_center.face_tag, rules_text = option_center.rules_text,
             target = copy_plain(option.target), price_units = option.price_units,
             moonshot_payload = copy_plain(option.moonshot_payload) }
           if option.kind == "Moonshot" then
