@@ -347,7 +347,8 @@ function Shop.enter()
   G.GAME.shop = { shop_id = next_sequence("_shop_sequence"), revision = 1,
                   founders = {}, rerolls = 0, reroll_cost = Shop.reroll_cost(0),
                   voucher = voucher, voucher_free = voucher and G.GAME.free_voucher_pending or false,
-                  consumable = roll_consumable(), packs = {}, pack_open = nil }
+                  consumable = roll_consumable(), packs = {}, pack_open = nil,
+                  tech_drawer_open = false }
   if G.GAME.shop.voucher_free then G.GAME.free_voucher_pending = false end
   roll_offers()
   local seen = {}

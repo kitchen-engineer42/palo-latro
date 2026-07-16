@@ -69,6 +69,16 @@ local function founder_state()
   return state_is("SELECTING_HAND") or state_is("SHOP")
 end
 
+local function shop_tech_drawer_open()
+  local g = game()
+  return state_is("SHOP") and g and g.GAME and g.GAME.shop
+    and g.GAME.shop.tech_drawer_open == true
+end
+
+local function tech_selection_state()
+  return selectable_state() or shop_tech_drawer_open()
+end
+
 local function overlay_open()
   local g = game()
   return g and (g.SHOW_DECK_VIEW or g.SHOW_RUN_INFO or g.SHOW_OPTIONS) == true
@@ -241,7 +251,8 @@ function Input:rebuild(button_specs)
   local pending = state_is("TARGET_SELECT") and g and g.PENDING_CONSUMABLE or nil
   local target_area_name = pending and (pending.target_area_name
     or select(2, Consumables.target_area(pending.card)))
-  if (selectable_state() or (pending and target_area_name == "hand")) and g and g.hand then
+  local defer_shop_hand = shop_tech_drawer_open() and not pending
+  local function add_hand_targets()
     local ordered, indices = ordered_area(g.hand)
     local focus_base = focus_sequence
     for _, card in ipairs(ordered) do
@@ -249,7 +260,7 @@ function Input:rebuild(button_specs)
       local target_mode = pending ~= nil
       add("hand:" .. tostring(card.ID or card), card, {
         id = "hand:" .. tostring(card.ID or i), action = target_mode and "target_card" or "hand_card",
-        scope = target_mode and "target" or nil,
+        scope = target_mode and "target" or (pack_open() and "pack" or nil),
         focus_order = focus_base + i,
         enabled = function(node)
           if not target_mode then return true end
@@ -260,6 +271,10 @@ function Input:rebuild(button_specs)
       })
     end
     focus_sequence = math.max(focus_sequence, focus_base + #ordered)
+  end
+  if (tech_selection_state() or (pending and target_area_name == "hand"))
+      and g and g.hand and not defer_shop_hand then
+    add_hand_targets()
   end
 
   if (founder_state() or (pending and target_area_name == "founder")) and g and g.jokers then
@@ -357,6 +372,11 @@ function Input:rebuild(button_specs)
     end
   end
 
+
+  -- The open Shop drawer is a foreground tray. Register its Tech cards after product controls so
+  -- pointer hit order matches the cards that are drawn over the shelf; focus order stays semantic.
+  if defer_shop_hand and g and g.hand then add_hand_targets() end
+
   self:_drop_missing(seen)
   self:_sync_policy()
   self.controller:refresh()
@@ -381,7 +401,7 @@ end
 
 function Input:_toggle_hand(card)
   local g = game()
-  if not (selectable_state() and g and g.hand and card) then return false end
+  if not (tech_selection_state() and g and g.hand and card) then return false end
   local max_selected = (g.GAME and g.GAME.select_max) or math.huge
   if not card.selected and selected_count(g.hand) >= max_selected then return false end
   if card.toggle_select then card:toggle_select()

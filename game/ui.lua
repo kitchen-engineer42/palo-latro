@@ -25,6 +25,7 @@ local Leads = require("game.leads")
 local Consumables = require("game.consumables")
 local Moonshots = require("game.moonshots")
 local FounderActions = require("game.founder_actions")
+local CardStack = require("game.card_stack")
 
 local function roadmap_pack(kind)
   return kind == "tech_law" or kind == "moonshot"
@@ -389,6 +390,8 @@ function UI.prepare()
       add("founder_negotiation_standard_terms", ng.standard, true, "negotiation", 60)
       add("founder_negotiation_walk_away", ng.walk, true, "negotiation", 60)
     else
+    local drawer_scope = sh.pack_open and "pack" or nil
+    add("shop_tech_drawer", { x = 344, y = 264, w = 150, h = 34 }, true, drawer_scope, 55)
     local founder = selected(G.jokers)
     if founder and founder.center then
       local descriptor = FounderActions.descriptor(founder)
@@ -409,7 +412,7 @@ function UI.prepare()
       local bw, bh = 92, 28
       local x = consumable.VT.x + (consumable.VT.w - bw * 2 - 8) / 2
       local y = consumable.VT.y + consumable.VT.h + 4
-      local usable = Consumables.can_use(consumable)
+      local usable = Consumables.selected_use_view(consumable, GAME).legal
       local scope = sh.pack_open and "pack" or nil
       add("use_consumable", { x = x, y = y, w = bw, h = bh }, usable == true, scope)
       add("sell_consumable", { x = x + bw + 8, y = y, w = bw, h = bh }, true, scope)
@@ -494,13 +497,14 @@ function UI.prepare()
       local bw, bh = 92, 28
       local x = consumable.VT.x + (consumable.VT.w - bw * 2 - 8) / 2
       local y = consumable.VT.y + consumable.VT.h + 4
-      local usable = Consumables.can_use(consumable)
+      local usable = Consumables.selected_use_view(consumable, GAME).legal
       add("use_consumable", { x = x, y = y, w = bw, h = bh }, usable == true)
       add("sell_consumable", { x = x + bw + 8, y = y, w = bw, h = bh }, true)
     end
     if G.STATE == G.STATES.TARGET_SELECT and G.PENDING_CONSUMABLE
         and G.PENDING_CONSUMABLE.need_layer then
-      local layers, lw, lh, gap = { "Frontend", "Backend", "Data", "Infra", "AI" }, 150, 40, 12
+      local layers = G.PENDING_CONSUMABLE.layer_options or Coverage.CORE_ORDER
+      local lw, lh, gap = 150, 40, 12
       local play_x, total = 332, #layers * lw + (#layers - 1) * gap
       local x0 = play_x + ((W - play_x) - total) / 2
       for i, layer in ipairs(layers) do
@@ -797,7 +801,8 @@ function UI.render()
     local bx = selC.VT.x + (selC.VT.w - bw2 * 2 - 8) / 2
     local by2 = selC.VT.y + selC.VT.h + 4
     UI.rects.use_consumable = { x = bx, y = by2, w = bw2, h = bh2 }
-    local usable, reason = Consumables.can_use(selC)
+    local use_view = Consumables.selected_use_view(selC, GAME)
+    local usable, reason = use_view.legal, use_view.reason
     draw_button(UI.rects.use_consumable, "Use", usable == true,
       point_in_rect(mx, my, bx, by2, bw2, bh2))
     UI.rects.sell_consumable = { x = bx + bw2 + 8, y = by2, w = bw2, h = bh2 }
@@ -820,7 +825,7 @@ function UI.render()
       UI.text(G.FONTS.tiny, tostring(pc.error), 332, 294, G.C.lose, W - 332, "center")
     end
     if pc.need_layer then
-      local Ls = { "Frontend", "Backend", "Data", "Infra", "AI" }
+      local Ls = pc.layer_options or Coverage.CORE_ORDER
       local lw, lh, lgap = 150, 40, 12
       local play_x, total = 332, #Ls * lw + (#Ls - 1) * lgap
       local lx0 = play_x + ((W - play_x) - total) / 2
@@ -1058,7 +1063,8 @@ function UI.draw_tooltip()
   local consumable = c.set == "Consumable"
   local sub, body
   if consumable then
-    local usable, reason = Consumables.can_use(hovered)
+    local use_view = Consumables.selected_use_view(hovered, G.GAME)
+    local usable, reason = use_view.legal, use_view.reason
     sub = (c.kind or "Consumable") .. "  ·  " .. tostring(c.rarity or "")
     body = c.desc or ""
     if c.kind == "Moonshot" then
@@ -1399,6 +1405,21 @@ local function draw_founder_negotiation(W, H, view, mx, my)
     point_in_rect(mx, my, ng.walk.x, ng.walk.y, ng.walk.w, ng.walk.h), G.FONTS.tiny)
 end
 
+local function draw_shop_tech_drawer(W, H, shop, mx, my)
+  local toggle = UI.rects.shop_tech_drawer
+  if toggle then
+    draw_button(toggle, shop.tech_drawer_open and "Close Tech" or "Your Tech", true,
+      point_in_rect(mx, my, toggle.x, toggle.y, toggle.w, toggle.h), G.FONTS.tiny)
+  end
+  if not shop.tech_drawer_open then return end
+  local panel = { x = 332, y = H - Card.H - 86, w = W - 332, h = Card.H + 86 }
+  pixel_rect(panel.x, panel.y, panel.w, panel.h, { 0.045, 0.055, 0.08, 0.98 },
+    { chamfer = 6, border = G.C.arr, line_w = 2, shadow = false })
+  UI.text(G.FONTS.tiny, "YOUR TECH  ·  Select targets, then choose a Roadmap and press Use",
+    panel.x + 12, panel.y + 10, G.C.arr, panel.w - 24, "center")
+  for _, card in ipairs(CardStack.sorted((G.hand and G.hand.cards) or {})) do card:draw() end
+end
+
 function UI.render_shop(W, H, GAME)
   local mx, my = cursor()
   UI.left_panel(GAME, true)                              -- same left counter rail as play, with a SHOP badge
@@ -1421,7 +1442,8 @@ function UI.render_shop(W, H, GAME)
     local bw, bh = 92, 28
     local bx = selC.VT.x + (selC.VT.w - bw * 2 - 8) / 2
     local by = selC.VT.y + selC.VT.h + 4
-    local usable, reason = Consumables.can_use(selC)
+    local use_view = Consumables.selected_use_view(selC, GAME)
+    local usable, reason = use_view.legal, use_view.reason
     UI.rects.use_consumable = { x = bx, y = by, w = bw, h = bh }
     draw_button(UI.rects.use_consumable, "Use", usable == true,
       point_in_rect(mx, my, bx, by, bw, bh))
@@ -1660,6 +1682,7 @@ function UI.render_shop(W, H, GAME)
         UI.tip_box(hx, hy, center.name, (center.layer or "Tech") .. " · Tech Evaluation", detail)
       end
     end
+    draw_shop_tech_drawer(W, H, sh, mx, my)
     return
   end
 
@@ -1757,8 +1780,11 @@ function UI.render_shop(W, H, GAME)
   lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text_dim)
   lg.printf("Your founders: " .. #G.jokers.cards .. "/" .. Shop.founder_cap() ..
     "   payroll due $" .. format_number(payroll), 0, y0 + ch + 230, W, "center")
-  if hovc then UI.tip_box(hovx, hovy, hovc.name, Card.effect_brief(hovc) .. "   \194\183   " .. (hovc.rarity or ""), (hovc.ability_name or "") .. "\n\n" .. (hovc.ability_text or hovc.hint or "")) end
-  if hovcc then UI.tip_box(hovccx, hovccy, hovcc.name, (hovcc.kind or "Tech Law") .. "   \194\183   " .. (hovcc.rarity or ""), hovcc.desc or "") end
+  draw_shop_tech_drawer(W, H, sh, mx, my)
+  if not sh.tech_drawer_open then
+    if hovc then UI.tip_box(hovx, hovy, hovc.name, Card.effect_brief(hovc) .. "   \194\183   " .. (hovc.rarity or ""), (hovc.ability_name or "") .. "\n\n" .. (hovc.ability_text or hovc.hint or "")) end
+    if hovcc then UI.tip_box(hovccx, hovccy, hovcc.name, (hovcc.kind or "Tech Law") .. "   \194\183   " .. (hovcc.rarity or ""), hovcc.desc or "") end
+  end
 end
 
 -- Compatibility query for tooling that has not adopted game.input yet. The retained list is ordered,

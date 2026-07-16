@@ -431,6 +431,7 @@ local function target_from(element, context)
     modal_scope = element.modal_scope,
     z = element.z,
     order = element.order,
+    _tree_order = element._tree_order,
     focus_order = element.focus_order,
     focusable = element.focusable,
     global = element.global,
