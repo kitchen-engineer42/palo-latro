@@ -20,7 +20,8 @@ G.STATES = {
   TARGET_SELECT  = 11,  -- Track C B4: a targeted consumable awaits the player's card pick(s)
   MARKET_SELECT  = 12,  -- choose one of three authored run identities before the first blind
   TECH_DRAFT     = 13,  -- post-boss persistent Tech choice
-  COLLECTION     = 14,  -- pre-run, read-only content discovery catalogs
+  COLLECTION     = 14,  -- deprecated one-release alias for the read-only Wiki shell
+  WIKI           = 14,
 }
 
 -- Instance pools — flat lists for batch update/draw/cleanup and O(1)-ish input dispatch
@@ -60,6 +61,9 @@ G.C = require("engine.colors")    -- the palette
 G.ROOM = nil                      -- scene-graph root (built in prep_stage)
 G.GAME = nil                      -- the current run (built on run start)
 G.COLLECTION = nil                -- transient collection category/filter/page (never persisted gameplay power)
+G.WIKI = nil                      -- transient Wiki query/facets/history (never persisted)
+G.SHOW_WIKI = nil                 -- full-screen read-only Wiki modal
+G.WIKI_RESTORE_FOCUS = nil        -- one-frame retained target id restored after closing the Wiki
 G.GUIDANCE_TOAST = nil            -- transient authored hint/chatter presentation; progress lives in profile
 G.GUIDANCE_RUNTIME = false         -- true only in the graphical app; tests/mimic never persist guidance events
 -- Resolution independence (P2): the whole frame is laid out + drawn at a fixed VIRTUAL resolution

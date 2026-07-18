@@ -130,15 +130,15 @@ function love.load()
   end
   local collection_preview = os.getenv("PL_COLLECTION")
   if collection_preview then                                  -- dev: open a named read-only catalog for visual checks
-    local Collection = require("game.collection")
-    Collection.reset()
-    if collection_preview ~= "1" then Collection.select_category(collection_preview) end
-    StateMachine.set_state(G.STATES.COLLECTION)
+    local Wiki = require("game.wiki")
+    Wiki.open("preview")
+    if collection_preview ~= "1" then Wiki.select_category(collection_preview) end
   end
   local ov = os.getenv("PL_OVERLAY")                           -- dev: force an overlay open (screenshot checks)
   if ov == "runinfo" then G.SHOW_RUN_INFO = true
   elseif ov == "options" then G.SHOW_OPTIONS = true
-  elseif ov == "deck" then G.SHOW_DECK_VIEW = true end
+  elseif ov == "deck" then G.SHOW_DECK_VIEW = true
+  elseif ov == "wiki" then require("game.wiki").open("preview") end
   if os.getenv("PL_EDITIONS") and G.jokers then     -- dev: spawn founders-with-art carrying each edition (preview P4 shimmer)
     local picks = {}
     for _, c in ipairs(Centers.pool("Founder")) do
@@ -321,13 +321,21 @@ end
 
 function love.keypressed(key)
   -- Dev toggles remain explicit; all gameplay, focus, modal, and cancel policy lives in Input.
-  if key == "m" then G.SETTINGS.sound = not G.SETTINGS.sound; return             -- dev: toggle sound
-  elseif key == "j" then G.SETTINGS.reduced_motion = not G.SETTINGS.reduced_motion; return  -- dev: toggle motion
-  elseif key == "h" then G.SETTINGS.shaders = not G.SETTINGS.shaders; return                -- dev: toggle shaders (P4)
-  elseif key == "c" then G.SETTINGS.crt = not G.SETTINGS.crt; return                        -- dev: toggle CRT post-fx (P4.4)
+  if not G.SHOW_WIKI and key == "m" then G.SETTINGS.sound = not G.SETTINGS.sound; return             -- dev: toggle sound
+  elseif not G.SHOW_WIKI and key == "j" then G.SETTINGS.reduced_motion = not G.SETTINGS.reduced_motion; return  -- dev: toggle motion
+  elseif not G.SHOW_WIKI and key == "h" then G.SETTINGS.shaders = not G.SETTINGS.shaders; return                -- dev: toggle shaders (P4)
+  elseif not G.SHOW_WIKI and key == "c" then G.SETTINGS.crt = not G.SETTINGS.crt; return                        -- dev: toggle CRT post-fx (P4.4)
   end
   local handled = INPUT and INPUT:key_pressed(key, "keyboard")
   if key == "escape" and not handled then love.event.quit() end
+end
+
+function love.textinput(text)
+  if INPUT then INPUT:text_input(text) end
+end
+
+function love.wheelmoved(x, y)
+  if INPUT then INPUT:wheel_moved(x, y) end
 end
 
 function love.keyreleased(key)
@@ -335,7 +343,8 @@ function love.keyreleased(key)
 end
 
 local GAMEPAD_KEY = { a = "a", b = "cancel", dpup = "dpup", dpdown = "dpdown",
-  dpleft = "dpleft", dpright = "dpright", start = "enter" }
+  dpleft = "dpleft", dpright = "dpright", start = "enter",
+  leftshoulder = "leftshoulder", rightshoulder = "rightshoulder" }
 
 function love.gamepadpressed(_, button)
   if not INPUT then return end

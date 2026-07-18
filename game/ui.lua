@@ -13,6 +13,7 @@ local RunState = require("game.runstate")
 local Coverage = require("game.coverage")
 local UIBox = require("engine.uibox")
 local Collection = require("game.collection")
+local Wiki = require("game.wiki")
 local Guidance = require("game.guidance")
 local Bosses = require("game.bosses")
 local Deck = require("game.deck")
@@ -211,6 +212,51 @@ local function collection_geometry(W, view)
   return geometry
 end
 
+local function wiki_geometry(W, H, view)
+  local panel = { x = 18, y = 16, w = W - 36, h = H - 32 }
+  local geometry = { panel = panel, categories = {}, facets = {}, items = {}, letters = {},
+    related = {}, backlinks = {} }
+  geometry.close = { x = panel.x + panel.w - 116, y = panel.y + 14, w = 96, h = 36 }
+  geometry.search = { x = panel.x + 22, y = panel.y + 112, w = 370, h = 42 }
+  geometry.clear = { x = geometry.search.x + geometry.search.w - 66, y = geometry.search.y + 6, w = 58, h = 30 }
+  local cat_x, cat_y, cat_gap = panel.x + 150, panel.y + 62, 6
+  local cat_w = (panel.w - 170 - cat_gap * (#Wiki.CATEGORIES - 1)) / #Wiki.CATEGORIES
+  for index = 1, #Wiki.CATEGORIES do
+    geometry.categories[index] = { x = cat_x + (index - 1) * (cat_w + cat_gap), y = cat_y, w = cat_w, h = 34 }
+  end
+  local facet_x, facet_y, facet_gap = panel.x + 420, panel.y + 112, 7
+  local facet_w = math.min(116, (panel.w - 448 - facet_gap * math.max(0, #view.facets - 1)) / math.max(1, #view.facets))
+  for index = 1, #view.facets do
+    geometry.facets[index] = { x = facet_x + (index - 1) * (facet_w + facet_gap), y = facet_y, w = facet_w, h = 34 }
+  end
+  local letter_w = 27
+  for index = 1, 26 do
+    local col, row = (index - 1) % 13, math.floor((index - 1) / 13)
+    geometry.letters[index] = { x = panel.x + 28 + col * letter_w,
+      y = panel.y + 166 + row * 25, w = letter_w - 3, h = 22 }
+  end
+  local item_x, item_y, item_w, item_h = panel.x + 22, panel.y + 222, 370, 37
+  for index = 1, Wiki.PAGE_SIZE do
+    geometry.items[index] = { x = item_x, y = item_y + (index - 1) * item_h, w = item_w, h = item_h - 3 }
+  end
+  geometry.prev = { x = item_x, y = panel.y + panel.h - 48, w = 104, h = 32 }
+  geometry.next = { x = item_x + item_w - 104, y = geometry.prev.y, w = 104, h = 32 }
+  geometry.body = { x = panel.x + 420, y = panel.y + 166, w = panel.w - 442, h = panel.h - 184 }
+  geometry.scroll_up = { x = panel.x + panel.w - 84, y = geometry.body.y + 4, w = 28, h = 28 }
+  geometry.scroll_down = { x = panel.x + panel.w - 48, y = geometry.body.y + 4, w = 28, h = 28 }
+  local oy = -(view.scroll or 0) * 54
+  local has_story = view.selected and view.selected.story and view.selected.story ~= ""
+  local link_y = geometry.body.y + (has_story and 394 or 260) + oy
+  local col_w = (geometry.body.w - 26) / 2
+  for index = 1, Wiki.RELATED_LIMIT do
+    geometry.related[index] = { x = geometry.body.x + 2, y = link_y + 28 + (index - 1) * 30, w = col_w, h = 26 }
+    geometry.backlinks[index] = { x = geometry.body.x + col_w + 24,
+      y = link_y + 28 + (index - 1) * 30, w = col_w, h = 26 }
+  end
+  geometry.content_offset_y = oy
+  return geometry
+end
+
 local function guidance_geometry(W, H)
   local in_rail = G.STATE ~= G.STATES.MENU and G.STATE ~= G.STATES.COLLECTION
     and G.STATE ~= G.STATES.MARKET_SELECT and G.STATE ~= G.STATES.BLIND_SELECT
@@ -322,7 +368,7 @@ function UI.prepare()
       end
     end
     add("start_run_at", { x = W / 2 - 120, y = y + 116, w = 240, h = 56 }, true)
-    add("collection_open", { x = W / 2 - 120, y = y + 184, w = 240, h = 48 }, true)
+    add("wiki_open", { x = W / 2 - 120, y = y + 184, w = 240, h = 48 }, true)
   elseif G.STATE == G.STATES.COLLECTION then
     local view = Collection.snapshot()
     local geometry = collection_geometry(W, view)
@@ -530,10 +576,43 @@ function UI.prepare()
     local pw, ph = 420, 660
     local x, y = (W - pw) / 2 + 60, (H - ph) / 2 + 64
     for _, action in ipairs({ "opt_motion", "opt_sound", "opt_shake", "opt_flash",
-      "opt_particles", "opt_crt", "opt_guidance", "opt_chatter", "opt_quit" }) do
+      "opt_particles", "opt_crt", "opt_guidance", "opt_chatter", "opt_wiki", "opt_quit" }) do
       add(action, { x = x, y = y, w = pw - 120, h = 46 }, true, "overlay", 100)
       y = y + 58
     end
+  end
+
+  if G.SHOW_WIKI then
+    local view = Wiki.snapshot()
+    local geometry = wiki_geometry(W, H, view)
+    add("wiki_close", geometry.close, true, "wiki", 200, nil, true)
+    add("wiki_search", geometry.search, true, "wiki", 200)
+    if view.query ~= "" then add("wiki_clear", geometry.clear, true, "wiki", 201) end
+    for index, rect in ipairs(geometry.categories) do add("wiki_category_" .. index, rect, true, "wiki", 200) end
+    for index, rect in ipairs(geometry.facets) do add("wiki_facet_" .. index, rect, true, "wiki", 200) end
+    for index, rect in ipairs(geometry.letters) do
+      add("wiki_letter_" .. string.char(string.byte("A") + index - 1), rect, true, "wiki", 200)
+    end
+    for index, item in ipairs(view.items) do
+      add("wiki_item_" .. index, geometry.items[index], true, "wiki", 200,
+        { handle = item.handle })
+    end
+    add("wiki_prev", geometry.prev, view.page > 1, "wiki", 200)
+    add("wiki_next", geometry.next, view.page < view.page_count, "wiki", 200)
+    add("wiki_scroll_up", geometry.scroll_up, view.scroll > 0, "wiki", 200)
+    add("wiki_scroll_down", geometry.scroll_down, view.scroll < 4, "wiki", 200)
+    local page = view.selected
+    for index, row in ipairs((page and page.related) or {}) do
+      add("wiki_related_" .. index, geometry.related[index], true, "wiki", 200,
+        { handle = row.handle })
+    end
+    for index, row in ipairs((page and page.backlinks) or {}) do
+      add("wiki_backlink_" .. index, geometry.backlinks[index], true, "wiki", 200,
+        { handle = row.handle })
+    end
+    UI.wiki_view = view
+  else
+    UI.wiki_view = nil
   end
 
   local box = UIBox.new(UIBox.root({ id = "ui:root" }, definitions),
@@ -1146,8 +1225,8 @@ function UI.render_menu(W, H)
   UI.rects.start_run_at = sr
   draw_button(sr, "Start Run \194\187", true, point_in_rect(mx, my, sr.x, sr.y, sr.w, sr.h))
   local cr = { x = W / 2 - 120, y = y + 184, w = 240, h = 48 }
-  UI.rects.collection_open = cr
-  draw_button(cr, "Collection", true, point_in_rect(mx, my, cr.x, cr.y, cr.w, cr.h))
+  UI.rects.wiki_open = cr
+  draw_button(cr, "Wiki", true, point_in_rect(mx, my, cr.x, cr.y, cr.w, cr.h))
   lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text_dim)
   lg.printf("higher stakes unlock by reaching IPO \194\183 discovery never changes gameplay eligibility",
     0, y + 248, W, "center")
@@ -1857,12 +1936,148 @@ function UI.draw_guidance()
   end
 end
 
+local function draw_wiki(W, H)
+  local view = UI.wiki_view or Wiki.snapshot()
+  local geometry = wiki_geometry(W, H, view)
+  local panel, mx, my = geometry.panel, cursor()
+  pixel_rect(panel.x, panel.y, panel.w, panel.h, { 0.075, 0.09, 0.125, 1 },
+    { chamfer = 8, border = G.C.arr, line_w = 2 })
+  UI.text(G.FONTS.normal, "PALO LATRO WIKI", panel.x + 22, panel.y + 18, G.C.arr, 360, "left")
+  UI.text(G.FONTS.tiny, "Rules, stories, and the links between them", panel.x + 386, panel.y + 25,
+    G.C.text_dim, panel.w - 530, "left")
+  draw_button(geometry.close, "Close", true,
+    point_in_rect(mx, my, geometry.close.x, geometry.close.y, geometry.close.w, geometry.close.h))
+
+  for index, category in ipairs(Wiki.CATEGORIES) do
+    draw_collection_tab(geometry.categories[index], category.label, index == view.category_index)
+  end
+
+  local search_fill = view.search_focused and { 0.13, 0.17, 0.22, 1 } or { 0.09, 0.11, 0.15, 1 }
+  pixel_rect(geometry.search.x, geometry.search.y, geometry.search.w, geometry.search.h, search_fill,
+    { chamfer = 4, border = view.search_focused and G.C.arr or G.C.border, line_w = 2 })
+  local query = view.query ~= "" and view.query or "Press / or click to search"
+  UI.text(G.FONTS.tiny, query .. (view.search_focused and "_" or ""), geometry.search.x + 12,
+    geometry.search.y + 10, view.query ~= "" and G.C.text or G.C.text_dim, geometry.search.w - 86, "left")
+  if view.query ~= "" then
+    draw_button(geometry.clear, "Clear", true,
+      point_in_rect(mx, my, geometry.clear.x, geometry.clear.y, geometry.clear.w, geometry.clear.h), G.FONTS.tiny)
+  end
+  for index, facet in ipairs(view.facets) do
+    draw_collection_tab(geometry.facets[index], facet.label, index == view.facet_index)
+  end
+  local progress = view.progress[view.category.id] or { discovered = view.discovered, total = view.total }
+  UI.text(G.FONTS.tiny, ("%s discovered %d/%d"):format(view.category.label,
+    progress.discovered or 0, progress.total or 0), geometry.body.x, panel.y + 142,
+    G.C.text_dim, geometry.body.w, "left")
+  for index, rect in ipairs(geometry.letters) do
+    local letter = string.char(string.byte("A") + index - 1)
+    local selected = view.letter == letter
+    lg.setColor(selected and G.C.arr or G.C.text_dim)
+    lg.rectangle("fill", rect.x, rect.y, rect.w, rect.h, 2, 2)
+    UI.text(G.FONTS.tiny, letter, rect.x, rect.y + 2, selected and G.C.black or G.C.bg, rect.w, "center")
+  end
+
+  pixel_rect(panel.x + 18, panel.y + 216, 378, panel.h - 270, { 0.055, 0.065, 0.09, 1 },
+    { chamfer = 5, border = G.C.panel_dim, line_w = 1, shadow = false })
+  for index, item in ipairs(view.items) do
+    local rect = geometry.items[index]
+    local selected = view.selected and view.selected.handle == item.handle
+    local fill = selected and { 0.18, 0.24, 0.30, 1 }
+      or (item.discovered and { 0.105, 0.125, 0.165, 1 } or { 0.065, 0.075, 0.095, 1 })
+    pixel_rect(rect.x, rect.y, rect.w, rect.h, fill,
+      { chamfer = 3, border = selected and G.C.arr or G.C.panel_dim, line_w = selected and 2 or 1,
+        shadow = false, emboss = false })
+    UI.text(G.FONTS.tiny, item.name, rect.x + 9, rect.y + 3,
+      item.discovered and G.C.text or G.C.text_dim, rect.w - 18, "left")
+    UI.text(G.FONTS.tiny, item.subtitle, rect.x + 9, rect.y + 18,
+      item.discovered and G.C.mult or G.C.panel_dim, rect.w - 18, "left")
+  end
+  UI.text(G.FONTS.tiny, ("%d result%s · page %d/%d"):format(view.filtered_total,
+    view.filtered_total == 1 and "" or "s", view.page, view.page_count),
+    geometry.prev.x + geometry.prev.w + 4, geometry.prev.y + 6,
+    G.C.text_dim, geometry.next.x - geometry.prev.x - geometry.prev.w - 8, "center")
+  draw_button(geometry.prev, "‹ Prev", view.page > 1,
+    point_in_rect(mx, my, geometry.prev.x, geometry.prev.y, geometry.prev.w, geometry.prev.h), G.FONTS.tiny)
+  draw_button(geometry.next, "Next ›", view.page < view.page_count,
+    point_in_rect(mx, my, geometry.next.x, geometry.next.y, geometry.next.w, geometry.next.h), G.FONTS.tiny)
+
+  pixel_rect(geometry.body.x, geometry.body.y, geometry.body.w, geometry.body.h,
+    { 0.095, 0.11, 0.145, 1 }, { chamfer = 6, border = G.C.border, line_w = 1, shadow = false })
+  draw_button(geometry.scroll_up, "↑", view.scroll > 0,
+    point_in_rect(mx, my, geometry.scroll_up.x, geometry.scroll_up.y,
+      geometry.scroll_up.w, geometry.scroll_up.h), G.FONTS.tiny)
+  draw_button(geometry.scroll_down, "↓", view.scroll < 4,
+    point_in_rect(mx, my, geometry.scroll_down.x, geometry.scroll_down.y,
+      geometry.scroll_down.w, geometry.scroll_down.h), G.FONTS.tiny)
+
+  local page, oy = view.selected, geometry.content_offset_y
+  local previous_scissor = { lg.getScissor() }
+  local scale, ox, sy = G.VIEW.scale or 1, G.VIEW.ox or 0, G.VIEW.oy or 0
+  lg.setScissor(ox + (geometry.body.x + 1) * scale, sy + (geometry.body.y + 1) * scale,
+    (geometry.body.w - 2) * scale, (geometry.body.h - 2) * scale)
+  if page then
+    local bx, bw = geometry.body.x + 24, geometry.body.w - 48
+    UI.text(G.FONTS.big, page.name, bx, geometry.body.y + 14 + oy,
+      page.discovered and G.C.arr or G.C.text_dim, bw - 90, "left")
+    UI.text(G.FONTS.tiny, page.subtitle or "", bx, geometry.body.y + 66 + oy,
+      G.C.mult, bw - 90, "left")
+    if page.discovered then
+      local facet_line = table.concat(page.facets or {}, "  ·  ")
+      UI.text(G.FONTS.tiny, facet_line, bx, geometry.body.y + 92 + oy, G.C.text_dim, bw, "left")
+      UI.text(G.FONTS.tiny, "EXACT RULES", bx, geometry.body.y + 128 + oy, G.C.arr, bw, "left")
+      lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text)
+      lg.printf(page.rules or "", bx, geometry.body.y + 154 + oy, bw, "left")
+      if page.story and page.story ~= "" then
+        UI.text(G.FONTS.tiny, "STORY", bx, geometry.body.y + 258 + oy, G.C.arr, bw, "left")
+        lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text)
+        lg.printf(page.story, bx, geometry.body.y + 284 + oy, bw, "left")
+      end
+      local link_y = geometry.related[1].y - 28
+      local col_w = (geometry.body.w - 26) / 2
+      UI.text(G.FONTS.tiny, "RELATED", bx, link_y, G.C.arr, col_w, "left")
+      UI.text(G.FONTS.tiny, "BACKLINKS", bx + col_w + 22, link_y, G.C.arr, col_w, "left")
+      for index, row in ipairs(page.related or {}) do
+        local rect = geometry.related[index]
+        pixel_rect(rect.x, rect.y, rect.w, rect.h, { 0.12, 0.15, 0.20, 1 },
+          { chamfer = 3, border = G.C.panel_dim, line_w = 1, shadow = false })
+        UI.text(G.FONTS.tiny, row.label .. " · " .. row.name, rect.x + 7, rect.y + 3,
+          G.C.text, rect.w - 14, "left")
+      end
+      for index, row in ipairs(page.backlinks or {}) do
+        local rect = geometry.backlinks[index]
+        pixel_rect(rect.x, rect.y, rect.w, rect.h, { 0.12, 0.15, 0.20, 1 },
+          { chamfer = 3, border = G.C.panel_dim, line_w = 1, shadow = false })
+        UI.text(G.FONTS.tiny, row.label .. " · " .. row.name, rect.x + 7, rect.y + 3,
+          G.C.text, rect.w - 14, "left")
+      end
+      local notes = {}
+      if page.hidden_related > 0 then notes[#notes + 1] = page.hidden_related .. " undiscovered relation(s)" end
+      if page.related_more > 0 then notes[#notes + 1] = "+" .. page.related_more .. " related" end
+      if page.hidden_backlinks > 0 then notes[#notes + 1] = page.hidden_backlinks .. " undiscovered backlink(s)" end
+      if page.backlinks_more > 0 then notes[#notes + 1] = "+" .. page.backlinks_more .. " backlinks" end
+      if #notes > 0 then
+        UI.text(G.FONTS.tiny, table.concat(notes, "  ·  "), bx, link_y + 214,
+          G.C.text_dim, bw, "left")
+      end
+    else
+      UI.text(G.FONTS.normal, "?", bx, geometry.body.y + 140 + oy, G.C.text_dim, bw, "center")
+      UI.text(G.FONTS.tiny, page.rules, bx, geometry.body.y + 210 + oy, G.C.text_dim, bw, "center")
+    end
+  else
+    UI.text(G.FONTS.normal, "No matching pages", geometry.body.x, geometry.body.y + 210,
+      G.C.text_dim, geometry.body.w, "center")
+  end
+  if previous_scissor[1] then lg.setScissor(unpack(previous_scissor)) else lg.setScissor() end
+end
+
 -- ── Phase 4B overlays: deck view · run info · options (topmost, any page; click-outside closes) ────
 function UI.draw_overlays()
-  if not (G.SHOW_DECK_VIEW or G.SHOW_RUN_INFO or G.SHOW_OPTIONS) then return end
+  if not (G.SHOW_DECK_VIEW or G.SHOW_RUN_INFO or G.SHOW_OPTIONS or G.SHOW_WIKI) then return end
   local W, H = G.WINDOW.w, G.WINDOW.h
   local mx, my = cursor()
   lg.setColor(0, 0, 0, 0.62); lg.rectangle("fill", 0, 0, W, H)
+
+  if G.SHOW_WIKI then draw_wiki(W, H); return end
 
   if G.SHOW_DECK_VIEW then
     local pw, ph = 1000, 640
@@ -2058,6 +2273,7 @@ function UI.draw_overlays()
       { "opt_crt",    "CRT filter:  " .. (G.SETTINGS.crt and "ON" or "OFF") },
       { "opt_guidance", "Guidance:  " .. (Guidance.preferences().guidance and "ON" or "OFF") },
       { "opt_chatter", "Patch chatter:  " .. (Guidance.preferences().cofounder_chatter and "ON" or "OFF") },
+      { "opt_wiki", "Open Wiki" },
       { "opt_quit",   "Quit to menu" },
     }
     local by3 = py0 + 64

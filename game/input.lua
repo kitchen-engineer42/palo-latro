@@ -22,6 +22,7 @@ local Audio = require("game.audio")
 local Guidance = require("game.guidance")
 local Consumables = require("game.consumables")
 local CardStack = require("game.card_stack")
+local Wiki = require("game.wiki")
 
 local Input = {}
 Input.__index = Input
@@ -81,7 +82,7 @@ end
 
 local function overlay_open()
   local g = game()
-  return g and (g.SHOW_DECK_VIEW or g.SHOW_RUN_INFO or g.SHOW_OPTIONS) == true
+  return g and (g.SHOW_DECK_VIEW or g.SHOW_RUN_INFO or g.SHOW_OPTIONS or g.SHOW_WIKI) == true
 end
 
 local function pack_open()
@@ -111,6 +112,7 @@ end
 local function close_overlay()
   local g = game()
   if not g then return false end
+  if g.SHOW_WIKI then return Wiki.close() end
   local open = g.SHOW_DECK_VIEW or g.SHOW_RUN_INFO or g.SHOW_OPTIONS
   g.SHOW_DECK_VIEW, g.SHOW_RUN_INFO, g.SHOW_OPTIONS = nil, nil, nil
   return open and true or false
@@ -138,6 +140,7 @@ function Input.new(opts)
 end
 
 function Input:_modal_scope()
+  if Wiki.is_open() then return "wiki" end
   if overlay_open() then return "overlay" end
   if state_is("TARGET_SELECT") then return "target" end
   if founder_negotiation_open() then return "negotiation" end
@@ -148,11 +151,13 @@ end
 function Input:_sync_policy()
   local pack = pack_open()
   self.controller:set_modal(self:_modal_scope())
-  self.controller:set_gameplay_locked(state_is("SCORING") or PackPresentation.input_locked(pack))
+  self.controller:set_gameplay_locked(not Wiki.is_open()
+    and (state_is("SCORING") or PackPresentation.input_locked(pack)))
 end
 
 function Input:_scope_for_action(action, supplied)
   if supplied ~= nil then return supplied end
+  if action and action:match("^wiki_") then return "wiki" end
   if action and action:match("^opt_") then return "overlay" end
   if action and action:match("^pick_layer_") then return "target" end
   if action and action:match("^founder_negotiation_") then return "negotiation" end
@@ -314,7 +319,7 @@ function Input:rebuild(button_specs)
     focus_sequence = math.max(focus_sequence, focus_base + #ordered)
   end
 
-  if overlay_open() and g and g.WINDOW then
+  if overlay_open() and not Wiki.is_open() and g and g.WINDOW then
     local w, h = g.WINDOW.w or 0, g.WINDOW.h or 0
     local backdrops
     if g.SHOW_OPTIONS then
@@ -396,6 +401,15 @@ function Input:rebuild(button_specs)
   end
   self._pack_open_id = current_pack_id
   self:_sync_policy()
+  if g and g.WIKI_RESTORE_FOCUS then
+    for _, registration in pairs(self._registrations) do
+      if registration.id == g.WIKI_RESTORE_FOCUS then
+        self.controller:focus(registration.node)
+        break
+      end
+    end
+    g.WIKI_RESTORE_FOCUS = nil
+  end
   self.controller:refresh()
   self:_consume()
   return self.controller.targets
@@ -521,6 +535,13 @@ end
 function Input:_cancel()
   local g = game()
   if not g then return false end
+  if Wiki.is_open() and not state_is("COLLECTION") then
+    local state = g.WIKI or {}
+    if state.query and state.query ~= "" then Wiki.set_query(""); return true end
+    if state.search_focused then Wiki.focus_search(false); return true end
+    if Wiki.history_back() then return true end
+    return self:_call("wiki_close")
+  end
   if state_is("COLLECTION") then return self:_call("collection_back") end
   if state_is("TARGET_SELECT") and g.CONSUMABLE_CANCEL then g.CONSUMABLE_CANCEL(); return true end
   if overlay_open() then return close_overlay() end
@@ -613,6 +634,23 @@ end
 
 function Input:key_pressed(key, device)
   self:_sync_policy()
+  if Wiki.is_open() then
+    local state = G.WIKI or {}
+    if key == "slash" or key == "/" then Wiki.focus_search(true); return true end
+    if key == "backspace" and (state.search_focused or (state.query and state.query ~= "")) then
+      return Wiki.backspace_query()
+    end
+    if key == "pageup" then Wiki.scroll(-1); return true end
+    if key == "pagedown" then Wiki.scroll(1); return true end
+    if key == "leftshoulder" or key == "rightshoulder" then
+      local view = Wiki.snapshot()
+      local delta = key == "leftshoulder" and -1 or 1
+      local count = #Wiki.CATEGORIES
+      local index = ((view.category_index - 1 + delta) % count) + 1
+      Wiki.select_category(index)
+      return true
+    end
+  end
   local result = self.controller:key_press(key, device or "keyboard")
   local handled = self:_consume()
   if handled then return true end
@@ -625,6 +663,18 @@ function Input:key_pressed(key, device)
     return self:_consume()
   end
   return false
+end
+
+function Input:text_input(value)
+  if not Wiki.is_open() or not (G.WIKI and G.WIKI.search_focused) then return false end
+  Wiki.append_text(value)
+  return true
+end
+
+function Input:wheel_moved(_, y)
+  if not Wiki.is_open() or y == 0 then return false end
+  Wiki.scroll(y > 0 and -1 or 1)
+  return true
 end
 
 function Input:key_released(key)

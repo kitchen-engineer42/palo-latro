@@ -68,6 +68,7 @@ end
 
 -- enter a new stage: tear down the previous stage's pooled objects + clear the event queues.
 function StateMachine.prep_stage(stage, state)
+  if G.SHOW_WIKI then require("game.wiki").close() end
   if G.STAGE and G.STAGE_OBJECTS[G.STAGE] then
     remove_all(G.STAGE_OBJECTS[G.STAGE])
   end
@@ -78,7 +79,7 @@ function StateMachine.prep_stage(stage, state)
   G.STATE = state
   G.UI_OWNER.stage, G.UI_OWNER.state = stage, state
   G.STATE_COMPLETE = false
-  G.SHOW_RUN_INFO, G.SHOW_OPTIONS, G.SHOW_DECK_VIEW = nil, nil, nil
+  G.SHOW_RUN_INFO, G.SHOW_OPTIONS, G.SHOW_DECK_VIEW, G.SHOW_WIKI = nil, nil, nil, nil
   G.DRAG, G.PENDING_CONSUMABLE = nil, nil
   G.GUIDANCE_TOAST = nil
   -- G.ROOM stays identity for the slice (container transform is a later refinement).

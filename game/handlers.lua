@@ -13,6 +13,7 @@ local Lifecycle = require("game.founder_lifecycle")
 local Economy = require("game.economy")
 local Pricing = require("game.pricing")
 local Collection = require("game.collection")
+local Wiki = require("game.wiki")
 local Guidance = require("game.guidance")
 local Profile = require("game.profile")
 
@@ -107,9 +108,11 @@ G.FUNCS.collection_open = function()
   if G.STATE ~= S.MENU then return end
   Collection.reset()
   StateMachine.set_state(S.COLLECTION)
+  Wiki.open("collection-compat")
 end
 G.FUNCS.collection_back = function()
   if G.STATE ~= S.COLLECTION then return end
+  Wiki.close()
   StateMachine.set_state(S.MENU)
 end
 for i = 1, #Collection.CATEGORIES do
@@ -128,6 +131,56 @@ end
 G.FUNCS.collection_next = function()
   if G.STATE == S.COLLECTION then Collection.change_page(1) end
 end
+
+G.FUNCS.wiki_open = function()
+  if G.STATE == S.MENU then Wiki.open("menu")
+  elseif G.GAME then Wiki.open("run") end
+end
+G.FUNCS.wiki_close = function()
+  if not Wiki.close() then return end
+  if G.STATE == S.COLLECTION then StateMachine.set_state(S.MENU) end
+end
+for i = 1, #Wiki.CATEGORIES do
+  G.FUNCS["wiki_category_" .. i] = function()
+    if Wiki.is_open() then Wiki.select_category(i) end
+  end
+end
+for i = 1, 7 do
+  G.FUNCS["wiki_facet_" .. i] = function()
+    if Wiki.is_open() then Wiki.select_facet(i) end
+  end
+end
+for i = 1, Wiki.PAGE_SIZE do
+  G.FUNCS["wiki_item_" .. i] = function()
+    if not Wiki.is_open() then return end
+    local item = Wiki.snapshot().items[i]
+    if item then Wiki.select(item.handle) end
+  end
+end
+for i = 1, Wiki.RELATED_LIMIT do
+  G.FUNCS["wiki_related_" .. i] = function()
+    local page = Wiki.is_open() and Wiki.snapshot().selected
+    local row = page and page.related[i]
+    if row then Wiki.select(row.handle) end
+  end
+  G.FUNCS["wiki_backlink_" .. i] = function()
+    local page = Wiki.is_open() and Wiki.snapshot().selected
+    local row = page and page.backlinks[i]
+    if row then Wiki.select(row.handle) end
+  end
+end
+for byte = string.byte("A"), string.byte("Z") do
+  local letter = string.char(byte)
+  G.FUNCS["wiki_letter_" .. letter] = function()
+    if Wiki.is_open() then Wiki.select_letter(letter) end
+  end
+end
+G.FUNCS.wiki_search = function() if Wiki.is_open() then Wiki.focus_search(true) end end
+G.FUNCS.wiki_clear = function() if Wiki.is_open() then Wiki.set_query(""); Wiki.focus_search(false) end end
+G.FUNCS.wiki_prev = function() if Wiki.is_open() then Wiki.change_page(-1) end end
+G.FUNCS.wiki_next = function() if Wiki.is_open() then Wiki.change_page(1) end end
+G.FUNCS.wiki_scroll_up = function() if Wiki.is_open() then Wiki.scroll(-1) end end
+G.FUNCS.wiki_scroll_down = function() if Wiki.is_open() then Wiki.scroll(1) end end
 for i = 1, 3 do
   G.FUNCS["market_pick_" .. i] = function()
     if G.STATE ~= S.MARKET_SELECT then return end
@@ -551,6 +604,11 @@ end
 
 G.FUNCS.run_info = function() G.SHOW_RUN_INFO = not G.SHOW_RUN_INFO; G.SHOW_OPTIONS, G.SHOW_DECK_VIEW = nil, nil end
 G.FUNCS.options  = function() G.SHOW_OPTIONS = not G.SHOW_OPTIONS; G.SHOW_RUN_INFO, G.SHOW_DECK_VIEW = nil, nil end
+G.FUNCS.opt_wiki = function()
+  if not G.SHOW_OPTIONS then return end
+  G.SHOW_OPTIONS = nil
+  Wiki.open("run")
+end
 G.FUNCS.opt_motion = function() if G.SHOW_OPTIONS then G.SETTINGS.reduced_motion = not G.SETTINGS.reduced_motion end end
 G.FUNCS.opt_sound  = function() if G.SHOW_OPTIONS then G.SETTINGS.sound = (G.SETTINGS.sound == false) end end
 G.FUNCS.opt_shake  = function() if G.SHOW_OPTIONS then G.SETTINGS.shake = not (G.SETTINGS.shake ~= false) end end
