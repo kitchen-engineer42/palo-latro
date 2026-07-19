@@ -199,7 +199,7 @@ G.FUNCS.refactor = function()
   if debt <= 0 or (G.GAME.pivots_left or 0) <= 0 then return end
   Meters.add("tech_debt", -math.min(5, debt))
   G.GAME.pivots_left = G.GAME.pivots_left - 1
-  Audio.play("hire")
+  return true
 end
 
 -- E4 signature actions (functional; full UX/choice-overlays are a later polish pass).
@@ -214,9 +214,7 @@ G.FUNCS.activate_founder = function(target_uid)
   if not card then return end
   local Actions = require("game.founder_actions")
   target_uid = target_uid or Actions.selected_target_uid(card)
-  local ok = Actions.activate(card, target_uid)
-  if ok then Audio.play("hire") end
-  return ok
+  return Actions.activate(card, target_uid)
 end
 
 G.FUNCS.distill = function()   -- halve a founder's Salary (pay-once → cheap recurring earner)
@@ -228,8 +226,9 @@ G.FUNCS.distill = function()   -- halve a founder's Salary (pay-once → cheap r
       c.ability.config._salary = 0
       G.GAME.market_distill_used_ante = G.GAME.ante
     end
-    Audio.play("hire")
+    return true
   end
+  return false
 end
 
 G.FUNCS.promote = function()   -- automate a founder into the harness → climb the ladder, free the slot
@@ -237,7 +236,7 @@ G.FUNCS.promote = function()   -- automate a founder into the harness → climb 
   local c = selected_founder(); if not c then return end
   if not Lifecycle.can_promote(c) then return end
   require("game.meters").add("rung_progress", 8)
-  if Lifecycle.remove(c, { promote = true }) then Audio.play("fire") end
+  return Lifecycle.remove(c, { promote = true })
 end
 
 G.FUNCS.market_pivot = function()   -- costed Market re-roll: abandon fit for a fresh demand
@@ -260,7 +259,7 @@ G.FUNCS.market_pivot = function()   -- costed Market re-roll: abandon fit for a 
   if not require("game.founder_events").spend(G.GAME, cost, "market_pivot") then return end
   G.GAME.last_market_pivot_ante = G.GAME.ante
   G.GAME.market_pivots = (G.GAME.market_pivots or 0) + 1
-  Audio.play("fire")
+  return true
 end
 
 G.FUNCS.raise = function()     -- a priced round — Cash now for equity dilution
@@ -277,7 +276,7 @@ G.FUNCS.raise = function()     -- a priced round — Cash now for equity dilutio
   G.GAME.equity_pct = (G.GAME.equity_pct or 100) - equity_cost
   G.GAME.raises_taken = (G.GAME.raises_taken or 0) + 1
   G.GAME.raise_available = false
-  Audio.play("hire")
+  return true
 end
 
 -- Debug hire still obeys the live Market capacity, including a queued
@@ -323,7 +322,7 @@ G.FUNCS.fire = function()
       if c.center then G.GAME.cash = (G.GAME.cash or 0) + Pricing.sell_value(c) end
       Scoring.fire_hook("selling_self", { other_card = c })
       Scoring.fire_hook("selling_card", { other_card = c })
-      Lifecycle.remove(c); Audio.play("fire"); return
+      Lifecycle.remove(c); return true
     end
   end
 end
@@ -354,7 +353,8 @@ G.FUNCS.shop_redeem = function(command)
 end
 G.FUNCS.shop_tech_drawer = function()
   local sh = G.STATE == S.SHOP and G.GAME and G.GAME.shop
-  if sh and not Shop.negotiation_pending() then sh.tech_drawer_open = not sh.tech_drawer_open end
+  if sh and not Shop.negotiation_pending() then sh.tech_drawer_open = not sh.tech_drawer_open; return true end
+  return false, "Your Tech is unavailable"
 end
 local function open_shop_pack(index, command)
   if G.STATE ~= S.SHOP then return end
@@ -405,12 +405,12 @@ G.FUNCS.pack_fast_forward = function(command)
   return Shop.pack_fast_forward(shop_payload(command).open_id)
 end
 G.FUNCS.pack_locked = G.FUNCS.pack_fast_forward -- one-release compatibility alias
-G.FUNCS.founder_negotiation_answer_1 = function() if G.STATE == S.SHOP then Shop.negotiation_answer(1) end end
-G.FUNCS.founder_negotiation_answer_2 = function() if G.STATE == S.SHOP then Shop.negotiation_answer(2) end end
-G.FUNCS.founder_negotiation_answer_3 = function() if G.STATE == S.SHOP then Shop.negotiation_answer(3) end end
-G.FUNCS.founder_negotiation_continue = function() if G.STATE == S.SHOP then Shop.negotiation_continue() end end
-G.FUNCS.founder_negotiation_standard_terms = function() if G.STATE == S.SHOP then Shop.negotiation_standard_terms() end end
-G.FUNCS.founder_negotiation_walk_away = function() if G.STATE == S.SHOP then Shop.negotiation_walk_away() end end
+G.FUNCS.founder_negotiation_answer_1 = function() if G.STATE == S.SHOP then return Shop.negotiation_answer(1) end return false end
+G.FUNCS.founder_negotiation_answer_2 = function() if G.STATE == S.SHOP then return Shop.negotiation_answer(2) end return false end
+G.FUNCS.founder_negotiation_answer_3 = function() if G.STATE == S.SHOP then return Shop.negotiation_answer(3) end return false end
+G.FUNCS.founder_negotiation_continue = function() if G.STATE == S.SHOP then return Shop.negotiation_continue() end return false end
+G.FUNCS.founder_negotiation_standard_terms = function() if G.STATE == S.SHOP then return Shop.negotiation_standard_terms() end return false end
+G.FUNCS.founder_negotiation_walk_away = function() if G.STATE == S.SHOP then return Shop.negotiation_walk_away() end return false end
 G.FUNCS.shop_continue = function(command)
   if G.STATE ~= S.SHOP then return end
   local sh, p = G.GAME and G.GAME.shop, shop_payload(command)
@@ -418,6 +418,7 @@ G.FUNCS.shop_continue = function(command)
   if not valid or not sh or sh.pack_open or Shop.negotiation_pending() then return end
   G.GAME.shop = nil
   StateMachine.set_state(S.BLIND_SELECT)                       -- preview the upcoming blind (P2); Play → play_blind
+  return true
 end
 
 -- BLIND_SELECT (P2): commit to the previewed blind → deal + start playing
@@ -496,7 +497,7 @@ G.FUNCS.use_consumable = function()
   local result = Consumables.resolve_use(c, { target_ids = view.selected_ids }, { game = G.GAME })
   if result.ok then
     clear_target_ids(c, view.selected_ids)
-    Audio.play("ship"); Juice.pulse("cash")
+    Juice.pulse("cash")
   end
   return result
 end
@@ -508,7 +509,7 @@ G.FUNCS.sell_consumable = function()
   Scoring.fire_hook("sell_consumable", { consumable = c.center })
   G.GAME.cash = (G.GAME.cash or 0) + Shop.consumable_sell_value(c)
   Consumables.remove(c)
-  Audio.play("fire")
+  return true
 end
 
 G.FUNCS.shop_buy_consumable = function(command)
@@ -557,7 +558,7 @@ function G.CONSUMABLE_RESOLVE(layer)                           -- apply + consum
   end
   clear_target_ids(pc.card, pc.target_ids)
   G.PENDING_CONSUMABLE = nil
-  Audio.play("ship"); Juice.pulse("cash")
+  Juice.pulse("cash")
   StateMachine.set_state(return_state)
   return result
 end
@@ -568,13 +569,15 @@ function G.CONSUMABLE_CANCEL()                                 -- right-click/Es
   local return_state = pc.return_state or S.SELECTING_HAND
   G.PENDING_CONSUMABLE = nil
   StateMachine.set_state(return_state)
+  return true
 end
 
 for _, L in ipairs({ "Frontend", "Backend", "Data", "Infra", "AI" }) do
   G.FUNCS["pick_layer_" .. L] = function()
     if G.STATE == S.TARGET_SELECT and G.PENDING_CONSUMABLE and G.PENDING_CONSUMABLE.need_layer then
-      G.CONSUMABLE_RESOLVE(L)
+      return G.CONSUMABLE_RESOLVE(L)
     end
+    return false
   end
 end
 
@@ -590,7 +593,7 @@ G.FUNCS.sort_users = function()
     if au ~= bu then return au > bu end
     return (a.center_key or "") < (b.center_key or "")
   end)
-  G.hand:align_cards(); Audio.play("select", nil, 0.4)
+  G.hand:align_cards(); return true
 end
 G.FUNCS.sort_layer = function()
   if not (G.STATE == S.SELECTING_HAND and G.hand) then return end
@@ -601,7 +604,7 @@ G.FUNCS.sort_layer = function()
     if au ~= bu then return au > bu end
     return (a.center_key or "") < (b.center_key or "")
   end)
-  G.hand:align_cards(); Audio.play("select", nil, 0.4)
+  G.hand:align_cards(); return true
 end
 
 G.FUNCS.run_info = function()

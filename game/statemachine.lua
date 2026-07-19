@@ -3,6 +3,7 @@
 -- Per-STATE update handlers are registered by handlers.lua into StateMachine.handlers.
 
 local StateMachine = {}
+local Feedback = require("game.feedback")
 StateMachine.handlers = {}        -- [G.STATES.*] = function(dt)
 
 local function release_ui_box(box, seen)
@@ -83,6 +84,7 @@ function StateMachine.prep_stage(stage, state)
   G.OPTIONS_PAGE = nil
   G.DRAG, G.PENDING_CONSUMABLE = nil, nil
   G.GUIDANCE_TOAST = nil
+  Feedback.sync_scope(G)
   -- G.ROOM stays identity for the slice (container transform is a later refinement).
 end
 
@@ -93,6 +95,7 @@ function StateMachine.set_state(state)
   G.STATE = state
   G.UI_OWNER.stage, G.UI_OWNER.state = G.STAGE, state
   G.STATE_COMPLETE = false
+  Feedback.sync_scope(G)
 end
 
 function StateMachine.update(dt)

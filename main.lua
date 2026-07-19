@@ -24,6 +24,7 @@ local UI           = require("game.ui")
 local Audio        = require("game.audio")
 local Juice        = require("game.juice")
 local Particles    = require("game.particles")
+local Feedback     = require("game.feedback")
 local PackPresentation = require("game.pack_presentation")
 local Input         = require("game.input")
 local CardStack     = require("game.card_stack")
@@ -75,6 +76,14 @@ function love.load()
   Centers.load_consumable_art()                   -- Track C B1: Tech Law card-face art (assets/consumables/)
   Centers.load_misc_art()                         -- Phase 4B: suit icons / pack covers / card back
   Audio.load()
+  Feedback.reset("boot")
+  Feedback.bind({
+    audio = function(name, event)
+      Audio.event(name, { intensity = event.intensity or 1 })
+    end,
+    shake = function(amount) Juice.shake(amount) end,
+    flash = function(duration) Juice.flash(duration, G.C.lose) end,
+  })
   load_shaders()                                  -- P4: compile assets/shaders/*.glsl → G.SHADERS (guarded)
   StateMachine.prep_stage(G.STAGES.MAIN_MENU, G.STATES.MENU)   -- boot to the stake-select menu
   if tutorial_preview then
@@ -200,6 +209,7 @@ function love.update(dt)
   if G.E_MANAGER then G.E_MANAGER:update() end
   Juice.update(dt)
   Particles.update(dt)
+  Feedback.update(dt)
   if G.STATE == G.STATES.SHOP and G.GAME and G.GAME.shop then
     PackPresentation.update(G.GAME.shop.pack_open)
   end

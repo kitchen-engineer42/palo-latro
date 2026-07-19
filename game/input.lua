@@ -18,7 +18,7 @@
 
 local Controller = require("engine.controller")
 local PackPresentation = require("game.pack_presentation")
-local Audio = require("game.audio")
+local Feedback = require("game.feedback")
 local Guidance = require("game.guidance")
 local Consumables = require("game.consumables")
 local CardStack = require("game.card_stack")
@@ -100,7 +100,24 @@ end
 
 local function pulse(card, amount)
   if card and card.juice_up then card:juice_up(amount or 0.3) end
-  Audio.play("select", nil, 0.5)
+end
+
+local function feedback_id(meta, intent)
+  local card = meta and meta.card
+  return tostring((card and (card.uid or card.ID or card.center_key))
+    or (intent and intent.target_id) or (meta and meta.action) or "global")
+end
+
+local function feedback_context(meta, intent)
+  local card = meta and meta.card
+  local t = card and (card.VT or card.T)
+  return {
+    now = game() and game().TIMERS and game().TIMERS.REAL or nil,
+    scope = Feedback.scope(), target_id = feedback_id(meta, intent),
+    action = (meta and meta.action) or (intent and intent.action),
+    metadata = meta and meta.feedback and { feedback = meta.feedback } or nil,
+    position = t and { x = t.x + t.w / 2, y = t.y + t.h / 2 } or nil,
+  }
 end
 
 local function selected_count(area)
@@ -155,6 +172,7 @@ function Input:_sync_policy()
   self.controller:set_modal(self:_modal_scope())
   self.controller:set_gameplay_locked(not Wiki.is_open()
     and (state_is("SCORING") or PackPresentation.input_locked(pack)))
+  Feedback.sync_scope(game())
 end
 
 function Input:_scope_for_action(action, supplied)
@@ -195,6 +213,7 @@ function Input:_sync_target(key, node, opts, seen)
     registration.allow_when_locked = opts.allow_when_locked == true
       or registration.action == "cancel" or registration.action == "back"
     registration.focusable = opts.focusable ~= false
+    registration.allow_disabled_pointer = opts.allow_disabled_pointer == true
     registration.enabled, registration.visible = opts.enabled, opts.visible
     registration.hit_test, registration.bounds = opts.hit_test, opts.bounds
     registration.draggable = opts.draggable == true
@@ -372,9 +391,12 @@ function Input:rebuild(button_specs)
         id = id, action = action, scope = self:_scope_for_action(action, spec.scope),
         global = spec.global, enabled = spec.enabled, visible = spec.visible,
         allow_when_locked = spec.allow_when_locked,
+        allow_disabled_pointer = spec.enabled == false,
         focusable = spec.focusable ~= false,
         bounds = function(n) return n.T end,
-        meta = { kind = "button", action = action, index = index, command = spec.command },
+        meta = { kind = "button", action = action, index = index, command = spec.command,
+          feedback = spec.feedback, enabled = spec.enabled ~= false,
+          disabled_reason = spec.disabled_reason },
       })
     end
   end
@@ -423,23 +445,37 @@ function Input:update(dt, button_specs)
   else self:_sync_policy(); self:_consume() end
 end
 
-function Input:_call(action, command)
+function Input:_call(action, command, meta)
   local g = game()
   local fn = g and g.FUNCS and g.FUNCS[action]
   if not fn then return false end
-  fn(command)
+  local outcome, result = fn(command)
+  local committed, reason
+  if type(outcome) == "table" and outcome.ok ~= nil then
+    committed, reason, result = outcome.ok == true, outcome.reason, outcome
+  else
+    committed, reason = outcome ~= false, outcome == false and result or nil
+  end
   self:_sync_policy()
-  return true
+  Feedback.result(action, committed, committed and nil or reason, feedback_context(meta or {
+    action = action,
+  }))
+  return committed, result
 end
 
 function Input:_toggle_hand(card)
   local g = game()
   if not (tech_selection_state() and g and g.hand and card) then return false end
   local max_selected = (g.GAME and g.GAME.select_max) or math.huge
-  if not card.selected and selected_count(g.hand) >= max_selected then return false end
+  if not card.selected and selected_count(g.hand) >= max_selected then
+    Feedback.emit("denied", feedback_context({ kind = "hand_card", card = card }, nil))
+    return false
+  end
   if card.toggle_select then card:toggle_select()
   else card.selected = not card.selected; if g.hand.align_cards then g.hand:align_cards() end end
   pulse(card, 0.35)
+  Feedback.emit(card.selected and "select" or "deselect",
+    feedback_context({ kind = "hand_card", card = card }, nil))
   local count = selected_count(g.hand)
   if count > 0 then
     Guidance.emit("cards_selected", { count = count })
@@ -457,6 +493,7 @@ function Input:_pick_target(card)
   if not (state_is("TARGET_SELECT") and pending and not pending.need_layer and card and not card.selected
       and Consumables.can_target(pending.card, card, g.GAME) == true) then return false end
   pulse(card, 0.35)
+  Feedback.emit("select", feedback_context({ kind = "target_card", card = card }, nil))
   if g.CONSUMABLE_TARGET_PICK then g.CONSUMABLE_TARGET_PICK(card); return true end
   return false
 end
@@ -468,6 +505,8 @@ function Input:_toggle_one(area, card)
   card.selected = next_value
   if area.align_cards then area:align_cards() end
   pulse(card, 0.3)
+  Feedback.emit(next_value and "select" or "deselect",
+    feedback_context({ kind = "card", card = card }, nil))
   return true
 end
 
@@ -519,11 +558,25 @@ function Input:_dispatch_click(intent, meta)
   local g = game()
   if not meta then return false end
   if meta.kind == "button" then
-    if meta.action == "modal_backdrop" then return close_overlay() end
+    if meta.enabled == false then
+      Feedback.result(meta.action, false, meta.disabled_reason or "Unavailable",
+        feedback_context(meta, intent))
+      return true
+    end
+    if meta.action == "modal_backdrop" then
+      local closed = close_overlay()
+      self:_sync_policy()
+      Feedback.result(meta.action, closed, closed and nil or "No overlay is open", feedback_context(meta))
+      return closed
+    end
     if meta.action == "pack_locked" then return true end
-    return self:_call(meta.action, meta.command)
+    return self:_call(meta.action, meta.command, meta)
   elseif meta.kind == "draw_pile" then
-    if selectable_state() and g then g.SHOW_DECK_VIEW = true; self:_sync_policy(); return true end
+    if selectable_state() and g then
+      g.SHOW_DECK_VIEW = true; self:_sync_policy()
+      Feedback.emit("transition", feedback_context(meta, intent))
+      return true
+    end
   elseif meta.kind == "hand_card" then return self:_toggle_hand(meta.card)
   elseif meta.kind == "target_card" then return self:_pick_target(meta.card)
   elseif meta.kind == "founder_card" then
@@ -542,24 +595,38 @@ function Input:_cancel()
     if state.query and state.query ~= "" then Wiki.set_query(""); return true end
     if state.search_focused then Wiki.focus_search(false); return true end
     if Wiki.history_back() then return true end
-    return self:_call("wiki_close")
+    return self:_call("wiki_close", nil, { action = "wiki_close", feedback = "cancel" })
   end
   if state_is("COLLECTION") then return self:_call("collection_back") end
-  if state_is("TARGET_SELECT") and g.CONSUMABLE_CANCEL then g.CONSUMABLE_CANCEL(); return true end
-  if overlay_open() then return close_overlay() end
+  if state_is("TARGET_SELECT") and g.CONSUMABLE_CANCEL then
+    g.CONSUMABLE_CANCEL(); self:_sync_policy(); Feedback.emit("cancel", feedback_context(nil, nil)); return true
+  end
+  if overlay_open() then
+    local closed = close_overlay(); self:_sync_policy()
+    if closed then Feedback.emit("cancel", feedback_context(nil, nil)) end
+    return closed
+  end
   local po = pack_open()
   if po then
     local action = PackPresentation.input_locked(po) and "pack_fast_forward" or "pack_skip"
     return self:_call(action, { payload = { open_id = po.open_id } })
   end
-  if g.FUNCS and g.FUNCS.cancel then g.FUNCS.cancel(); return true end
-  if g.FUNCS and g.FUNCS.back then g.FUNCS.back(); return true end
+  if g.FUNCS and g.FUNCS.cancel then g.FUNCS.cancel(); Feedback.emit("cancel", feedback_context(nil, nil)); return true end
+  if g.FUNCS and g.FUNCS.back then g.FUNCS.back(); Feedback.emit("cancel", feedback_context(nil, nil)); return true end
   return false
 end
 
 function Input:_dispatch_intent(intent)
   local meta = intent.target and self._meta[intent.target] or nil
-  if intent.kind == "click" then return self:_dispatch_click(intent, meta)
+  if intent.kind == "hover" and intent.phase == "enter" then
+    Feedback.emit("hover", feedback_context(meta, intent)); return false
+  elseif intent.kind == "focus" and intent.phase == "enter" then
+    Feedback.emit("focus", feedback_context(meta, intent)); return false
+  elseif intent.kind == "press" and intent.target then
+    Feedback.emit("press", feedback_context(meta, intent)); return false
+  elseif intent.kind == "release" and intent.target then
+    Feedback.emit("release", feedback_context(meta, intent)); return false
+  elseif intent.kind == "click" then return self:_dispatch_click(intent, meta)
   elseif intent.kind == "action" then return self:_call(intent.action)
   elseif intent.kind == "cancel" or intent.kind == "back" then return self:_cancel()
   elseif intent.kind == "drag" and meta and meta.kind == "founder_card" then
@@ -581,6 +648,7 @@ function Input:_dispatch_intent(intent)
       if intent.cancelled then return self:_restore_founder_drag() end
       if g and g.jokers and g.jokers.align_cards then g.jokers:align_cards() end
       self._founder_drag = nil
+      Feedback.emit("reorder", feedback_context(meta, intent))
       return true
     end
   end

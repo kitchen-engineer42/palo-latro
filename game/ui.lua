@@ -15,6 +15,7 @@ local UIBox = require("engine.uibox")
 local Collection = require("game.collection")
 local Wiki = require("game.wiki")
 local Options = require("game.options")
+local Feedback = require("game.feedback")
 local Guidance = require("game.guidance")
 local Bosses = require("game.bosses")
 local Deck = require("game.deck")
@@ -338,15 +339,19 @@ function UI.prepare()
   local W, H, GAME = G.WINDOW.w, G.WINDOW.h, G.GAME
   local definitions, rects = {}, {}
   local order = 0
-  local function add(action, rect, enabled, scope, z, command, allow_when_locked)
+  local function add(action, rect, enabled, scope, z, command, allow_when_locked, disabled_reason)
     if not (action and rect) then return end
+    local feedback, feedback_error = Feedback.mapping(action)
+    assert(feedback, feedback_error)
     order = order + 1
     rects[action] = rect
     definitions[#definitions + 1] = UIBox.button({
       id = "ui:" .. action, action = action, w = rect.w, h = rect.h,
       offset_x = rect.x, offset_y = rect.y, order = order, focus_order = order,
       z = z or 10, enabled = enabled ~= false, modal_scope = scope,
-      metadata = command and { command = command } or nil,
+      metadata = { command = command, feedback = feedback.success,
+        disabled_reason = disabled_reason or (type(command) == "table" and command.disabled_reason)
+          or (enabled == false and "Unavailable" or nil) },
       allow_when_locked = allow_when_locked == true,
     })
   end
@@ -360,9 +365,11 @@ function UI.prepare()
     add("run_info", { x = ix, y = py + 554, w = half, h = 50 }, true)
     add("options", { x = rx, y = py + 554, w = half, h = 50 }, true)
     local controls = capital_controls(GAME, G.STATE)
-    add("raise", { x = ix, y = py + 612, w = half, h = 38 }, controls.raise.enabled)
+    add("raise", { x = ix, y = py + 612, w = half, h = 38 }, controls.raise.enabled,
+      nil, nil, nil, nil, controls.raise.label)
     if G.STATE == G.STATES.SELECTING_HAND then
-      add("market_pivot", { x = rx, y = py + 612, w = half, h = 38 }, controls.pivot.enabled)
+      add("market_pivot", { x = rx, y = py + 612, w = half, h = 38 }, controls.pivot.enabled,
+        nil, nil, nil, nil, controls.pivot.label)
     end
   end
 
@@ -632,6 +639,8 @@ function UI.prepare()
       global = target.global, allow_when_locked = target.allow_when_locked,
       focusable = target.focusable,
       command = target.metadata and target.metadata.command or nil,
+      feedback = target.metadata and target.metadata.feedback or nil,
+      disabled_reason = target.metadata and target.metadata.disabled_reason or nil,
     }
   end
   return UI.buttons

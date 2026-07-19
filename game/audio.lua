@@ -39,6 +39,22 @@ local EVENTS = {
   lose          = {{"low", .58, .50}, {"soft", .55, .24}},
   win           = {{"bright", 1.00, .30}, {"bright", 1.26, .28}, {"bright", 1.50, .28}},
   letter        = {{"tick", 1.00, .12}},
+  hover         = {{"tick", 1.18, .10}},
+  press         = {{"low", 1.08, .14}, {"tick", .92, .09}},
+  select_card   = {{"tick", 1.04, .20}, {"bright", 1.34, .10}},
+  deselect_card = {{"tick", .82, .16}},
+  cancel        = {{"low", .86, .18}},
+  transition    = {{"soft", .72, .18}, {"bright", 1.08, .12}},
+  acquire       = {{"bright", 1.08, .28}, {"bright", 1.42, .18}},
+  remove        = {{"low", .78, .26}, {"noise", .86, .11}},
+  purchase      = {{"bright", 1.16, .26}, {"bright", 1.55, .17}},
+  reroll        = {{"noise", 1.18, .18}, {"tick", 1.34, .12}},
+  cash_gain     = {{"bright", 1.30, .30}, {"tick", 1.65, .16}},
+  cash_spend    = {{"tick", .88, .16}, {"low", 1.12, .16}},
+  deal          = {{"noise", 1.28, .11}, {"tick", 1.08, .10}},
+  return_card   = {{"noise", .92, .11}, {"tick", .86, .09}},
+  reorder       = {{"tick", .96, .12}},
+  pack_ready    = {{"bright", 1.12, .24}, {"bright", 1.50, .14}},
 }
 
 local SD = {}
@@ -79,7 +95,8 @@ end
 
 function Audio.event(name, opts)
   opts = opts or {}
-  local layers = EVENTS[name] or EVENTS.select
+  local layers = EVENTS[name]
+  if not layers then return false end
   local intensity = clamp(opts.intensity or 1, .25, 2.5)
   local pitch = opts.pitch or 1
   for i, layer in ipairs(layers) do
@@ -87,6 +104,7 @@ function Audio.event(name, opts)
     local gain = layer[3] * math.min(1.35, .72 + .28 * intensity) / math.sqrt(i)
     voice(name, layer[1], layer[2] * pitch, gain)
   end
+  return true
 end
 
 function Audio.chip(step, total)

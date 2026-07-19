@@ -58,13 +58,14 @@ local RECIPES = {
 local EXACT_ACTIONS = {
   activate_founder = "select", collection_back = "cancel", collection_next = "select",
   collection_open = "transition", collection_prev = "select", fire = "remove",
+  back = "cancel", cancel = "cancel", distill = "transition",
   founder_negotiation_continue = "negotiation_choice",
   founder_negotiation_standard_terms = "negotiation_result",
   founder_negotiation_walk_away = "cancel", guidance_ack = "select",
   market_pivot = "transition", modal_backdrop = "cancel", options = "transition",
   pack_fast_forward = "press", pack_skip = "cancel", pack_target_next = "select",
   pack_target_prev = "select", pivot = "transition", play_blind = "transition",
-  raise = "cash_gain", restart = "transition", run_info = "transition",
+  promote = "acquire", raise = "cash_gain", refactor = "remove", restart = "transition", run_info = "transition",
   sell_consumable = "remove", ship = "transition", shop_buy_consumable = "purchase",
   shop_continue = "transition", shop_redeem = "purchase", shop_reroll = "reroll",
   shop_tech_drawer = "transition", skip_blind = "transition", sort_layer = "reorder",
@@ -172,6 +173,37 @@ end
 
 function Feedback.scope()
   return Feedback._scope
+end
+
+function Feedback.runtime_scope(game)
+  game = game or rawget(_G, "G")
+  if not game then return "none" end
+  local parts = { tostring(game.STAGE or "stage"), tostring(game.STATE or "state") }
+  if game.SHOW_WIKI then parts[#parts + 1] = "wiki"
+  elseif game.SHOW_OPTIONS then parts[#parts + 1] = "options"
+  elseif game.SHOW_RUN_INFO then parts[#parts + 1] = "run-info"
+  elseif game.SHOW_DECK_VIEW then parts[#parts + 1] = "deck" end
+  local shop = game.GAME and game.GAME.shop
+  if shop then
+    if shop.pack_open then
+      parts[#parts + 1] = "pack:" .. tostring(shop.pack_open.open_id or shop.pack_open.pack_key or "open")
+    elseif shop.founder_negotiation then
+      local negotiation = shop.founder_negotiation
+      parts[#parts + 1] = "negotiation:" .. tostring(negotiation.offer_id or negotiation.founder_key or "open")
+    else
+      parts[#parts + 1] = "shop:" .. tostring(shop.shop_id or "open") .. ":" .. tostring(shop.revision or 1)
+    end
+  end
+  local pending = game.PENDING_CONSUMABLE
+  if pending then
+    local card = pending.card
+    parts[#parts + 1] = "target:" .. tostring((card and (card.uid or card.ID or card.center_key)) or "open")
+  end
+  return table.concat(parts, "/")
+end
+
+function Feedback.sync_scope(game)
+  return Feedback.set_scope(Feedback.runtime_scope(game))
 end
 
 function Feedback.set_scope(scope)

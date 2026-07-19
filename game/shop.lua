@@ -6,7 +6,6 @@
 -- are P2/P3 (this file exposes the founder core + seams).
 
 local Centers = require("game.centers")
-local Audio = require("game.audio")
 local RunState = require("game.runstate")
 local Interp = require("game.effect_interp")   -- 1.5b: passive run-modifiers applied on hire
 local Pricing = require("game.pricing")
@@ -341,7 +340,6 @@ function Shop.buy_consumable(expected_offer_id, expected_revision, expected_shop
   sh.consumable = false
   sh.revision = (sh.revision or 1) + 1
   Profile.discover(c.key)
-  Audio.play("hire")
   return true
 end
 
@@ -582,7 +580,6 @@ function Shop.redeem(expected_offer_id, expected_revision, expected_shop_id, exp
   G.GAME.vouchers_owned[v.key] = true
   sh.voucher = false
   sh.revision = (sh.revision or 1) + 1
-  Audio.play("hire")
   return true
 end
 
@@ -598,7 +595,6 @@ function Shop.reroll(expected_revision, expected_shop_id, expected_session_token
   sh.revision = (sh.revision or 1) + 1
   sh.reroll_cost = Shop.reroll_cost(sh.rerolls)
   roll_offers()
-  Audio.play("select", nil, 0.5)
   return true
 end
 
@@ -632,7 +628,6 @@ function Shop.buy(idx, expected_offer_id, expected_revision, expected_shop_id, e
   Shop.apply_directives("current")
   Profile.discover(c.key)
   Guidance.emit("founder_bought", { founder = c.key, salary = c.salary or 0 })
-  Audio.play("hire")
   return true
 end
 
@@ -782,7 +777,6 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
     Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
     Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
-    Audio.play("select", nil, 0.6)
     return true
   end
   if definition.family == "playbook" then
@@ -801,7 +795,6 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
     Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
     Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
-    Audio.play("select", nil, 0.6)
     return true
   end
   if definition.family == "tech_law" then
@@ -822,7 +815,6 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
     Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
     Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
-    Audio.play("select", nil, 0.6)
     return true
   end
   if definition.family == "moonshot" then
@@ -835,7 +827,6 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
     Profile.discover_many(keys)
     PackPresentation.begin(sh.pack_open, idx, definition)
     Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
-    Audio.play("select", nil, 0.6)
     return true
   end
   local opts, seen = {}, {}                                    -- exclude owned (via eligible) + no within-pack dups
@@ -877,7 +868,6 @@ function Shop.open_pack(idx, expected_offer_id, expected_revision, expected_shop
   Profile.discover_many(keys)
   PackPresentation.begin(sh.pack_open, idx, definition)
   Guidance.emit("pack_opened", { family = definition.family, key = definition.key })
-  Audio.play("select", nil, 0.6)
   return true
 end
 
@@ -895,7 +885,6 @@ local function consume_pack_option(sh, po, index, option, mode)
   po.options[index] = false
   po.picks_left = po.picks_left - 1
   Profile.discover(option.key)
-  Audio.play("hire")
   Guidance.emit("pack_picked", { family = po.kind, key = option.key, mode = mode })
   FounderEvents.pack_selected({ family = po.kind, center_key = option.key, mode = mode })
   if po.picks_left <= 0 then sh.pack_open = nil end
@@ -925,7 +914,6 @@ function Shop.pack_cycle_migration_target(delta)
   for i, entry in ipairs(targets) do if entry.uid == po.migration_target_uid then current = i; break end end
   current = ((current - 1 + (delta or 1)) % #targets) + 1
   po.migration_target_uid = targets[current].uid
-  Audio.play("select", nil, 0.4)
   return targets[current]
 end
 
@@ -1037,7 +1025,6 @@ function Shop.pack_pick(i, expected_open_id)
     Profile.discover(c.key)
     po.options[i] = false; po.picks_left = po.picks_left - 1
     if po.picks_left <= 0 then sh.pack_open = nil end
-    Audio.play("hire")
     Guidance.emit("pack_picked", { family = po.kind, key = c.key })
     FounderEvents.pack_selected({ family = po.kind, center_key = c.key, mode = "pick" })
     return true
@@ -1049,7 +1036,6 @@ function Shop.pack_pick(i, expected_open_id)
     if not entry then return false end
     po.options[i] = false; po.picks_left = po.picks_left - 1
     if po.picks_left <= 0 then sh.pack_open = nil end
-    Audio.play("hire")
     Profile.discover(c.key)
     Guidance.emit("pack_picked", { family = po.kind, key = c.key })
     FounderEvents.pack_selected({ family = po.kind, center_key = c.key, mode = "pick" })
@@ -1062,7 +1048,6 @@ function Shop.pack_pick(i, expected_open_id)
     if not entry then return false end
     po.options[i] = false; po.picks_left = po.picks_left - 1
     if po.picks_left <= 0 then sh.pack_open = nil end
-    Audio.play("hire")
     Profile.discover(c.key)
     Guidance.emit("pack_picked", { family = po.kind, key = c.key })
     FounderEvents.pack_selected({ family = po.kind, center_key = c.key, mode = "pick" })
@@ -1099,14 +1084,13 @@ function Shop.pack_pick(i, expected_open_id)
     if not option then return false, pick_reason end
     local pending, begin_reason = FounderNegotiation.begin(G.GAME, center, i)
     if not pending then return false, begin_reason end
-    Audio.play("select", nil, 0.6)
     return true, FounderNegotiation.view(G.GAME)
   end
   if #G.jokers.cards >= Shop.founder_cap() then
     Guidance.emit("founder_slots_full", { slots = Shop.founder_cap() })
     return false
   end
-  emplace_founder(canonical_offer, 0, c.edition, i, #po.options); Audio.play("hire")
+  emplace_founder(canonical_offer, 0, c.edition, i, #po.options)
   Profile.discover(canonical_offer.key)
   po.options[i] = false
   po.picks_left = po.picks_left - 1
@@ -1148,7 +1132,6 @@ function Shop.negotiation_continue()
     if not committed and pending then pending.phase = previous_phase end
     return committed, reason
   end
-  Audio.play("select", nil, 0.5)
   return true, result
 end
 
@@ -1169,7 +1152,6 @@ function Shop.negotiation_walk_away()
   if not (sh and FounderNegotiation.normalize(G.GAME)) then return false, "No Founder negotiation is pending" end
   sh.founder_negotiation = nil
   sh.pack_open = nil -- walking away forfeits the whole paid pack, including Mega's remaining pick
-  Audio.play("fire", nil, 0.5)
   return true
 end
 

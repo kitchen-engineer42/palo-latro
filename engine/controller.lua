@@ -126,6 +126,7 @@ function Controller:add_target(node, opts)
     allow_when_locked = opts.allow_when_locked == true
       or opts.action == "cancel" or opts.action == "back",
     focusable = opts.focusable ~= false,
+    allow_disabled_pointer = opts.allow_disabled_pointer == true,
     enabled = opts.enabled,
     visible = opts.visible,
     hit_test = opts.hit_test,
@@ -158,7 +159,7 @@ function Controller:_eligible(target, for_focus)
   if not visible then return false end
   local enabled = target.enabled
   if enabled == nil then enabled = true else enabled = option_value(enabled, target) end
-  return enabled == true
+  return enabled == true or (not for_focus and target.allow_disabled_pointer)
 end
 
 function Controller:_target_for_node(node)
