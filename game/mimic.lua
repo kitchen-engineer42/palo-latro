@@ -381,7 +381,7 @@ end
 
 local function add_raise_action(out, g)
   local equity_cost, cash_fraction, raise_cash_mult, cash = raise_terms(g)
-  if g.raise_available and (g.equity_pct or 0) > equity_cost then
+  if cash > 0 and g.raise_available and (g.equity_pct or 0) > equity_cost then
     add_action(out, "raise", {}, nil,
       ("cash=+$%d; equity=-%d%%; valuation=%d; cash_fraction=%.2f; market_mult=%.2f")
         :format(cash, equity_cost, g.run_best_arr or 0, cash_fraction, raise_cash_mult))

@@ -14,6 +14,7 @@ local Coverage = require("game.coverage")
 local UIBox = require("engine.uibox")
 local Collection = require("game.collection")
 local Wiki = require("game.wiki")
+local Options = require("game.options")
 local Guidance = require("game.guidance")
 local Bosses = require("game.bosses")
 local Deck = require("game.deck")
@@ -276,14 +277,20 @@ local function capital_controls(GAME, state)
   local raise_allowed = state == G.STATES.SELECTING_HAND or state == G.STATES.SHOP
     or state == G.STATES.TECH_DRAFT
   local raise_enabled = raise_allowed and GAME.raise_available == true
-    and (GAME.equity_pct or 0) > equity_cost
+    and (GAME.equity_pct or 0) > equity_cost and raise_cash > 0
   local raise_label
-  if GAME.raise_available == false then
-    raise_label = "Raise used"
+  if not raise_allowed then
+    raise_label = "Fundraise · in play/shop"
+  elseif GAME.raise_available == nil then
+    raise_label = "Fundraise after Boss"
+  elseif GAME.raise_available == false then
+    raise_label = "Fundraise · already used"
   elseif (GAME.equity_pct or 0) <= equity_cost then
-    raise_label = "Need >" .. equity_cost .. "% Eq"
+    raise_label = "Fundraise · low equity"
+  elseif raise_cash <= 0 then
+    raise_label = "Fundraise after Ship"
   else
-    raise_label = ("Raise +$%d · -%d%% Eq"):format(raise_cash, equity_cost)
+    raise_label = ("Fundraise +$%d"):format(raise_cash)
   end
 
   local pivot_cost = Pricing.base_reroll(GAME, RunState.ANTE_BASE)
@@ -307,19 +314,21 @@ local function capital_controls(GAME, state)
       or (reason or "Destination blocked")
     pivot_enabled = false
   elseif GAME.last_market_pivot_ante == GAME.ante then
-    pivot_label = "Pivot used A" .. tostring(GAME.ante or 1)
+    pivot_label = "Market changed A" .. tostring(GAME.ante or 1)
   elseif state ~= G.STATES.SELECTING_HAND then
-    pivot_label = "Pivot during blind"
+    pivot_label = "Market · in play"
   elseif not has_queueable_market then
     pivot_label = pivot_block_reason or "No legal Market"
   elseif (GAME.cash or 0) < pivot_cost then
-    pivot_label = "Pivot needs $" .. tostring(pivot_cost)
+    pivot_label = "Market · need $" .. tostring(pivot_cost)
   else
-    pivot_label = "Market Pivot -$" .. tostring(pivot_cost)
+    pivot_label = "Change Market · $" .. tostring(pivot_cost)
   end
   return {
-    raise = { label = raise_label, enabled = raise_enabled },
-    pivot = { label = pivot_label, enabled = pivot_enabled },
+    raise = { label = raise_label, enabled = raise_enabled,
+      detail = { "Cash now", ("Costs %d%% equity"):format(equity_cost) } },
+    pivot = { label = pivot_label, enabled = pivot_enabled,
+      detail = { "Switches next blind", "Costs $" .. tostring(pivot_cost) } },
   }
 end
 
@@ -573,12 +582,9 @@ function UI.prepare()
   end
 
   if G.SHOW_OPTIONS then
-    local pw, ph = 420, 660
-    local x, y = (W - pw) / 2 + 60, (H - ph) / 2 + 64
-    for _, action in ipairs({ "opt_motion", "opt_sound", "opt_shake", "opt_flash",
-      "opt_particles", "opt_crt", "opt_guidance", "opt_chatter", "opt_wiki", "opt_quit" }) do
-      add(action, { x = x, y = y, w = pw - 120, h = 46 }, true, "overlay", 100)
-      y = y + 58
+    local geometry = Options.geometry(W, H)
+    for _, row in ipairs(geometry.rows) do
+      add(row.action, row.rect, true, "overlay", 100)
     end
   end
 
@@ -803,17 +809,21 @@ function UI.left_panel(GAME, shop_mode)
   UI.rects.market_pivot = { x = rx, y = py + 612, w = half, h = 38 }
   draw_button(UI.rects.market_pivot, controls.pivot.label, controls.pivot.enabled,
     point_in_rect(mx, my, rx, py + 612, half, 38), G.FONTS.tiny)
+  UI.text(G.FONTS.tiny, controls.raise.detail[1], ix, py + 650, G.C.text_dim, half, "center")
+  UI.text(G.FONTS.tiny, controls.raise.detail[2], ix, py + 666, G.C.text_dim, half, "center")
+  UI.text(G.FONTS.tiny, controls.pivot.detail[1], rx, py + 650, G.C.text_dim, half, "center")
+  UI.text(G.FONTS.tiny, controls.pivot.detail[2], rx, py + 666, G.C.text_dim, half, "center")
   UI.text(G.FONTS.tiny, ("Runway %s \194\183 Rung %d \194\183 Eq %d%% \194\183 Debt %d"):format(
     (GAME.runway or 99) >= 99 and "long" or tostring(GAME.runway), GAME.maturity_rung or 1, GAME.equity_pct or 100,
-    math.floor(require("game.meters").get("tech_debt") or 0)), ix, py + 660, G.C.text_dim, iw, "center")
+    math.floor(require("game.meters").get("tech_debt") or 0)), ix, py + 687, G.C.text_dim, iw, "center")
 
   local pending = Leads.pending(GAME)
   if #pending > 0 then
-    UI.text(G.FONTS.tiny, "ACTIVE LEADS", ix, py + 685, G.C.win, iw, "center")
+    UI.text(G.FONTS.tiny, "ACTIVE LEADS", ix, py + 708, G.C.win, iw, "center")
     local shown = math.min(2, #pending)
     for i = 1, shown do
       local suffix = (i == shown and #pending > shown) and ("  +" .. (#pending - shown) .. " more") or ""
-      local y = py + 685 + (i - 1) * 36 + 18
+      local y = py + 708 + (i - 1) * 30 + 18
       UI.text(G.FONTS.tiny, tostring(pending[i].name or pending[i].key or "Lead") .. suffix,
         ix + 4, y, G.C.text, iw - 8, "left")
       UI.text(G.FONTS.tiny, lead_status(pending[i]),
@@ -1911,18 +1921,14 @@ function UI.draw_guidance()
     { chamfer = 5, border = G.C.border, line_w = 2, shadow = false })
   UI.text(G.FONTS.normal, "P", avatar.x, avatar.y + 6, G.C.black, avatar.w, "center")
   local speaker = (item.cofounder and item.cofounder.name) or "Patch"
-  local heading = compact and speaker or (speaker .. (item.title and (" · " .. item.title) or ""))
-  UI.text(G.FONTS.small, heading,
+  local kind = item.kind == "chatter" and "COFOUNDER"
+    or (item.kind == "hint" and "TIP" or "BEGINNER GUIDE")
+  UI.text(G.FONTS.small, kind,
     avatar.x + avatar.w + 10, panel_rect.y + 10, G.C.arr,
     panel_rect.w - avatar.w - 76, "left")
-  if compact and G.GAME then
-    local game = G.GAME
-    UI.text(G.FONTS.tiny, ("RW %s · R%d · E%d · D%d"):format(
-      (game.runway or 99) >= 99 and "long" or tostring(game.runway), game.maturity_rung or 1,
-      game.equity_pct or 100, math.floor(require("game.meters").get("tech_debt") or 0)),
-      avatar.x + avatar.w + 10, panel_rect.y + 35, G.C.text_dim,
-      panel_rect.w - avatar.w - 76, "left")
-  end
+  UI.text(G.FONTS.tiny, speaker .. (item.title and (" · " .. item.title) or ""),
+    avatar.x + avatar.w + 10, panel_rect.y + 35, G.C.text_dim,
+    panel_rect.w - avatar.w - 76, "left")
   lg.setFont(G.FONTS.tiny); lg.setColor(G.C.text)
   lg.printf(item.body or "", panel_rect.x + 14, panel_rect.y + 58, panel_rect.w - 28, "left")
   if item.prompt then
@@ -2260,29 +2266,20 @@ function UI.draw_overlays()
   end
 
   if G.SHOW_OPTIONS then
-    local pw, ph = 420, 660
-    local px0, py0 = (W - pw) / 2, (H - ph) / 2
-    pixel_rect(px0, py0, pw, ph, { 0.10, 0.12, 0.16, 1 }, { chamfer = 8, border = G.C.arr, line_w = 2 })
-    UI.text(G.FONTS.normal, "OPTIONS", px0, py0 + 12, G.C.arr, pw, "center")
-    local rows = {
-      { "opt_motion", "Motion FX:  " .. (G.SETTINGS.reduced_motion and "OFF" or "ON") },
-      { "opt_sound",  "Sound:  " .. (G.SETTINGS.sound == false and "OFF" or "ON") },
-      { "opt_shake",  "Screen shake:  " .. (G.SETTINGS.shake == false and "OFF" or "ON") },
-      { "opt_flash",  "Screen flash:  " .. (G.SETTINGS.flash == false and "OFF" or "ON") },
-      { "opt_particles", "Particles:  " .. (G.SETTINGS.particles == false and "OFF" or "ON") },
-      { "opt_crt",    "CRT filter:  " .. (G.SETTINGS.crt and "ON" or "OFF") },
-      { "opt_guidance", "Guidance:  " .. (Guidance.preferences().guidance and "ON" or "OFF") },
-      { "opt_chatter", "Patch chatter:  " .. (Guidance.preferences().cofounder_chatter and "ON" or "OFF") },
-      { "opt_wiki", "Open Wiki" },
-      { "opt_quit",   "Quit to menu" },
-    }
-    local by3 = py0 + 64
-    for _, r in ipairs(rows) do
-      UI.rects[r[1]] = { x = px0 + 60, y = by3, w = pw - 120, h = 46 }
-      draw_button(UI.rects[r[1]], r[2], true, point_in_rect(mx, my, px0 + 60, by3, pw - 120, 46))
-      by3 = by3 + 58
+    local geometry = Options.geometry(W, H)
+    local panel = geometry.panel
+    pixel_rect(panel.x, panel.y, panel.w, panel.h, { 0.10, 0.12, 0.16, 1 },
+      { chamfer = 8, border = G.C.arr, line_w = 2 })
+    UI.text(G.FONTS.normal, geometry.title, panel.x, panel.y + 14, G.C.arr, panel.w, "center")
+    for _, row in ipairs(geometry.rows) do
+      UI.rects[row.action] = row.rect
+      draw_button(row.rect, row.label, true,
+        point_in_rect(mx, my, row.rect.x, row.rect.y, row.rect.w, row.rect.h))
     end
-    UI.text(G.FONTS.tiny, "click outside to close", px0, py0 + ph - 26, G.C.text_dim, pw, "center")
+    UI.text(G.FONTS.tiny, geometry.page == "root" and "Choose a category" or "Settings apply immediately",
+      panel.x, panel.y + panel.h - 48, G.C.text_dim, panel.w, "center")
+    UI.text(G.FONTS.tiny, "click outside to close", panel.x, panel.y + panel.h - 25,
+      G.C.panel_dim, panel.w, "center")
     return
   end
 end

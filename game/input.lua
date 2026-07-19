@@ -23,6 +23,7 @@ local Guidance = require("game.guidance")
 local Consumables = require("game.consumables")
 local CardStack = require("game.card_stack")
 local Wiki = require("game.wiki")
+local Options = require("game.options")
 
 local Input = {}
 Input.__index = Input
@@ -115,6 +116,7 @@ local function close_overlay()
   if g.SHOW_WIKI then return Wiki.close() end
   local open = g.SHOW_DECK_VIEW or g.SHOW_RUN_INFO or g.SHOW_OPTIONS
   g.SHOW_DECK_VIEW, g.SHOW_RUN_INFO, g.SHOW_OPTIONS = nil, nil, nil
+  if open then Options.reset() end
   return open and true or false
 end
 
@@ -323,8 +325,8 @@ function Input:rebuild(button_specs)
     local w, h = g.WINDOW.w or 0, g.WINDOW.h or 0
     local backdrops
     if g.SHOW_OPTIONS then
-      local pw, ph = 420, 660
-      local px, py = (w - pw) / 2, (h - ph) / 2
+      local panel = Options.geometry(w, h).panel
+      local px, py, pw, ph = panel.x, panel.y, panel.w, panel.h
       -- Options closes only outside its panel. Four rectangles leave the panel itself inert while
       -- avoiding a custom, stateful hit-test seam.
       backdrops = {

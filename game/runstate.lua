@@ -163,6 +163,13 @@ function RunState.era_for_ante(g, ante)
   return Eras.for_ante({ era_path = path }, ante)
 end
 
+function RunState.refresh_blind_actions(g)
+  g = g or G.GAME
+  g.ships_left = RunState.SHIPS_PER_BLIND + (g.ships_bonus or 0)
+  g.pivots_left = RunState.PIVOTS_PER_BLIND + (g.pivots_bonus or 0)
+  return g.ships_left, g.pivots_left
+end
+
 -- set the current (ante, blind_idx): target from curve, reset per-blind counters, bump scope ids.
 function RunState.set_blind(ante, blind_idx)
   local g = G.GAME
@@ -191,8 +198,7 @@ function RunState.set_blind(ante, blind_idx)
   g._running_arr, g._pre_after_arr, g._pre_market_arr, g._final_arr = 0, 0, 0, 0
   g.previous_ship_arr = nil
   g.best_ship_arr, g.best_ship_margin, g.market_best_fit = 0, nil, 0
-  g.ships_left  = RunState.SHIPS_PER_BLIND + (g.ships_bonus or 0)     -- voucher: Extra Sprint
-  g.pivots_left = RunState.PIVOTS_PER_BLIND + (g.pivots_bonus or 0)   -- voucher: DevOps
+  RunState.refresh_blind_actions(g)
 end
 
 -- advance after a blind win → "won_run" (cleared the final boss) | "next" (a new blind is set).
@@ -312,6 +318,7 @@ function RunState.new(opts)
       Markets.select(G.GAME, market, { initial = true })
       G.GAME.era = RunState.era_for_ante(G.GAME, G.GAME.ante)
       G.GAME.blind.target = RunState.blind_target(G.GAME.ante, G.GAME.blind_idx)
+      RunState.refresh_blind_actions(G.GAME)
     end
   end
 end

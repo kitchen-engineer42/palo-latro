@@ -144,6 +144,9 @@ function Round.select_market(market)
   Guidance.emit("market_selected", { market_id = market.id })
   G.GAME.era = RunState.era_for_ante(G.GAME, G.GAME.ante)
   G.GAME.blind.target = RunState.blind_target(G.GAME.ante, G.GAME.blind_idx)
+  -- RunState creates the opening blind before the player chooses a Market. Refresh the
+  -- still-unused action counters now that its perk is known (notably Indie SaaS's +1 Ship).
+  RunState.refresh_blind_actions(G.GAME)
   Round.seed_master_deck()
   StateMachine.set_state(G.STATES.BLIND_SELECT)
   return true

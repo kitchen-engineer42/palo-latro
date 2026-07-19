@@ -14,6 +14,7 @@ local Economy = require("game.economy")
 local Pricing = require("game.pricing")
 local Collection = require("game.collection")
 local Wiki = require("game.wiki")
+local Options = require("game.options")
 local Guidance = require("game.guidance")
 local Profile = require("game.profile")
 
@@ -270,8 +271,9 @@ G.FUNCS.raise = function()     -- a priced round — Cash now for equity dilutio
   if (G.GAME.equity_pct or 0) <= equity_cost then return end
   G.GAME.valuation = G.GAME.run_best_arr or 0
   local market_economy = require("data.gameplay.market_rules").for_market(G.GAME.market).economy or {}
-  G.GAME.cash = (G.GAME.cash or 0) + math.floor(G.GAME.valuation * cash_fraction
-    * (market_economy.raise_cash_mult or 1))
+  local proceeds = math.floor(G.GAME.valuation * cash_fraction * (market_economy.raise_cash_mult or 1))
+  if proceeds <= 0 then return end
+  G.GAME.cash = (G.GAME.cash or 0) + proceeds
   G.GAME.equity_pct = (G.GAME.equity_pct or 100) - equity_cost
   G.GAME.raises_taken = (G.GAME.raises_taken or 0) + 1
   G.GAME.raise_available = false
@@ -602,11 +604,28 @@ G.FUNCS.sort_layer = function()
   G.hand:align_cards(); Audio.play("select", nil, 0.4)
 end
 
-G.FUNCS.run_info = function() G.SHOW_RUN_INFO = not G.SHOW_RUN_INFO; G.SHOW_OPTIONS, G.SHOW_DECK_VIEW = nil, nil end
-G.FUNCS.options  = function() G.SHOW_OPTIONS = not G.SHOW_OPTIONS; G.SHOW_RUN_INFO, G.SHOW_DECK_VIEW = nil, nil end
+G.FUNCS.run_info = function()
+  G.SHOW_RUN_INFO = not G.SHOW_RUN_INFO
+  G.SHOW_OPTIONS, G.SHOW_DECK_VIEW = nil, nil
+  Options.reset()
+end
+G.FUNCS.options = function()
+  if G.SHOW_OPTIONS then
+    G.SHOW_OPTIONS = nil
+  else
+    G.SHOW_OPTIONS = true
+    Options.reset()
+  end
+  G.SHOW_RUN_INFO, G.SHOW_DECK_VIEW = nil, nil
+end
+G.FUNCS.opt_page_game = function() if G.SHOW_OPTIONS then Options.set_page("game") end end
+G.FUNCS.opt_page_visual = function() if G.SHOW_OPTIONS then Options.set_page("visual") end end
+G.FUNCS.opt_page_sound = function() if G.SHOW_OPTIONS then Options.set_page("sound") end end
+G.FUNCS.opt_back = function() if G.SHOW_OPTIONS then Options.reset() end end
 G.FUNCS.opt_wiki = function()
   if not G.SHOW_OPTIONS then return end
   G.SHOW_OPTIONS = nil
+  Options.reset()
   Wiki.open("run")
 end
 G.FUNCS.opt_motion = function() if G.SHOW_OPTIONS then G.SETTINGS.reduced_motion = not G.SETTINGS.reduced_motion end end
@@ -631,6 +650,8 @@ G.FUNCS.guidance_ack = function()
   local lesson = Guidance.current()
   if lesson and lesson.id == "welcome" then Guidance.emit("acknowledged") end
 end
-G.FUNCS.opt_quit   = function() if G.SHOW_OPTIONS then G.SHOW_OPTIONS = nil; G.FUNCS.restart() end end
+G.FUNCS.opt_quit = function()
+  if G.SHOW_OPTIONS then G.SHOW_OPTIONS = nil; Options.reset(); G.FUNCS.restart() end
+end
 
 return true

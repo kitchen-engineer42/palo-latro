@@ -64,6 +64,7 @@ G.COLLECTION = nil                -- transient collection category/filter/page (
 G.WIKI = nil                      -- transient Wiki query/facets/history (never persisted)
 G.SHOW_WIKI = nil                 -- full-screen read-only Wiki modal
 G.WIKI_RESTORE_FOCUS = nil        -- one-frame retained target id restored after closing the Wiki
+G.OPTIONS_PAGE = nil              -- transient root/game/visual/sound Options category
 G.GUIDANCE_TOAST = nil            -- transient authored hint/chatter presentation; progress lives in profile
 G.GUIDANCE_RUNTIME = false         -- true only in the graphical app; tests/mimic never persist guidance events
 -- Resolution independence (P2): the whole frame is laid out + drawn at a fixed VIRTUAL resolution

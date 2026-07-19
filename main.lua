@@ -136,7 +136,9 @@ function love.load()
   end
   local ov = os.getenv("PL_OVERLAY")                           -- dev: force an overlay open (screenshot checks)
   if ov == "runinfo" then G.SHOW_RUN_INFO = true
-  elseif ov == "options" then G.SHOW_OPTIONS = true
+  elseif ov == "options" then
+    G.SHOW_OPTIONS = true
+    require("game.options").set_page(os.getenv("PL_OPTIONS_PAGE") or "root")
   elseif ov == "deck" then G.SHOW_DECK_VIEW = true
   elseif ov == "wiki" then require("game.wiki").open("preview") end
   if os.getenv("PL_EDITIONS") and G.jokers then     -- dev: spawn founders-with-art carrying each edition (preview P4 shimmer)
