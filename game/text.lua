@@ -14,6 +14,8 @@ G.TEXT.win_title   = "IPO!"
 G.TEXT.win_sub     = "You hit the bar and raised the round."
 G.TEXT.lose_title  = "Startup died"
 G.TEXT.lose_sub    = "Out of runway before you hit ARR."
+G.TEXT.lose_ships_exhausted = "Out of Ships before you hit the ARR target."
+G.TEXT.lose_tech_exhausted  = "No Tech remains to build another Ship."
 G.TEXT.restart     = "click / press R to start over"
 G.TEXT.hint_select = "Select up to 5 tech cards, then Ship to launch a product."
 

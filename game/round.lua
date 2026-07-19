@@ -292,6 +292,32 @@ function Round.deal_to_full()
   end
 end
 
+-- A blind can end before its Ship counter reaches zero when every physical Tech
+-- card has already been played, Pivoted, or destroyed.  Keep this on the same
+-- terminal path as an ordinary failed blind so GUI and headless play cannot sit
+-- in SELECTING_HAND with no legal Ship.
+function Round.fail_blind(reason)
+  local g = G.GAME
+  if not g or g.result ~= nil then return false end
+  Scoring.fire_hook("blind_lost")
+  g.won, g.result = false, "failed_blind"
+  g.loss_reason = reason or "ships_exhausted"
+  Audio.play("lose"); Juice.flash(0.4, G.C.lose)
+  Guidance.emit("run_lost", { result = g.result, reason = g.loss_reason })
+  Profile.record_run(Centers)
+  StateMachine.set_state(G.STATES.GAME_OVER)
+  return true
+end
+
+function Round.fail_if_tech_exhausted()
+  local g = G.GAME
+  if not (g and g.blind and G.hand and G.deck) then return false end
+  if (g.cumulative_arr or 0) >= (g.blind.target or math.huge) then return false end
+  if (g.ships_left or 0) <= 0 then return false end
+  if #(G.hand.cards or {}) > 0 or #(G.deck.cards or {}) > 0 then return false end
+  return Round.fail_blind("tech_exhausted")
+end
+
 -- play the highlighted cards into the play area (called by the ship handler)
 function Round.move_to_play(cards)
   for _, c in ipairs(cards) do
@@ -385,13 +411,8 @@ function Round.cash_out_ship()
       end
     end
   elseif g.ships_left <= 0 then                               -- BLIND FAILED → run over
-    Scoring.fire_hook("blind_lost")
-    g.won, g.result = false, "failed_blind"
-    Audio.play("lose"); Juice.flash(0.4, G.C.lose)
-    Guidance.emit("run_lost", { result = g.result })
-    require("game.profile").record_run(Centers)
-    StateMachine.set_state(G.STATES.GAME_OVER)
-  else
+    Round.fail_blind("ships_exhausted")
+  elseif not Round.fail_if_tech_exhausted() then              -- otherwise continue this blind
     Guidance.emit("ship_failed", { remaining = g.blind.target - g.cumulative_arr })
     StateMachine.set_state(G.STATES.DRAW_TO_HAND)             -- continue this blind
   end

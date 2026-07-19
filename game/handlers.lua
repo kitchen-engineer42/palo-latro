@@ -20,7 +20,9 @@ local Profile = require("game.profile")
 
 local S = G.STATES
 
-StateMachine.handlers[S.SELECTING_HAND] = function() end
+StateMachine.handlers[S.SELECTING_HAND] = function()
+  Round.fail_if_tech_exhausted()
+end
 StateMachine.handlers[S.SHIPPING] = function() end           -- unused: ship -> SCORING directly
 StateMachine.handlers[S.SHOP] = function() end               -- passive; input drives buy/reroll/continue
 StateMachine.handlers[S.BLIND_SELECT] = function() end       -- passive; Play button → play_blind (P2)
@@ -40,7 +42,9 @@ end
 
 StateMachine.handlers[S.DRAW_TO_HAND] = function()
   Round.deal_to_full()
-  StateMachine.set_state(S.SELECTING_HAND)
+  if not Round.fail_if_tech_exhausted() then
+    StateMachine.set_state(S.SELECTING_HAND)
+  end
 end
 
 StateMachine.handlers[S.GAME_OVER] = function() end
@@ -84,6 +88,7 @@ G.FUNCS.pivot = function()
   Round.deal_to_full()
   Guidance.emit("pivot_committed", { count = #sel })
   Guidance.emit("compatibility_changed", { count = #sel })
+  Round.fail_if_tech_exhausted()
 end
 
 G.FUNCS.restart = function()                                  -- game-over → back to the MENU (re-pick stake)

@@ -257,7 +257,7 @@ function RunState.new(opts)
     cash = opts.cash or 4,
     margin_bonus = 0, salary_relief = 0, overkill = 0,
     last_income = 0, last_payroll = 0, last_interest = 0, runway = 99, bankrupt = false,
-    won = nil, result = nil,
+    won = nil, result = nil, loss_reason = nil,
     meters = {},                                          -- threshold-counter primitive (meters.lua)
     layers_seen_run = {}, app_types_shipped_run = {},     -- run sets (E3)
     run_best_arr = 0,

@@ -1357,7 +1357,11 @@ local function settle_headless()
       local ok, err = G.E_MANAGER:drain()
       if not ok then return nil, err end
     end
-    if DECISION_STATE[G.STATE] then return true end
+    if G.STATE == G.STATES.SELECTING_HAND and Round.fail_if_tech_exhausted() then
+      -- A forced loss is an automatic transition, not a decision for the agent.
+    elseif DECISION_STATE[G.STATE] then
+      return true
+    end
     StateMachine.update(0)
   end
   return nil, "automatic state transition limit exceeded"

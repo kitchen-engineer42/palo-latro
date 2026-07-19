@@ -1009,7 +1009,10 @@ function UI.render()
     local won = GAME.won
     UI.text(G.FONTS.huge, won and G.TEXT.win_title or G.TEXT.lose_title, 0, H / 2 - 110, won and G.C.win or G.C.lose, W, "center")
     lg.setFont(G.FONTS.normal); lg.setColor(G.C.text)
-    lg.printf(won and G.TEXT.win_sub or G.TEXT.lose_sub, 0, H / 2 - 24, W, "center")
+    local lose_sub = GAME.loss_reason == "tech_exhausted" and G.TEXT.lose_tech_exhausted
+      or GAME.loss_reason == "ships_exhausted" and G.TEXT.lose_ships_exhausted
+      or G.TEXT.lose_sub
+    lg.printf(won and G.TEXT.win_sub or lose_sub, 0, H / 2 - 24, W, "center")
     local bl = GAME.blind or { target = 0, stage = "?" }
     local summary = won and ("Reached IPO — retained value $" .. format_number(GAME.ipo_value or 0) ..
       " (" .. tostring(GAME.equity_pct or 0) .. "% equity)")
